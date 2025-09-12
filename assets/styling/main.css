@@ -1,0 +1,144 @@
+body {
+    font-family: Arial, sans-serif;
+    background: #f7f7f7;
+    margin: 0;
+    padding: 0;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 20px auto;
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    padding: 24px;
+    text-align: center;
+}
+
+.scrabble-container {
+    margin: 0 auto;
+    text-align: center;
+}
+
+.scrabble-board table {
+    margin: 0 auto;
+    border-collapse: collapse;
+    border: 2px solid #8b4513;
+    background: #2f4f4f;
+}
+
+.scrabble-board td {
+    transition: all 0.2s;
+    position: relative;
+}
+
+.scrabble-board td:hover {
+    transform: scale(1.05);
+    z-index: 10;
+}
+
+.tile-rack {
+    margin: 20px auto;
+    text-align: center;
+    max-width: 800px;
+}
+
+.tile-rack button {
+    background: #f4e4bc;
+    border: 2px solid #8b4513;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: Arial, sans-serif;
+}
+
+.tile-rack button:hover {
+    background: #e6d3a3;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+
+.selected-tile {
+    background: #ffd700 !important;
+    box-shadow: 0 0 10px rgba(255, 215, 0, 0.8) !important;
+}
+
+.legend {
+    background: #f9f9f9;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+    padding: 15px;
+    margin: 20px auto;
+}
+
+.legend div {
+    font-weight: bold;
+    border-radius: 3px;
+    min-width: 100px;
+}
+
+/* Responsive design for smaller screens */
+@media (max-width: 768px) {
+    .container {
+        margin: 10px;
+        padding: 15px;
+    }
+    
+    .scrabble-board table {
+        font-size: 10px;
+    }
+    
+    .scrabble-board td {
+        width: 20px !important;
+        height: 20px !important;
+        font-size: 10px !important;
+    }
+    
+    .tile-rack button {
+        padding: 6px 8px;
+        font-size: 14px;
+        margin: 1px;
+    }
+}
+body {
+    background-color: #0f1116;
+    color: #ffffff;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 20px;
+}
+
+#hero {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+#links {
+    width: 400px;
+    text-align: left;
+    font-size: x-large;
+    color: white;
+    display: flex;
+    flex-direction: column;
+}
+
+#links a {
+    color: white;
+    text-decoration: none;
+    margin-top: 20px;
+    margin: 10px 0px;
+    border: white 1px solid;
+    border-radius: 5px;
+    padding: 10px;
+}
+
+#links a:hover {
+    background-color: #1f1f1f;
+    cursor: pointer;
+}
+
+#header {
+    max-width: 1200px;
+}
