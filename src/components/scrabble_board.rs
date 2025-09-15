@@ -37,7 +37,7 @@ fn get_traditional_square_type(row: usize, col: usize) -> SquareType {
     // Traditional Scrabble layout (US/UK/International standard)
 
     // Triple Word Score squares
-    let triple_word = [
+    const TRIPLE_WORD: [(usize, usize); 8] = [
         (0, 0),
         (0, 7),
         (0, 14),
@@ -47,12 +47,12 @@ fn get_traditional_square_type(row: usize, col: usize) -> SquareType {
         (14, 7),
         (14, 14),
     ];
-    if triple_word.contains(&(row, col)) {
+    if TRIPLE_WORD.contains(&(row, col)) {
         return SquareType::TripleWord;
     }
 
     // Double Word Score squares
-    let double_word = [
+    const DOUBLE_WORD: [(usize, usize); 16] = [
         (1, 1),
         (1, 13),
         (2, 2),
@@ -70,12 +70,12 @@ fn get_traditional_square_type(row: usize, col: usize) -> SquareType {
         (13, 1),
         (13, 13),
     ];
-    if double_word.contains(&(row, col)) {
+    if DOUBLE_WORD.contains(&(row, col)) {
         return SquareType::DoubleWord;
     }
 
     // Triple Letter Score squares
-    let triple_letter = [
+    const TRIPLE_LETTER: [(usize, usize); 12] = [
         (1, 5),
         (1, 9),
         (5, 1),
@@ -89,12 +89,12 @@ fn get_traditional_square_type(row: usize, col: usize) -> SquareType {
         (13, 5),
         (13, 9),
     ];
-    if triple_letter.contains(&(row, col)) {
+    if TRIPLE_LETTER.contains(&(row, col)) {
         return SquareType::TripleLetter;
     }
 
     // Double Letter Score squares
-    let double_letter = [
+    const DOUBLE_LETTER: [(usize, usize); 24] = [
         (0, 3),
         (0, 11),
         (2, 6),
@@ -120,7 +120,7 @@ fn get_traditional_square_type(row: usize, col: usize) -> SquareType {
         (14, 3),
         (14, 11),
     ];
-    if double_letter.contains(&(row, col)) {
+    if DOUBLE_LETTER.contains(&(row, col)) {
         return SquareType::DoubleLetter;
     }
 
@@ -129,7 +129,7 @@ fn get_traditional_square_type(row: usize, col: usize) -> SquareType {
 
 fn get_wordfeud_square_type(row: usize, col: usize) -> SquareType {
     // Triple Word Score squares - Wordfeud pattern
-    let triple_word = [
+    const TRIPLE_WORD: [(usize, usize); 8] = [
         (0, 0),
         (0, 7),
         (0, 14),
@@ -139,12 +139,12 @@ fn get_wordfeud_square_type(row: usize, col: usize) -> SquareType {
         (14, 7),
         (14, 14),
     ];
-    if triple_word.contains(&(row, col)) {
+    if TRIPLE_WORD.contains(&(row, col)) {
         return SquareType::TripleWord;
     }
 
     // Double Word Score squares - Wordfeud has different pattern
-    let double_word = [
+    const DOUBLE_WORD: [(usize, usize); 17] = [
         (1, 1),
         (1, 13),
         (2, 2),
@@ -163,12 +163,12 @@ fn get_wordfeud_square_type(row: usize, col: usize) -> SquareType {
         (13, 1),
         (13, 13),
     ];
-    if double_word.contains(&(row, col)) {
+    if DOUBLE_WORD.contains(&(row, col)) {
         return SquareType::DoubleWord;
     }
 
     // Triple Letter Score squares - Wordfeud pattern
-    let triple_letter = [
+    const TRIPLE_LETTER: [(usize, usize); 12] = [
         (1, 5),
         (1, 9),
         (5, 1),
@@ -182,12 +182,12 @@ fn get_wordfeud_square_type(row: usize, col: usize) -> SquareType {
         (13, 5),
         (13, 9),
     ];
-    if triple_letter.contains(&(row, col)) {
+    if TRIPLE_LETTER.contains(&(row, col)) {
         return SquareType::TripleLetter;
     }
 
     // Double Letter Score squares - Wordfeud has more double letter squares
-    let double_letter = [
+    const DOUBLE_LETTER: [(usize, usize); 32] = [
         (0, 3),
         (0, 11),
         (2, 6),
@@ -222,7 +222,7 @@ fn get_wordfeud_square_type(row: usize, col: usize) -> SquareType {
         (10, 6),
         (10, 8),
     ];
-    if double_letter.contains(&(row, col)) {
+    if DOUBLE_LETTER.contains(&(row, col)) {
         return SquareType::DoubleLetter;
     }
 
@@ -230,12 +230,24 @@ fn get_wordfeud_square_type(row: usize, col: usize) -> SquareType {
 }
 fn get_square_style(square_type: SquareType) -> &'static str {
     match square_type {
-        SquareType::Normal => "width:30px;height:30px;border:1px solid #666;text-align:center;font-size:14px;cursor:pointer;background:#f5f5dc;",
-        SquareType::DoubleWord => "width:30px;height:30px;border:1px solid #666;text-align:center;font-size:14px;cursor:pointer;background:#ffb6c1;color:#8b0000;font-weight:bold;",
-        SquareType::TripleWord => "width:30px;height:30px;border:1px solid #666;text-align:center;font-size:14px;cursor:pointer;background:#ff4500;color:white;font-weight:bold;",
-        SquareType::DoubleLetter => "width:30px;height:30px;border:1px solid #666;text-align:center;font-size:14px;cursor:pointer;background:#87ceeb;color:#000080;font-weight:bold;",
-        SquareType::TripleLetter => "width:30px;height:30px;border:1px solid #666;text-align:center;font-size:14px;cursor:pointer;background:#0000ff;color:white;font-weight:bold;",
-        SquareType::Center => "width:30px;height:30px;border:1px solid #666;text-align:center;font-size:14px;cursor:pointer;background:#ffd700;color:#8b0000;font-weight:bold;",
+        SquareType::Normal => {
+            "width:30px;height:30px;border:1px solid #666;text-align:center;font-size:14px;cursor:pointer;background:#f5f5dc;"
+        }
+        SquareType::DoubleWord => {
+            "width:30px;height:30px;border:1px solid #666;text-align:center;font-size:14px;cursor:pointer;background:#ffb6c1;color:#8b0000;font-weight:bold;"
+        }
+        SquareType::TripleWord => {
+            "width:30px;height:30px;border:1px solid #666;text-align:center;font-size:14px;cursor:pointer;background:#ff4500;color:white;font-weight:bold;"
+        }
+        SquareType::DoubleLetter => {
+            "width:30px;height:30px;border:1px solid #666;text-align:center;font-size:14px;cursor:pointer;background:#87ceeb;color:#000080;font-weight:bold;"
+        }
+        SquareType::TripleLetter => {
+            "width:30px;height:30px;border:1px solid #666;text-align:center;font-size:14px;cursor:pointer;background:#0000ff;color:white;font-weight:bold;"
+        }
+        SquareType::Center => {
+            "width:30px;height:30px;border:1px solid #666;text-align:center;font-size:14px;cursor:pointer;background:#ffd700;color:#8b0000;font-weight:bold;"
+        }
     }
 }
 
@@ -255,6 +267,8 @@ pub fn scrabble_board() -> Element {
     let mut board = use_signal(|| vec![vec![' '; BOARD_SIZE]; BOARD_SIZE]);
     let mut selected_tile = use_signal(|| None::<char>);
     let mut current_layout = use_signal(|| BoardLayout::Traditional);
+
+    let board_state = board.read();
 
     rsx! {
         div { class: "scrabble-container",
@@ -281,8 +295,7 @@ pub fn scrabble_board() -> Element {
                 table { style: "border-collapse:collapse;margin:20px auto;",
                     tbody {
                         {
-                            board
-                                .read()
+                            board_state
                                 .iter()
                                 .enumerate()
                                 .map(|(row_idx, row)| {

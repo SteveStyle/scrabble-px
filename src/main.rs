@@ -28,7 +28,7 @@ fn main() {
 fn App() -> Element {
     rsx! {
         div { class: "container",
-            h1 { "Scrabble Desktop App" }
+            h1 { "Scrabble App" }
             components::scrabble_board::scrabble_board {}
         }
     }
