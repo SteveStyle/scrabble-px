@@ -1,29 +1,5 @@
-[package]
-name = "scrabble-px"
-version = "0.1.0"
-authors = ["vagrant"]
-edition = "2024"
+[workspace]
+resolver="3"
+members=["scrabble-ui"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dependencies]
-dioxus = { version = "0.6", features = ["web"] }
-dioxus-web = "0.6.3"
-dioxus-desktop = { version = "0.6", optional = true }
-
-[features]
-default = ["web"]
-web = ["dioxus/web"]
-desktop = ["dioxus/desktop", "dep:dioxus-desktop"]
-
-[profile]
-
-[profile.wasm-dev]
-inherits = "dev"
-opt-level = 1
-
-[profile.server-dev]
-inherits = "dev"
-
-[profile.android-dev]
-inherits = "dev"
