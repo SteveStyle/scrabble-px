@@ -33,10 +33,13 @@ test('Play Greedy Bot starts a game and renders the board', async ({ page }) => 
   await page.getByRole('button', { name: 'Play Greedy Bot' }).click();
   await page.getByRole('button', { name: 'Start', exact: true }).click();
 
-  // The in-game view: board grid + the player's rack.
+  // The in-game view rendered: board grid + the player's rack with tiles.
+  // The rack having tiles is the reliable "this is a real, playable game for
+  // me" signal — unlike the turn-indicator text, which is timing-sensitive and
+  // ambiguous (the words "Your turn" also appear as a games-list section
+  // heading in the sidebar).
   await expect(page.locator('.board-panel')).toBeVisible();
   await expect(page.locator('.rack-panel')).toBeVisible();
   await expect(page.locator('.board-cell').first()).toBeVisible();
-  // A vs-bot game starts on the human's turn.
-  await expect(page.getByText('Your turn')).toBeVisible();
+  await expect(page.locator('.rack-tile').first()).toBeVisible();
 });
