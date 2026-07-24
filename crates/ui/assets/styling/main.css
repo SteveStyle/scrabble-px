@@ -504,6 +504,20 @@ button:disabled {
         0 6px 14px rgba(77, 50, 26, 0.1);
 }
 
+/* The selection ring must stay visible even when the selected cell is filled /
+   staged / a last-move square — now reachable via Ctrl/Shift/Alt+arrow. Those
+   states also set `box-shadow` at equal (one-class) specificity and later in
+   source, so they were silently overriding the single-class
+   `.board-cell-selected` ring. Two classes here outrank them; the cell keeps
+   its own background, just shows the clay selection ring on top. */
+.board-cell-filled.board-cell-selected,
+.board-cell-staged.board-cell-selected,
+.board-cell-last-move.board-cell-selected {
+    box-shadow:
+        inset 0 0 0 2px var(--clay, rgba(199, 104, 72, 0.9)),
+        0 6px 14px rgba(77, 50, 26, 0.14);
+}
+
 .premium-double-letter {
     background: rgba(157, 198, 216, 0.6);
 }
