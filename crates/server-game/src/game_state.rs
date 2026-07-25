@@ -680,7 +680,8 @@ impl GameSession {
         // Human turn wall-clock (seconds resolution, from turn_started_at); a
         // bot move overwrites this with its precise compute time in
         // `maybe_run_engine_turn`.
-        let move_elapsed_us = ((now_unix_seconds() - self.turn_started_at).max(0) as u64) * 1_000_000;
+        let move_elapsed_us =
+            ((now_unix_seconds() - self.turn_started_at).max(0) as u64) * 1_000_000;
         let rules_engine = RulesEngine {
             rules: &self.rules,
             dictionary: rules_shared::dictionary_by_name(&self.rules.language)
@@ -745,7 +746,8 @@ impl GameSession {
 
     pub fn apply_pass(&mut self, seat_number: u8) -> Result<(), String> {
         ensure_active_turn(self, seat_number)?;
-        let move_elapsed_us = ((now_unix_seconds() - self.turn_started_at).max(0) as u64) * 1_000_000;
+        let move_elapsed_us =
+            ((now_unix_seconds() - self.turn_started_at).max(0) as u64) * 1_000_000;
         let participant = self
             .participants
             .get(seat_number as usize)
@@ -771,7 +773,8 @@ impl GameSession {
 
     pub fn apply_exchange(&mut self, seat_number: u8, tiles: Vec<Tile>) -> Result<(), String> {
         ensure_active_turn(self, seat_number)?;
-        let move_elapsed_us = ((now_unix_seconds() - self.turn_started_at).max(0) as u64) * 1_000_000;
+        let move_elapsed_us =
+            ((now_unix_seconds() - self.turn_started_at).max(0) as u64) * 1_000_000;
         if self.bag.len() < tiles.len() {
             return Err("Not enough tiles left in bag to exchange".to_string());
         }

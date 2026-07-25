@@ -1452,7 +1452,10 @@ fn NameAutocompleteInput(
 #[derive(Debug, Clone, PartialEq)]
 enum LastMoveCell {
     None,
-    Note { note: String, elapsed_us: Option<u64> },
+    Note {
+        note: String,
+        elapsed_us: Option<u64>,
+    },
     Word {
         word: String,
         score_delta: i32,
