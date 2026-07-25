@@ -1171,7 +1171,8 @@ fn player_table(
                             }
                         }
                     }
-                    "{participant.display_name}"
+                    span { class: "player-seat-icon", title: "{seat_kind_label(&participant.kind)}", "{seat_kind_icon(&participant.kind)}" }
+                    span { class: "{seat_name_class(&participant.kind)}", "{participant.display_name}" }
                     if let Some(rating) = participant.current_rating {
                         span { class: "player-table-rating", " ({rating:.0})" }
                     }
@@ -1179,8 +1180,8 @@ fn player_table(
                         span { class: "player-table-you-tag", " (you)" }
                     }
                 }
-                td { "{seat_kind_label(&participant.kind)}" }
                 td { class: "player-table-score", "{participant.score}" }
+                td { class: "player-table-time", {render_total_time(moves, participant.seat_number)} }
                 td { {render_last_move(&cell, link_words)} }
                 if show_manage_column {
                     td { class: "player-table-manage", {manage_cell} }
@@ -1212,8 +1213,8 @@ fn player_table(
             thead {
                 tr {
                     th { "Player" }
-                    th { "Kind" }
                     th { "Score" }
+                    th { "Time" }
                     th { "Last move" }
                     if show_manage_column {
                         th { class: "player-table-manage" }
@@ -1451,8 +1452,12 @@ fn NameAutocompleteInput(
 #[derive(Debug, Clone, PartialEq)]
 enum LastMoveCell {
     None,
-    Note(String),
-    Word { word: String, score_delta: i32 },
+    Note { note: String, elapsed_us: Option<u64> },
+    Word {
+        word: String,
+        score_delta: i32,
+        elapsed_us: Option<u64>,
+    },
 }
 
 fn last_move_cell(moves: &[MoveRecordDto], seat_number: u8) -> LastMoveCell {
@@ -1465,8 +1470,24 @@ fn last_move_cell(moves: &[MoveRecordDto], seat_number: u8) -> LastMoveCell {
         Some(record) if record.move_type == "place" => LastMoveCell::Word {
             word: record.main_word.clone().unwrap_or_default(),
             score_delta: record.score_delta,
+            elapsed_us: record.elapsed_us,
         },
-        Some(record) => LastMoveCell::Note(action_note(record)),
+        Some(record) => LastMoveCell::Note {
+            note: action_note(record),
+            elapsed_us: record.elapsed_us,
+        },
+    }
+}
+
+/// The move's own time, rendered right after its score — the per-move
+/// counterpart to the total-time column, mirroring how move score sits with
+/// total score. Nothing for a move without a captured time.
+fn render_move_time(elapsed_us: Option<u64>) -> Element {
+    match elapsed_us {
+        Some(us) => rsx! {
+            span { class: "player-table-move-time", " · {crate::time_format::format_move_time(us)}" }
+        },
+        None => rsx! {},
     }
 }
 
@@ -1475,11 +1496,17 @@ fn render_last_move(cell: &LastMoveCell, link_words: bool) -> Element {
         LastMoveCell::None => rsx! {
             span { class: "player-table-last-move-empty", "—" }
         },
-        LastMoveCell::Note(note) => rsx! {
+        LastMoveCell::Note { note, elapsed_us } => rsx! {
             span { class: "player-table-last-move-note", "{note}" }
+            {render_move_time(*elapsed_us)}
         },
-        LastMoveCell::Word { word, score_delta } => {
+        LastMoveCell::Word {
+            word,
+            score_delta,
+            elapsed_us,
+        } => {
             let delta = *score_delta;
+            let time = *elapsed_us;
             if link_words {
                 let url = format!(
                     "https://www.collinsdictionary.com/dictionary/english/{}",
@@ -1494,14 +1521,51 @@ fn render_last_move(cell: &LastMoveCell, link_words: bool) -> Element {
                         "{word}"
                     }
                     span { class: "player-table-last-move-score", " +{delta}" }
+                    {render_move_time(time)}
                 }
             } else {
                 rsx! {
                     span { class: "player-table-last-move-word", "{word}" }
                     span { class: "player-table-last-move-score", " +{delta}" }
+                    {render_move_time(time)}
                 }
             }
         }
+    }
+}
+
+fn seat_kind_icon(kind: &SeatKind) -> &'static str {
+    match kind {
+        SeatKind::Human => "🙂",
+        SeatKind::Engine => "🤖",
+    }
+}
+
+fn seat_name_class(kind: &SeatKind) -> &'static str {
+    match kind {
+        SeatKind::Human => "player-seat-name player-seat-name-human",
+        SeatKind::Engine => "player-seat-name player-seat-name-bot",
+    }
+}
+
+/// Total time a seat has spent across all its timed moves (the total-time
+/// counterpart to total score). `None` if none of its moves carry a time
+/// (e.g. a pre-timing snapshot), so the column shows "—" rather than "0".
+fn seat_total_time_us(moves: &[MoveRecordDto], seat_number: u8) -> Option<u64> {
+    let times: Vec<u64> = moves
+        .iter()
+        .filter(|record| record.seat_number == seat_number)
+        .filter_map(|record| record.elapsed_us)
+        .collect();
+    (!times.is_empty()).then(|| times.iter().sum())
+}
+
+fn render_total_time(moves: &[MoveRecordDto], seat_number: u8) -> Element {
+    match seat_total_time_us(moves, seat_number) {
+        Some(us) => rsx! { "{crate::time_format::format_move_time(us)}" },
+        None => rsx! {
+            span { class: "player-table-last-move-empty", "—" }
+        },
     }
 }
 
@@ -1756,6 +1820,7 @@ mod tests {
                 score_delta: 10,
                 positions: Vec::new(),
                 description: String::new(),
+                elapsed_us: Some(8_000_000),
             },
             MoveRecordDto {
                 move_number: 2,
@@ -1765,6 +1830,7 @@ mod tests {
                 score_delta: 0,
                 positions: Vec::new(),
                 description: String::new(),
+                elapsed_us: Some(500),
             },
             MoveRecordDto {
                 move_number: 3,
@@ -1774,15 +1840,23 @@ mod tests {
                 score_delta: 8,
                 positions: Vec::new(),
                 description: String::new(),
+                elapsed_us: Some(40_000),
             },
         ];
         match last_move_cell(&moves, 0) {
-            LastMoveCell::Word { word, score_delta } => {
+            LastMoveCell::Word {
+                word,
+                score_delta,
+                elapsed_us,
+            } => {
                 assert_eq!(word, "DOG");
                 assert_eq!(score_delta, 8);
+                assert_eq!(elapsed_us, Some(40_000));
             }
             other => panic!("expected a word cell, got {other:?}"),
         }
+        // Seat 0's total time sums both its placed moves (8s + 40ms).
+        assert_eq!(seat_total_time_us(&moves, 0), Some(8_040_000));
     }
 
     #[test]

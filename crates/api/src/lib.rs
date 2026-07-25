@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// binary's own `app_version()`.
 // 2.0: every timestamp DTO field changed from a `String` (unix seconds as
 // text) to a plain `i64` — a breaking wire change, hence the major bump.
-pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 2 };
+pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 3 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApiVersion {
@@ -351,6 +351,15 @@ pub struct MoveRecordDto {
     /// `"place"`.
     pub positions: Vec<PositionDto>,
     pub description: String,
+    /// How long this move took, in **microseconds** — a human's turn wall-clock
+    /// (seconds resolution, from `turn_started_at`) or a bot's actual compute
+    /// time (excludes the engine broadcast-pacing delay). Microseconds because
+    /// bot moves are routinely sub-millisecond; i64 still holds a multi-hour
+    /// human turn. `None` where it isn't meaningful/wasn't captured
+    /// (resign/timeout/abort/admin, or a snapshot predating the field).
+    /// `#[serde(default)]`.
+    #[serde(default)]
+    pub elapsed_us: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -1256,6 +1256,36 @@ button:disabled {
     color: rgba(35, 25, 15, 0.75);
 }
 
+/* Seat kind is shown by an icon + name colour instead of a Kind column. */
+.player-seat-icon {
+    margin-right: 6px;
+}
+
+.player-seat-name-human {
+    color: rgba(35, 25, 15, 0.9);
+    font-weight: 600;
+}
+
+.player-seat-name-bot {
+    /* A cooler, distinct hue so bots read differently from humans at a glance. */
+    color: rgba(70, 110, 140, 0.95);
+    font-weight: 600;
+}
+
+/* Total time, grouped with the total-score column. */
+.player-table-time {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: rgba(35, 25, 15, 0.7);
+}
+
+/* Per-move time, shown right after the move score. */
+.player-table-move-time {
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+    color: rgba(35, 25, 15, 0.55);
+}
+
 .auth-widget {
     display: flex;
     flex-direction: column;

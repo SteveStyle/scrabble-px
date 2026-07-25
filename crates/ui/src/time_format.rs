@@ -65,6 +65,27 @@ pub fn format_time_remaining(turn_started_at: i64, move_time_limit_seconds: u64)
     }
 }
 
+/// Human-readable move time from microseconds. Bots are routinely
+/// sub-millisecond, so this scales µs → ms → s → m·s → h·m as the magnitude
+/// grows; a human's turn wall-clock (seconds resolution) lands in the s/m/h
+/// forms.
+pub fn format_move_time(elapsed_us: u64) -> String {
+    if elapsed_us < 1_000 {
+        format!("{elapsed_us}µs")
+    } else if elapsed_us < 1_000_000 {
+        format!("{}ms", elapsed_us / 1_000)
+    } else {
+        let secs = elapsed_us / 1_000_000;
+        if secs < 60 {
+            format!("{secs}s")
+        } else if secs < 3_600 {
+            format!("{}m {}s", secs / 60, secs % 60)
+        } else {
+            format!("{}h {}m", secs / 3_600, (secs % 3_600) / 60)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +130,14 @@ mod tests {
     fn reports_overdue_once_the_deadline_has_passed() {
         let started = started_seconds_ago(73 * 3_600);
         assert_eq!(format_time_remaining(started, 72 * 3_600), "overdue");
+    }
+
+    #[test]
+    fn format_move_time_scales_by_magnitude() {
+        assert_eq!(format_move_time(400), "400µs"); // sub-millisecond bot move
+        assert_eq!(format_move_time(40_000), "40ms");
+        assert_eq!(format_move_time(8_000_000), "8s"); // whole-second human turn
+        assert_eq!(format_move_time(90_000_000), "1m 30s");
+        assert_eq!(format_move_time(3_930_000_000), "1h 5m");
     }
 }

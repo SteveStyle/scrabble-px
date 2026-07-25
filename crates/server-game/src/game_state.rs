@@ -59,6 +59,11 @@ pub struct MoveRecord {
     /// so game snapshots persisted before this field existed still deserialize.
     #[serde(default)]
     pub positions: Vec<PositionDto>,
+    /// How long this move took, in microseconds — a human's turn wall-clock or
+    /// a bot's compute time (see `api::MoveRecordDto.elapsed_us`). `#[serde(default)]`
+    /// so pre-field snapshots still deserialize.
+    #[serde(default)]
+    pub elapsed_us: Option<u64>,
 }
 
 /// A single chat message posted to a game. `player_id`/`display_name` are
@@ -491,6 +496,7 @@ impl GameSession {
             score_delta: 0,
             positions: Vec::new(),
             description: format!("{display_name} was retired for exceeding the move time limit"),
+            elapsed_us: None,
         });
         self.handle_seat_exit(seat);
         true
@@ -611,6 +617,7 @@ impl GameSession {
                     score_delta: record.score_delta,
                     positions: record.positions.clone(),
                     description: record.description.clone(),
+                    elapsed_us: record.elapsed_us,
                 })
                 .collect(),
             messages: self
@@ -670,6 +677,10 @@ impl GameSession {
         candidate: MoveCandidate,
     ) -> Result<(), String> {
         ensure_active_turn(self, seat_number)?;
+        // Human turn wall-clock (seconds resolution, from turn_started_at); a
+        // bot move overwrites this with its precise compute time in
+        // `maybe_run_engine_turn`.
+        let move_elapsed_us = ((now_unix_seconds() - self.turn_started_at).max(0) as u64) * 1_000_000;
         let rules_engine = RulesEngine {
             rules: &self.rules,
             dictionary: rules_shared::dictionary_by_name(&self.rules.language)
@@ -721,6 +732,7 @@ impl GameSession {
                 "{} played {} for {}",
                 participant.display_name, validated.preview.main_word, validated.score.total
             ),
+            elapsed_us: Some(move_elapsed_us),
         });
         self.consecutive_scoreless_turns = 0;
         if went_out {
@@ -733,6 +745,7 @@ impl GameSession {
 
     pub fn apply_pass(&mut self, seat_number: u8) -> Result<(), String> {
         ensure_active_turn(self, seat_number)?;
+        let move_elapsed_us = ((now_unix_seconds() - self.turn_started_at).max(0) as u64) * 1_000_000;
         let participant = self
             .participants
             .get(seat_number as usize)
@@ -745,6 +758,7 @@ impl GameSession {
             score_delta: 0,
             positions: Vec::new(),
             description: format!("{} passed", participant.display_name),
+            elapsed_us: Some(move_elapsed_us),
         });
         self.consecutive_scoreless_turns += 1;
         if self.consecutive_scoreless_turns >= SCORELESS_TURN_LIMIT {
@@ -757,6 +771,7 @@ impl GameSession {
 
     pub fn apply_exchange(&mut self, seat_number: u8, tiles: Vec<Tile>) -> Result<(), String> {
         ensure_active_turn(self, seat_number)?;
+        let move_elapsed_us = ((now_unix_seconds() - self.turn_started_at).max(0) as u64) * 1_000_000;
         if self.bag.len() < tiles.len() {
             return Err("Not enough tiles left in bag to exchange".to_string());
         }
@@ -787,6 +802,7 @@ impl GameSession {
                 participant.display_name,
                 tiles.len()
             ),
+            elapsed_us: Some(move_elapsed_us),
         });
         self.consecutive_scoreless_turns += 1;
         if self.consecutive_scoreless_turns >= SCORELESS_TURN_LIMIT {
@@ -863,6 +879,7 @@ impl GameSession {
             score_delta: 0,
             positions: Vec::new(),
             description: format!("{} {reason}", participant.display_name),
+            elapsed_us: None,
         });
         self.mark_changed();
         self.handle_seat_exit(seat_number);
@@ -886,6 +903,7 @@ impl GameSession {
             score_delta: 0,
             positions: Vec::new(),
             description: "Game force-ended by admin".to_string(),
+            elapsed_us: None,
         });
         self.status = GameStatus::Finished;
         self.mark_changed();
@@ -913,6 +931,7 @@ impl GameSession {
             score_delta: 0,
             positions: Vec::new(),
             description: "Game aborted by the creator".to_string(),
+            elapsed_us: None,
         });
         self.status = GameStatus::Aborted;
         self.mark_changed();
@@ -1003,6 +1022,7 @@ impl GameSession {
         let rules_snapshot = self.rules.clone();
         let time_budget_ms = engine_timeout.as_millis() as u64;
 
+        let compute_start = std::time::Instant::now();
         let outcome = tokio::time::timeout(
             engine_timeout,
             tokio::task::spawn_blocking(move || {
@@ -1016,6 +1036,11 @@ impl GameSession {
             }),
         )
         .await;
+        // The engine's actual compute time — measured here, so it excludes the
+        // ENGINE_TURN_BROADCAST_DELAY pacing sleep (which runs later, in
+        // `run_engine_turns`). Overwrites the coarse turn-duration the apply_*
+        // method below records for this move.
+        let compute_us = compute_start.elapsed().as_micros() as u64;
 
         let response = match outcome {
             Ok(Ok(response)) => response,
@@ -1033,6 +1058,9 @@ impl GameSession {
                     "engine exceeded its move budget; auto-passing"
                 );
                 self.apply_pass(seat_number)?;
+                if let Some(last) = self.moves.last_mut() {
+                    last.elapsed_us = Some(compute_us);
+                }
                 return Ok(true);
             }
         };
@@ -1044,6 +1072,9 @@ impl GameSession {
             EngineAction::Pass => self.apply_pass(self.current_seat)?,
             EngineAction::Exchange(tiles) => self.apply_exchange(self.current_seat, tiles)?,
             EngineAction::Resign => self.apply_resign(self.current_seat)?,
+        }
+        if let Some(last) = self.moves.last_mut() {
+            last.elapsed_us = Some(compute_us);
         }
 
         Ok(true)

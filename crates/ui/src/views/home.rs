@@ -512,6 +512,7 @@ mod tests {
             score_delta: 10,
             positions,
             description: String::new(),
+            elapsed_us: None,
         }
     }
 
@@ -524,6 +525,7 @@ mod tests {
             score_delta: 0,
             positions: Vec::new(),
             description: String::new(),
+            elapsed_us: None,
         }
     }
 

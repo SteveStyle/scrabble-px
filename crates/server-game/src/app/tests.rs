@@ -1850,6 +1850,7 @@ async fn six_player_game_ranks_finishers_by_score_then_resigners_by_recency_and_
                 score_delta: 0,
                 positions: Vec::new(),
                 description: description.to_string(),
+                elapsed_us: None,
             });
         };
         exit(game, 0, 1, "resign", "A6 resigned");
