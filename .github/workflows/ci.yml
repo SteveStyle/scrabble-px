@@ -94,10 +94,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build and start the staging stack
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build the staging images with a GitHub Actions layer cache. The big,
+      # stable win is the builder stage's `cargo install dioxus-cli`/
+      # `wasm-bindgen-cli` layer (compiled from source, minutes) — invariant
+      # unless those pinned versions change, so it's restored from cache on
+      # every run. `bake` reads the same compose file (so image tags match the
+      # `up --no-build` below) and builds both services against the one shared,
+      # cached `builder` stage. Deps/app still recompile on a source change (no
+      # cargo-chef here).
+      - name: Build the staging images (cached)
+        uses: docker/bake-action@v5
+        with:
+          files: docker-compose.staging.yml
+          load: true
+          set: |
+            *.cache-from=type=gha
+            *.cache-to=type=gha,mode=max
         env:
           TILE_LITE_ELITE_BUILD_ID: ${{ github.sha }}
-        run: docker compose -f docker-compose.staging.yml up --build -d
+
+      - name: Start the staging stack
+        env:
+          TILE_LITE_ELITE_BUILD_ID: ${{ github.sha }}
+        run: docker compose -f docker-compose.staging.yml up -d --no-build
 
       - name: Wait for staging to be healthy
         run: |

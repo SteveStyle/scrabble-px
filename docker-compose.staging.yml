@@ -15,6 +15,10 @@ name: tile-lite-elite-staging
 
 services:
   server:
+    # Explicit image tag (matches Compose's default project-service name) so a
+    # CI `docker buildx bake` and a later `docker compose up --no-build` agree
+    # on exactly which image to run — see the e2e job in .github/workflows/ci.yml.
+    image: tile-lite-elite-staging-server
     build:
       context: .
       target: runtime-server
@@ -34,6 +38,7 @@ services:
     restart: unless-stopped
 
   web:
+    image: tile-lite-elite-staging-web
     build:
       context: .
       target: runtime-web
