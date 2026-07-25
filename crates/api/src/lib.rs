@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// binary's own `app_version()`.
 // 2.0: every timestamp DTO field changed from a `String` (unix seconds as
 // text) to a plain `i64` — a breaking wire change, hence the major bump.
-pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 1 };
+pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 2 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApiVersion {
@@ -370,6 +370,14 @@ pub struct PostChatMessageRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GameStateDto {
     pub id: String,
+    /// A monotonic per-game counter bumped on every state change. Lets a
+    /// client ignore a snapshot older than the one it already shows —
+    /// guarding against out-of-order arrivals across the WebSocket and HTTP
+    /// response paths, which both deliver full snapshots (see the client's
+    /// `apply_game_update`). `#[serde(default)]` → `0` for a snapshot/peer
+    /// predating the field.
+    #[serde(default)]
+    pub version: i64,
     pub status: GameStatus,
     /// `None` only for a game persisted before this field existed (see
     /// `#[serde(default)]` on `PersistedGame.creator_player_id`) — every

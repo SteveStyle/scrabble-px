@@ -276,6 +276,10 @@ pub struct GameSession {
     /// timestamp convention) when `current_seat`'s turn began — reset every
     /// time the turn advances. Meaningless until the game is `Active`.
     pub turn_started_at: i64,
+    /// Monotonic counter bumped on every state mutation (see `mark_changed`),
+    /// surfaced on `GameStateDto.version` so clients can drop stale snapshots.
+    /// `#[serde(default)]` on the persisted mirror → `0` for old snapshots.
+    pub version: i64,
 }
 
 impl GameSession {
@@ -319,7 +323,18 @@ impl GameSession {
             consecutive_scoreless_turns: 0,
             move_time_limit_seconds,
             turn_started_at: now_unix_seconds(),
+            version: 0,
         }
+    }
+
+    /// Bump the monotonic state version. Called from every mutation choke
+    /// point (`advance_turn`/`finish_*`/`finish_via_resignation`) and the
+    /// direct-state entry methods (`start`, `abort`, seat/chat/etc.), so any
+    /// observable change strictly increases `version`. Over-bumping (e.g. a
+    /// resignation that both records the exit and ends the game) is harmless —
+    /// only monotonicity matters, not contiguity.
+    fn mark_changed(&mut self) {
+        self.version += 1;
     }
 
     /// Swaps two seats' positions — and with them, turn order, since
@@ -350,6 +365,7 @@ impl GameSession {
             self.participants[a].seat_number = a as u8;
             self.participants[b].seat_number = b as u8;
         }
+        self.mark_changed();
         Ok(())
     }
 
@@ -366,6 +382,7 @@ impl GameSession {
         }
         seat.seat_number = self.participants.len() as u8;
         self.participants.push(seat);
+        self.mark_changed();
         Ok(())
     }
 
@@ -397,6 +414,7 @@ impl GameSession {
         for (new_index, participant) in self.participants.iter_mut().enumerate() {
             participant.seat_number = new_index as u8;
         }
+        self.mark_changed();
         Ok(())
     }
 
@@ -421,6 +439,7 @@ impl GameSession {
             return Err("The creator's own seat can't be withdrawn".to_string());
         }
         participant.player_id = None;
+        self.mark_changed();
         Ok(())
     }
 
@@ -437,6 +456,7 @@ impl GameSession {
         self.turn_number = 1;
         self.current_seat = 0;
         self.turn_started_at = now_unix_seconds();
+        self.mark_changed();
     }
 
     /// Auto-retires the current seat if it has sat on its turn past
@@ -532,6 +552,7 @@ impl GameSession {
     pub fn to_dto(&self) -> GameStateDto {
         GameStateDto {
             id: self.id.clone(),
+            version: self.version,
             status: self.status,
             creator_player_id: self.creator_player_id.clone(),
             variant: self.variant.clone(),
@@ -639,6 +660,7 @@ impl GameSession {
             body,
             created_at: now_unix_seconds(),
         });
+        self.mark_changed();
         Ok(())
     }
 
@@ -842,6 +864,7 @@ impl GameSession {
             positions: Vec::new(),
             description: format!("{} {reason}", participant.display_name),
         });
+        self.mark_changed();
         self.handle_seat_exit(seat_number);
         Ok(())
     }
@@ -865,6 +888,7 @@ impl GameSession {
             description: "Game force-ended by admin".to_string(),
         });
         self.status = GameStatus::Finished;
+        self.mark_changed();
     }
 
     /// The creator's "abort" — cancels the whole game at once, conceptually
@@ -891,6 +915,7 @@ impl GameSession {
             description: "Game aborted by the creator".to_string(),
         });
         self.status = GameStatus::Aborted;
+        self.mark_changed();
         Ok(())
     }
 
@@ -916,10 +941,12 @@ impl GameSession {
             .find(|participant| participant.player_id.as_deref() == Some(player_id))
         {
             participant.removed_by_player = true;
+            self.mark_changed();
             return Ok(());
         }
         if self.creator_player_id.as_deref() == Some(player_id) {
             self.removed_by_creator = true;
+            self.mark_changed();
             return Ok(());
         }
         Err("You are not a participant in this game".to_string())
@@ -1061,6 +1088,7 @@ impl GameSession {
 
         self.status = GameStatus::Finished;
         self.winner_seat = self.compute_winner_seat();
+        self.mark_changed();
     }
 
     /// Only among seats that were still active when the game ended — a
@@ -1107,6 +1135,7 @@ impl GameSession {
             .iter()
             .find(|participant| !participant.resigned)
             .map(|participant| participant.seat_number);
+        self.mark_changed();
         true
     }
 
@@ -1126,6 +1155,7 @@ impl GameSession {
         self.current_seat = next_seat as u8;
         self.turn_number += 1;
         self.turn_started_at = now_unix_seconds();
+        self.mark_changed();
     }
 
     /// Applies the turn-order consequence of a seat leaving the game
@@ -1661,6 +1691,23 @@ mod tests {
         game.start();
         let result = game.swap_seats(0, 1);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn version_strictly_increases_on_each_state_change_and_surfaces_in_the_dto() {
+        let mut game = two_human_game(Some("alice"));
+        let v_new = game.version;
+        game.start();
+        let v_start = game.version;
+        assert!(v_start > v_new, "start should bump the version");
+        game.apply_pass(0).expect("seat 0 is on turn after start");
+        let v_move = game.version;
+        assert!(v_move > v_start, "a move should bump the version");
+        // The DTO the client sees carries the current version.
+        assert_eq!(game.to_dto().version, game.version);
+        // A rejected action does not decrease it (monotonicity holds).
+        let _ = game.apply_pass(0); // out of turn now → error, no state change
+        assert!(game.version >= v_move);
     }
 
     #[test]

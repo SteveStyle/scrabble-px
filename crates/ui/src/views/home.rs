@@ -576,6 +576,7 @@ mod tests {
     ) -> GameStateDto {
         GameStateDto {
             id: "game-1".to_string(),
+            version: 0,
             status: GameStatus::Finished,
             creator_player_id: None,
             variant: "official".to_string(),

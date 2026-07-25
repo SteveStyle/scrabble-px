@@ -2918,6 +2918,7 @@ async fn expire_old_finished_games_deletes_stale_games_but_not_recent_ones() {
 fn empty_live_game_for_test(id: &str) -> GameStateDto {
     GameStateDto {
         id: id.to_string(),
+        version: 0,
         status: api::GameStatus::Waiting,
         creator_player_id: None,
         variant: "official".to_string(),

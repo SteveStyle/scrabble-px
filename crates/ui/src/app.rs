@@ -714,7 +714,7 @@ pub fn RootApp() -> Element {
                                                     Ok(joined) => {
                                                         info_message.set(None);
                                                         websocket_game_id.set(None);
-                                                        game.set(Some(joined));
+                                                        apply_game_update(game, joined);
                                                         if let Ok(summaries) = load_game_summaries(&server_url, token.as_deref()).await {
                                                             game_summaries.set(summaries);
                                                         }
@@ -776,7 +776,7 @@ pub fn RootApp() -> Element {
                                 match submit_chat_message(&server_url, &current_game, body, token.as_deref())
                                     .await
                                 {
-                                    Ok(updated) => game.set(Some(updated)),
+                                    Ok(updated) => apply_game_update(game, updated),
                                     Err(error) => error_message.set(Some(error)),
                                 }
                             });
@@ -802,7 +802,7 @@ pub fn RootApp() -> Element {
                                             exchange_selected,
                                             direction_override,
                                         );
-                                        game.set(Some(updated));
+                                        apply_game_update(game, updated);
                                         if let Ok(summaries) = load_game_summaries(&server_url, token.as_deref()).await {
                                             game_summaries.set(summaries);
                                         }
@@ -832,7 +832,7 @@ pub fn RootApp() -> Element {
                                         direction_override,
                                     );
                                     websocket_game_id.set(None);
-                                    game.set(Some(loaded));
+                                    apply_game_update(game, loaded);
                                 }
                                 Err(error) => error_message.set(Some(error)),
                             }
@@ -870,7 +870,7 @@ pub fn RootApp() -> Element {
                                     // open, `run_engine_turns` broadcasting after every
                                     // individual engine turn means they stream in live
                                     // while the request is still in flight.
-                                    game.set(Some(created.clone()));
+                                    apply_game_update(game, created.clone());
                                     // The games list only renders a detail panel (where
                                     // live moves would actually show up) for a game that
                                     // has a matching entry in `game_summaries` — without
@@ -893,7 +893,7 @@ pub fn RootApp() -> Element {
                                     match started {
                                         Ok(game_state) => {
                                             info_message.set(None);
-                                            game.set(Some(game_state));
+                                            apply_game_update(game, game_state);
                                             if let Ok(summaries) = load_game_summaries(&server_url, token.as_deref()).await {
                                                 game_summaries.set(summaries);
                                             }
@@ -916,7 +916,7 @@ pub fn RootApp() -> Element {
                                 Ok(joined) => {
                                     info_message.set(None);
                                     websocket_game_id.set(None);
-                                    game.set(Some(joined));
+                                    apply_game_update(game, joined);
                                     if let Ok(summaries) = load_game_summaries(&server_url, token.as_deref()).await {
                                         game_summaries.set(summaries);
                                     }
@@ -980,7 +980,7 @@ pub fn RootApp() -> Element {
                                 match swap_seats(&server_url, &current_game.id, seat_a, seat_b, token.as_deref())
                                     .await
                                 {
-                                    Ok(updated) => game.set(Some(updated)),
+                                    Ok(updated) => apply_game_update(game, updated),
                                     Err(error) => error_message.set(Some(error)),
                                 }
                                 is_loading.set(false);
@@ -1021,7 +1021,7 @@ pub fn RootApp() -> Element {
                                 match invite_player(&server_url, &current_game.id, seat_number, invited_display_name, invited_email, token.as_deref()).await {
                                     Ok(_) => {
                                         if let Ok(loaded) = load_game_by_id(&server_url, &current_game.id, token.as_deref()).await {
-                                            game.set(Some(loaded));
+                                            apply_game_update(game, loaded);
                                         }
                                     }
                                     Err(error) => error_message.set(Some(error)),
@@ -1046,7 +1046,7 @@ pub fn RootApp() -> Element {
                             )
                             .await
                             {
-                                Ok(updated) => game.set(Some(updated)),
+                                Ok(updated) => apply_game_update(game, updated),
                                 Err(error) => error_message.set(Some(error)),
                             }
                             is_loading.set(false);
@@ -1061,7 +1061,7 @@ pub fn RootApp() -> Element {
                                 is_loading.set(true);
                                 error_message.set(None);
                                 match remove_seat(&server_url, &current_game.id, seat_number, token.as_deref()).await {
-                                    Ok(updated) => game.set(Some(updated)),
+                                    Ok(updated) => apply_game_update(game, updated),
                                     Err(error) => error_message.set(Some(error)),
                                 }
                                 is_loading.set(false);
@@ -1077,7 +1077,7 @@ pub fn RootApp() -> Element {
                                 is_loading.set(true);
                                 error_message.set(None);
                                 match withdraw_from_seat(&server_url, &current_game.id, seat_number, token.as_deref()).await {
-                                    Ok(updated) => game.set(Some(updated)),
+                                    Ok(updated) => apply_game_update(game, updated),
                                     Err(error) => error_message.set(Some(error)),
                                 }
                                 is_loading.set(false);
@@ -1095,7 +1095,7 @@ pub fn RootApp() -> Element {
                                 match force_resign_seat(&server_url, &current_game.id, seat_number, token.as_deref()).await {
                                     Ok(updated) => {
                                         info_message.set(None);
-                                        game.set(Some(updated));
+                                        apply_game_update(game, updated);
                                         if let Ok(summaries) = load_game_summaries(&server_url, token.as_deref()).await {
                                             game_summaries.set(summaries);
                                         }
@@ -1117,7 +1117,7 @@ pub fn RootApp() -> Element {
                                 match abort_game(&server_url, &current_game.id, token.as_deref()).await {
                                     Ok(updated) => {
                                         info_message.set(None);
-                                        game.set(Some(updated));
+                                        apply_game_update(game, updated);
                                         if let Ok(summaries) = load_game_summaries(&server_url, token.as_deref()).await {
                                             game_summaries.set(summaries);
                                         }
@@ -1577,7 +1577,7 @@ pub fn RootApp() -> Element {
                                             exchange_selected,
                                             direction_override,
                                         );
-                                        game.set(Some(updated));
+                                        apply_game_update(game, updated);
                                         if let Ok(summaries) = load_game_summaries(&server_url, token.as_deref()).await {
                                             game_summaries.set(summaries);
                                         }
@@ -1609,7 +1609,7 @@ pub fn RootApp() -> Element {
                                             exchange_selected,
                                             direction_override,
                                         );
-                                        game.set(Some(updated));
+                                        apply_game_update(game, updated);
                                         if let Ok(summaries) = load_game_summaries(&server_url, token.as_deref()).await {
                                             game_summaries.set(summaries);
                                         }
@@ -1656,7 +1656,7 @@ pub fn RootApp() -> Element {
                                             exchange_selected,
                                             direction_override,
                                         );
-                                        game.set(Some(updated));
+                                        apply_game_update(game, updated);
                                         if let Ok(summaries) = load_game_summaries(&server_url, token.as_deref()).await {
                                             game_summaries.set(summaries);
                                         }
@@ -1729,7 +1729,7 @@ pub fn RootApp() -> Element {
                                             exchange_selected,
                                             direction_override,
                                         );
-                                        game.set(Some(updated));
+                                        apply_game_update(game, updated);
                                         if let Ok(summaries) = load_game_summaries(&server_url, token.as_deref()).await {
                                             game_summaries.set(summaries);
                                         }
@@ -1753,6 +1753,7 @@ pub fn RootApp() -> Element {
 fn empty_live_game() -> GameStateDto {
     GameStateDto {
         id: "not-connected".to_string(),
+        version: 0,
         status: GameStatus::Waiting,
         creator_player_id: None,
         variant: "official".to_string(),
@@ -2095,6 +2096,28 @@ fn update_hint_soft() -> &'static str {
     }
 }
 
+/// Apply an incoming full game snapshot to `signal`, dropping it if it's older
+/// than what's already shown. A different game id always applies; for the same
+/// game, only a strictly greater `version` wins. Full snapshots arrive from
+/// both the WebSocket and HTTP responses with no cross-source ordering
+/// guarantee, so this is the single choke point that keeps a late/stale one
+/// from clobbering a newer state (see `api::GameStateDto.version`).
+fn apply_game_update(mut signal: Signal<Option<GameStateDto>>, incoming: GameStateDto) {
+    if should_apply_update(signal.peek().as_ref(), &incoming) {
+        signal.set(Some(incoming));
+    }
+}
+
+/// The pure decision behind `apply_game_update` (unit-tested): a different game
+/// id always applies; for the same game only a strictly greater `version` wins;
+/// nothing currently shown means anything applies.
+fn should_apply_update(current: Option<&GameStateDto>, incoming: &GameStateDto) -> bool {
+    match current {
+        Some(current) => current.id != incoming.id || incoming.version > current.version,
+        None => true,
+    }
+}
+
 fn compare_api_version(server: api::ApiVersion, client: api::ApiVersion) -> VersionCheck {
     if server.major != client.major {
         VersionCheck::MajorMismatch { server, client }
@@ -2123,7 +2146,7 @@ async fn load_summaries_and_game(
     server_url: &str,
     token: Option<&str>,
     preferred_game_id: Option<String>,
-    mut game: Signal<Option<GameStateDto>>,
+    game: Signal<Option<GameStateDto>>,
     mut game_summaries: Signal<Vec<api::GameSummaryDto>>,
     mut info_message: Signal<Option<String>>,
     mut error_message: Signal<Option<String>>,
@@ -2161,7 +2184,7 @@ async fn load_summaries_and_game(
                             exchange_selected,
                             direction_override,
                         );
-                        game.set(Some(loaded));
+                        apply_game_update(game, loaded);
                     }
                     Err(error) => error_message.set(Some(error)),
                 },
@@ -2778,7 +2801,7 @@ async fn subscribe_to_game_events_impl(
     server_url: &str,
     game_id: &str,
     token: Option<&str>,
-    mut game_signal: Signal<Option<GameStateDto>>,
+    game_signal: Signal<Option<GameStateDto>>,
     websocket_game_id: Signal<Option<String>>,
 ) -> Result<(), String> {
     let ws_url = websocket_url(server_url, game_id, token)?;
@@ -2807,7 +2830,7 @@ async fn subscribe_to_game_events_impl(
             | GameEventDto::GameFinished { game } => game,
         };
         if updated.id == game_id {
-            game_signal.set(Some(updated));
+            apply_game_update(game_signal, updated);
         }
     }
 
@@ -2819,7 +2842,7 @@ async fn subscribe_to_game_events_impl(
     server_url: &str,
     game_id: &str,
     token: Option<&str>,
-    mut game_signal: Signal<Option<GameStateDto>>,
+    game_signal: Signal<Option<GameStateDto>>,
     websocket_game_id: Signal<Option<String>>,
 ) -> Result<(), String> {
     let ws_url = websocket_url(server_url, game_id, token)?;
@@ -2847,7 +2870,7 @@ async fn subscribe_to_game_events_impl(
             | GameEventDto::GameFinished { game } => game,
         };
         if updated.id == game_id {
-            game_signal.set(Some(updated));
+            apply_game_update(game_signal, updated);
         }
     }
 
@@ -3703,6 +3726,31 @@ mod tests {
     fn matching_version_is_compatible() {
         let v = api::ApiVersion { major: 1, minor: 2 };
         assert_eq!(compare_api_version(v, v), VersionCheck::Compatible);
+    }
+
+    #[test]
+    fn should_apply_update_drops_stale_keeps_newer_and_always_switches_games() {
+        let mut v5 = empty_live_game();
+        v5.id = "g".to_string();
+        v5.version = 5;
+        let mut v6 = v5.clone();
+        v6.version = 6;
+        let mut v4 = v5.clone();
+        v4.version = 4;
+
+        // Nothing shown yet → anything applies.
+        assert!(should_apply_update(None, &v5));
+        // Strictly newer version of the same game → apply.
+        assert!(should_apply_update(Some(&v5), &v6));
+        // Same version (a duplicate/echo) → drop.
+        assert!(!should_apply_update(Some(&v5), &v5));
+        // Older version (a late/out-of-order arrival) → drop.
+        assert!(!should_apply_update(Some(&v5), &v4));
+        // A different game id always applies, even at a lower version
+        // (switching games, not a stale update of the current one).
+        let mut other = v4.clone();
+        other.id = "other".to_string();
+        assert!(should_apply_update(Some(&v5), &other));
     }
 
     #[test]

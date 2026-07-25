@@ -150,6 +150,11 @@ struct PersistedGame {
         deserialize_with = "crate::game_state::deserialize_i64_flexible"
     )]
     turn_started_at: i64,
+    // Monotonic state version (see `GameSession.version`). `#[serde(default)]`
+    // → 0 for a snapshot written before this field existed; it just resumes
+    // incrementing from there on the next change.
+    #[serde(default)]
+    version: i64,
 }
 
 fn default_move_time_limit_seconds() -> u64 {
@@ -224,6 +229,7 @@ pub async fn save_game(pool: &Pool<Sqlite>, session: &GameSession) -> Result<(),
         consecutive_scoreless_turns: session.consecutive_scoreless_turns,
         move_time_limit_seconds: session.move_time_limit_seconds,
         turn_started_at: session.turn_started_at,
+        version: session.version,
     })
     .expect("game session should serialize");
 
@@ -411,6 +417,7 @@ pub async fn load_game(pool: &Pool<Sqlite>, id: &str) -> Result<Option<GameSessi
             consecutive_scoreless_turns: persisted.consecutive_scoreless_turns,
             move_time_limit_seconds: persisted.move_time_limit_seconds,
             turn_started_at: persisted.turn_started_at,
+            version: persisted.version,
         }
     }))
 }
