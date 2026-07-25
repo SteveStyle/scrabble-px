@@ -6479,3 +6479,49 @@ async fn display_name_login_and_uniqueness_are_case_insensitive() {
     .await;
     assert_eq!(dup.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn display_name_matching_is_unicode_case_insensitive() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state);
+
+    // An accented, mixed-case name, stored exactly as entered.
+    let jose = register_player(app.clone(), "José").await;
+    assert_eq!(jose.display_name, "José");
+
+    // A different case of the same accented name logs into the same account —
+    // ASCII-only NOCASE couldn't do this (it wouldn't fold É→é).
+    let login = send_json(
+        app.clone(),
+        Method::POST,
+        "/auth/login",
+        &LoginPlayerRequest {
+            display_name: "JOSÉ".to_string(),
+            password: "correct horse battery staple".to_string(),
+            stay_logged_in: false,
+        },
+    )
+    .await;
+    assert_eq!(login.status(), StatusCode::OK);
+    let logged_in: PlayerSessionDto = read_json(login).await;
+    assert_eq!(logged_in.player_id, jose.player_id);
+
+    // The same name spelled with a *decomposed* accent (e + combining acute)
+    // folds to the same value via NFC normalization, so registering it is
+    // rejected as already taken.
+    let decomposed = "jose\u{0301}";
+    let dup = send_json(
+        app,
+        Method::POST,
+        "/auth/register",
+        &RegisterPlayerRequest {
+            display_name: decomposed.to_string(),
+            email: "jose-alt@example.com".to_string(),
+            password: "correct horse battery staple".to_string(),
+            stay_logged_in: false,
+        },
+    )
+    .await;
+    assert_eq!(dup.status(), StatusCode::BAD_REQUEST);
+}

@@ -20,4 +20,7 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Unicode NFC normalization for case-insensitive display-name matching (see
+# persistence::fold_display_name) — so composed vs decomposed accents match.
+unicode-normalization = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }

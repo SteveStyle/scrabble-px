@@ -541,14 +541,20 @@ pub async fn update_player_details(
     email: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
     let now = now_unix_seconds();
+    // Keep the folded column in step with any display-name change (it's what
+    // login/uniqueness match on — see `fold_display_name`). Folded in Rust and
+    // passed as its own bind, since SQLite can't compute the Unicode fold.
+    let folded = display_name.map(fold_display_name);
     let result = sqlx::query(
         "update players
          set display_name = coalesce(?1, display_name),
-             email = coalesce(?2, email),
-             updated_at = ?3
-         where id = ?4",
+             display_name_folded = coalesce(?2, display_name_folded),
+             email = coalesce(?3, email),
+             updated_at = ?4
+         where id = ?5",
     )
     .bind(display_name)
+    .bind(folded)
     .bind(email)
     .bind(now)
     .bind(player_id)
@@ -693,11 +699,12 @@ pub async fn create_player(
 ) -> Result<PlayerRecord, sqlx::Error> {
     let now = now_unix_seconds();
     sqlx::query(
-        "insert into players (id, display_name, email, password_hash, created_at, updated_at)
-         values (?1, ?2, ?3, ?4, ?5, ?6)",
+        "insert into players (id, display_name, display_name_folded, email, password_hash, created_at, updated_at)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
     )
     .bind(id)
     .bind(display_name)
+    .bind(fold_display_name(display_name))
     .bind(email)
     .bind(password_hash)
     .bind(now)
@@ -716,12 +723,24 @@ pub async fn create_player(
     })
 }
 
-/// Case-**insensitive** lookup by display name (`collate nocase`), so a player
-/// logs in as "alice"/"ALICE"/"Alice" interchangeably. The name is still stored
-/// and shown exactly as entered at registration — only the *match* is folded.
-/// This one function backs login, the registration "already taken" check, and
-/// the update-details check, so all three treat the name case-insensitively;
-/// the `idx_players_display_name_nocase` unique index (migration 0005) is the
+/// Fold a display name for case-insensitive, Unicode-aware matching:
+/// NFC-normalize (so composed vs decomposed accents — `é` vs `e`+`◌́` — match)
+/// then lowercase (Rust's `to_lowercase` is Unicode-aware, unlike SQLite's
+/// ASCII-only `lower()`/`NOCASE`). The result is stored in
+/// `players.display_name_folded` and compared against; the original-case name
+/// stays in `display_name` for display. This is why matching must go through
+/// this fn on both the write and the lookup side — never a bare SQL compare.
+pub(crate) fn fold_display_name(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    name.nfc().collect::<String>().to_lowercase()
+}
+
+/// Case-**insensitive** lookup by display name, Unicode-aware (see
+/// `fold_display_name`), so a player logs in as "alice"/"ALICE"/"José"/"josé"
+/// interchangeably. The name is still stored and shown exactly as entered —
+/// only the *match* is folded. Backs login, the registration "already taken"
+/// check, and the update-details check, so all three fold identically; the
+/// `idx_players_display_name_folded` unique index (migration 0006) is the
 /// matching DB-level guarantee against a case-variant slipping in via a race.
 pub async fn get_player_by_name(
     pool: &Pool<Sqlite>,
@@ -729,9 +748,9 @@ pub async fn get_player_by_name(
 ) -> Result<Option<PlayerRecord>, sqlx::Error> {
     let row = sqlx::query(
         "select id, display_name, email, password_hash, created_at, updated_at, last_seen_at
-         from players where display_name = ?1 collate nocase",
+         from players where display_name_folded = ?1",
     )
-    .bind(display_name)
+    .bind(fold_display_name(display_name))
     .fetch_optional(pool)
     .await?;
 
