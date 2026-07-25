@@ -6525,3 +6525,35 @@ async fn display_name_matching_is_unicode_case_insensitive() {
     .await;
     assert_eq!(dup.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn a_player_can_resign_on_another_players_turn() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state);
+
+    let started = create_two_human_game(app.clone()).await;
+    assert_eq!(started.game.current_seat, 0, "it's Alice's (seat 0) turn");
+
+    // Bob (seat 1) resigns even though it's not his turn — allowed now, unlike
+    // a place/pass/exchange move.
+    let resp = send_json_auth(
+        app,
+        Method::POST,
+        &format!("/games/{}/actions", started.game.id),
+        Some(&started.bob.session_token),
+        &api::GameActionRequest {
+            seat_number: 1,
+            action: api::PlayerActionDto::Resign,
+        },
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let updated: GameStateDto = read_json(resp).await;
+    assert!(updated.participants[1].resigned);
+    // Two-player game: with Bob out, Alice is the lone active seat, so the game
+    // finishes with her as winner — and it's a "resign", not a "force_resign".
+    assert_eq!(updated.status, api::GameStatus::Finished);
+    assert_eq!(updated.winner_seat, Some(0));
+    assert_eq!(updated.moves.last().unwrap().move_type, "resign");
+}

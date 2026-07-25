@@ -435,6 +435,15 @@ pub fn RootApp() -> Element {
     // after the fact.
     let viewer_rack_seat = viewer_rack_seat(&game_for_view, viewer_player_id.as_deref());
     let can_view_rack = viewer_rack_seat.is_some();
+    // Resigning isn't turn-gated (see `GameSession::apply_resign`): whoever
+    // controls a live, not-yet-resigned seat can give up even on another
+    // player's turn. `viewer_rack_seat` is exactly that seat — the viewer's own
+    // claimed seat, or the current unclaimed seat in anonymous play.
+    let can_resign = IS_ONLINE()
+        && game_for_view.status == GameStatus::Active
+        && viewer_rack_seat
+            .and_then(|seat| game_for_view.participants.get(seat))
+            .is_some_and(|participant| !participant.resigned);
     // `None` unless this game just moved the viewer's own rating — either
     // it's still in progress, this ending skipped rating (timeout/forced
     // resignation/admin force-end), or the viewer holds no seat here at
@@ -1588,16 +1597,17 @@ pub fn RootApp() -> Element {
                             });
                         }
                     },
-                    can_resign: can_submit_human_action && !exchange_mode(),
+                    can_resign: can_resign && !exchange_mode(),
                     on_resign: move |_| {
                         let server_url = server_url_for_resign.clone();
                         let current_game = game().clone();
                         let token = session().map(|current| current.session_token.clone());
-                        if let Some(current_game) = current_game {
+                        let resign_seat = viewer_rack_seat;
+                        if let (Some(current_game), Some(seat)) = (current_game, resign_seat) {
                             spawn(async move {
                                 is_loading.set(true);
                                 error_message.set(None);
-                                match submit_resign(&server_url, &current_game, token.as_deref()).await {
+                                match submit_resign(&server_url, &current_game, seat as u8, token.as_deref()).await {
                                     Ok(updated) => {
                                         info_message.set(None);
                                         reset_composer_state(
@@ -2424,10 +2434,14 @@ async fn submit_chat_message(
 async fn submit_resign(
     server_url: &str,
     game: &GameStateDto,
+    seat_number: u8,
     token: Option<&str>,
 ) -> Result<GameStateDto, String> {
+    // The viewer's *own* seat, not `current_seat` — resigning isn't turn-gated,
+    // so on another player's turn this must still be the resigner's seat (the
+    // server rejects acting on a seat you don't own).
     let request = GameActionRequest {
-        seat_number: game.current_seat,
+        seat_number,
         action: api::PlayerActionDto::Resign,
     };
     post_json(

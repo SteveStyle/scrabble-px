@@ -817,7 +817,22 @@ impl GameSession {
     }
 
     pub fn apply_resign(&mut self, seat_number: u8) -> Result<(), String> {
-        ensure_active_turn(self, seat_number)?;
+        // A player may resign at any time, not only on their own turn — unlike
+        // a scoring/pass/exchange move (which `ensure_active_turn` gates),
+        // giving up doesn't require the turn. Same effect and `move_type`
+        // ("resign") as before, so rating still treats it as a voluntary
+        // resignation (distinct from the creator's `force_resign`). Ownership —
+        // that the caller holds this seat — is enforced by the handler.
+        if self.status != GameStatus::Active {
+            return Err("The game must be active to resign".to_string());
+        }
+        let participant = self
+            .participants
+            .get(seat_number as usize)
+            .ok_or_else(|| format!("Unknown seat {seat_number}"))?;
+        if participant.resigned {
+            return Err("That seat has already resigned".to_string());
+        }
         self.finish_via_resignation(seat_number, "resign", "resigned")
     }
 
