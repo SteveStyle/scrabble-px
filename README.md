@@ -17,10 +17,11 @@ that survive closing the tab and turns that can be taken days apart.
   to a named player, opened to anyone signed in, or emailed as a join link
   to somebody with no account yet. The creator can reorder, add and remove
   seats until the game starts.
-- **Four editions and four dictionaries.** `official`, `wordfeud` and
-  `north_american` board/tile rules; SOWPODS, ENABLE2K, German and Spanish
-  word lists — including proper support for Spanish's CH/LL/RR digraph
-  tiles, which occupy one square but display two letters.
+- **Five editions and four dictionaries.** `official`, `wordfeud`,
+  `north_american`, `german` and `spanish` board/tile rules; SOWPODS,
+  ENABLE2K, German and Spanish word lists — including proper support for
+  Spanish's CH/LL/RR digraph tiles, which occupy one square but display two
+  letters.
 - **Bots as first-class players.** Engines plug in behind a `GameEngine`
   trait and go through the same validation path as a human's move. They're
   rated on the same ladder as human players.
