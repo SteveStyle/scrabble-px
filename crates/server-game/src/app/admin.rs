@@ -18,22 +18,11 @@ pub(crate) async fn require_loopback(
 
 pub(crate) async fn admin_list_users(
     State(state): State<AppState>,
-) -> Result<Json<Vec<PlayerDto>>, ApiProblem> {
-    let players = persistence::list_players(&state.db)
+) -> Result<Json<Vec<api::AdminPlayerSummaryDto>>, ApiProblem> {
+    let players = persistence::list_player_summaries(&state.db)
         .await
         .map_err(ApiProblem::from_sqlx)?;
-    Ok(Json(
-        players
-            .into_iter()
-            .map(|player| PlayerDto {
-                id: player.id,
-                display_name: player.display_name,
-                email: player.email,
-                created_at: player.created_at,
-                last_seen_at: player.last_seen_at,
-            })
-            .collect(),
-    ))
+    Ok(Json(players))
 }
 
 pub(crate) async fn admin_delete_user(

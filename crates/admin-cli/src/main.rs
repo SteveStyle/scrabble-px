@@ -10,8 +10,13 @@
 //! anything other than the server's own loopback address and every request
 //! will be rejected with 403, by design (see `require_loopback` in
 //! `server-game`).
+//!
+//! Output is a plain aligned table by default and machine-readable JSON
+//! under `--json` — the server's own DTOs, re-serialized, so a script gets
+//! the full record rather than whatever the table had room for.
 
 use clap::{Parser, Subcommand};
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Parser)]
 #[command(
@@ -27,6 +32,11 @@ struct Cli {
         default_value = "http://127.0.0.1:3000"
     )]
     server: String,
+
+    /// Emit JSON instead of a table — the server's own records, unabridged,
+    /// for piping into `jq` or a script.
+    #[arg(long, global = true)]
+    json: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -48,11 +58,12 @@ enum Command {
 
 #[derive(Subcommand)]
 enum UsersAction {
-    /// List all registered users.
+    /// List all registered users, newest first, with their rating.
     List,
-    /// Delete a user. Their past games are kept, with the seat unclaimed
-    /// rather than deleted, so game history and other players' records
-    /// survive.
+    /// Delete a user, along with their sessions, invitations, password-reset
+    /// tokens and rating history. Their past games are kept, with the seat
+    /// unclaimed rather than deleted, so game history and other players'
+    /// records survive.
     Delete { player_id: String },
     /// Reset a user's password. Prints the new password if you don't
     /// supply one — there's no email flow to deliver it any other way.
@@ -67,27 +78,30 @@ enum UsersAction {
 enum GamesAction {
     /// List games, optionally filtered by status and/or age.
     List {
-        /// waiting | active | finished
+        /// waiting | active | finished | aborted
         #[arg(long)]
         status: Option<String>,
         /// Only games created at least this many days ago.
         #[arg(long)]
         older_than_days: Option<i64>,
     },
-    /// Delete a game and all its moves/participants/invitations.
+    /// Delete a game and all its moves, chat, participants, invitations and
+    /// rating history.
     Delete { game_id: String },
     /// Mark a stuck or abandoned game Finished without going through
-    /// per-seat resignation. Doesn't touch scores.
+    /// per-seat resignation. Doesn't touch scores. Refused for a game that
+    /// has already finished or been aborted.
     ForceEnd { game_id: String },
 }
 
 fn main() {
     let cli = Cli::parse();
     let client = reqwest::blocking::Client::new();
+    let output = Output { json: cli.json };
 
     let result = match cli.command {
-        Command::Users { action } => run_users(&client, &cli.server, action),
-        Command::Games { action } => run_games(&client, &cli.server, action),
+        Command::Users { action } => run_users(&client, &cli.server, output, action),
+        Command::Games { action } => run_games(&client, &cli.server, output, action),
     };
 
     if let Err(error) = result {
@@ -96,14 +110,36 @@ fn main() {
     }
 }
 
+/// Whether this invocation is talking to a human or to a script. Threaded
+/// through rather than read from a global so each command states which one
+/// it's rendering for.
+#[derive(Clone, Copy)]
+struct Output {
+    json: bool,
+}
+
+impl Output {
+    /// Renders a successful mutation. The JSON form is an object rather
+    /// than a bare string so a caller can add fields later without
+    /// breaking whatever is parsing it.
+    fn confirm(self, human: &str, machine: serde_json::Value) {
+        if self.json {
+            println!("{machine}");
+        } else {
+            println!("{human}");
+        }
+    }
+}
+
 fn run_users(
     client: &reqwest::blocking::Client,
     server: &str,
+    output: Output,
     action: UsersAction,
 ) -> Result<(), String> {
     match action {
         UsersAction::List => {
-            let users: Vec<api::PlayerDto> = check_response(
+            let users: Vec<api::AdminPlayerSummaryDto> = check_response(
                 client
                     .get(format!("{server}/admin/users"))
                     .send()
@@ -111,20 +147,45 @@ fn run_users(
             )?
             .json()
             .map_err(fmt_err)?;
+            if output.json {
+                print_json(&users)?;
+                return Ok(());
+            }
             if users.is_empty() {
                 println!("No users.");
                 return Ok(());
             }
-            for user in users {
-                println!(
-                    "{}  {:<20}  {:<30}  last seen: {}",
-                    user.id,
-                    user.display_name,
-                    user.email,
-                    user.last_seen_at
-                        .map_or_else(|| "never".to_string(), format_timestamp)
-                );
-            }
+            print_table(
+                &[
+                    "ID",
+                    "NAME",
+                    "EMAIL",
+                    "RATING",
+                    "GAMES",
+                    "CREATED (UTC)",
+                    "LAST SEEN (UTC)",
+                ],
+                users
+                    .iter()
+                    .map(|user| {
+                        vec![
+                            user.id.clone(),
+                            user.display_name.clone(),
+                            user.email.clone(),
+                            // An unrated account reads as "-", not as 1500:
+                            // "has never finished a rated game" and "is rated,
+                            // and sits at the starting value" are different
+                            // facts about an account.
+                            user.rating
+                                .map_or_else(|| "-".to_string(), |rating| format!("{rating:.0}")),
+                            user.games_rated.to_string(),
+                            format_timestamp(user.created_at),
+                            user.last_seen_at
+                                .map_or_else(|| "never".to_string(), format_timestamp),
+                        ]
+                    })
+                    .collect(),
+            );
         }
         UsersAction::Delete { player_id } => {
             check_response(
@@ -133,7 +194,10 @@ fn run_users(
                     .send()
                     .map_err(fmt_err)?,
             )?;
-            println!("Deleted user {player_id}.");
+            output.confirm(
+                &format!("Deleted user {player_id}."),
+                serde_json::json!({ "deleted": true, "player_id": player_id }),
+            );
         }
         UsersAction::ResetPassword {
             player_id,
@@ -149,8 +213,10 @@ fn run_users(
                     .send()
                     .map_err(fmt_err)?,
             )?;
-            println!("Password reset for {player_id}.");
-            println!("New password: {new_password}");
+            output.confirm(
+                &format!("Password reset for {player_id}.\nNew password: {new_password}"),
+                serde_json::json!({ "player_id": player_id, "new_password": new_password }),
+            );
         }
     }
     Ok(())
@@ -159,6 +225,7 @@ fn run_users(
 fn run_games(
     client: &reqwest::blocking::Client,
     server: &str,
+    output: Output,
     action: GamesAction,
 ) -> Result<(), String> {
     match action {
@@ -180,26 +247,35 @@ fn run_games(
                 check_response(request.send().map_err(fmt_err)?)?
                     .json()
                     .map_err(fmt_err)?;
+            if output.json {
+                print_json(&games)?;
+                return Ok(());
+            }
             if games.is_empty() {
                 println!("No games match.");
                 return Ok(());
             }
-            for game in games {
-                let players = game
-                    .participants
+            print_table(
+                &[
+                    "ID",
+                    "STATUS",
+                    "CREATED (UTC)",
+                    "LAST ACTIVITY (UTC)",
+                    "SEATS",
+                ],
+                games
                     .iter()
-                    .map(|participant| participant.display_name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" vs ");
-                println!(
-                    "{}  {:<9}  created: {:<20}  last activity: {:<20}  {}",
-                    game.id,
-                    format!("{:?}", game.status).to_lowercase(),
-                    format_timestamp(game.created_at),
-                    format_timestamp(game.last_activity_at),
-                    players
-                );
-            }
+                    .map(|game| {
+                        vec![
+                            game.id.clone(),
+                            format!("{:?}", game.status).to_lowercase(),
+                            format_timestamp(game.created_at),
+                            format_timestamp(game.last_activity_at),
+                            describe_seats(game),
+                        ]
+                    })
+                    .collect(),
+            );
         }
         GamesAction::Delete { game_id } => {
             check_response(
@@ -208,38 +284,153 @@ fn run_games(
                     .send()
                     .map_err(fmt_err)?,
             )?;
-            println!("Deleted game {game_id}.");
+            output.confirm(
+                &format!("Deleted game {game_id}."),
+                serde_json::json!({ "deleted": true, "game_id": game_id }),
+            );
         }
         GamesAction::ForceEnd { game_id } => {
-            check_response(
+            // The server returns the whole finished game, not just a status
+            // code — worth showing, since the scores are the one thing an
+            // operator wants to see after ending a game by hand.
+            let finished: api::GameStateDto = check_response(
                 client
                     .post(format!("{server}/admin/games/{game_id}/force-end"))
                     .send()
                     .map_err(fmt_err)?,
-            )?;
+            )?
+            .json()
+            .map_err(fmt_err)?;
+            if output.json {
+                print_json(&finished)?;
+                return Ok(());
+            }
             println!("Game {game_id} marked finished.");
+            println!("Final scores: {}", describe_final_scores(&finished));
         }
     }
     Ok(())
 }
 
-/// Renders one of the server's timestamps — seconds since the Unix epoch
-/// (`game_state::now_unix_seconds`) — as a readable UTC date-time.
+/// One line describing who is in a game and how they're doing, for the
+/// listing's last column. Everything here comes from data the summary
+/// already carried and the old listing discarded — an unclaimed seat used
+/// to be indistinguishable from a player named "Open seat", a bot from a
+/// human, and a resigned seat from one still playing, which is precisely
+/// what an operator is looking at this listing to find out.
 ///
-/// Always UTC, spelled out on every row rather than converted to the
-/// operator's local time. This is a server-side tool: the machine it runs on
-/// is the deployment VM, whose local time is an accident of provisioning and
-/// not something to silently reinterpret timestamps through. It also has to
+/// Scores are shown only once a game has started: every seat in a `Waiting`
+/// game reads `0`, which is a column of noise rather than information.
+fn describe_seats(game: &api::AdminGameSummaryDto) -> String {
+    let show_scores = game.status != api::GameStatus::Waiting;
+    let mut seats: Vec<&api::ParticipantDto> = game.participants.iter().collect();
+    seats.sort_by_key(|seat| seat.seat_number);
+    seats
+        .iter()
+        .map(|seat| {
+            let mut cell = seat.display_name.clone();
+            match seat.kind {
+                api::SeatKind::Engine => cell.push_str(" [bot]"),
+                api::SeatKind::Human if seat.player_id.is_none() => cell.push_str(" [unclaimed]"),
+                api::SeatKind::Human => {}
+            }
+            if seat.resigned {
+                cell.push_str(" [out]");
+            }
+            if show_scores {
+                cell.push_str(&format!(" {}", seat.score));
+            }
+            cell
+        })
+        .collect::<Vec<_>>()
+        .join(" vs ")
+}
+
+fn describe_final_scores(game: &api::GameStateDto) -> String {
+    let mut seats: Vec<&api::ParticipantDto> = game.participants.iter().collect();
+    seats.sort_by_key(|seat| seat.seat_number);
+    seats
+        .iter()
+        .map(|seat| format!("{} {}", seat.display_name, seat.score))
+        .collect::<Vec<_>>()
+        .join(" vs ")
+}
+
+/// Prints rows under headers, padding each column to its widest cell. Fixed
+/// widths were a guess that real data outgrew constantly — an e2e test
+/// account's name and email both overflow any reasonable constant, and once
+/// one cell overflows every column after it on that row is misaligned.
+///
+/// Width is measured in terminal columns, not `char`s (see `unicode-width`
+/// in `Cargo.toml`), and the last column is never padded — trailing spaces
+/// on every line serve nobody.
+fn print_table(headers: &[&str], rows: Vec<Vec<String>>) {
+    let widths: Vec<usize> = headers
+        .iter()
+        .enumerate()
+        .map(|(column, header)| {
+            rows.iter()
+                .filter_map(|row| row.get(column))
+                .map(|cell| cell.width())
+                .chain(std::iter::once(header.width()))
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+
+    let render = |cells: &[String]| {
+        let last = cells.len().saturating_sub(1);
+        let line: String = cells
+            .iter()
+            .enumerate()
+            .map(|(column, cell)| {
+                if column == last {
+                    cell.clone()
+                } else {
+                    let padding = widths[column].saturating_sub(cell.width());
+                    format!("{cell}{}  ", " ".repeat(padding))
+                }
+            })
+            .collect();
+        println!("{line}");
+    };
+
+    render(
+        &headers
+            .iter()
+            .map(|header| (*header).to_string())
+            .collect::<Vec<_>>(),
+    );
+    for row in &rows {
+        render(row);
+    }
+}
+
+fn print_json<T: serde::Serialize>(value: &T) -> Result<(), String> {
+    let rendered = serde_json::to_string_pretty(value)
+        .map_err(|error| format!("could not render: {error}"))?;
+    println!("{rendered}");
+    Ok(())
+}
+
+/// Renders one of the server's timestamps — seconds since the Unix epoch
+/// (`game_state::now_unix_seconds`) — as a readable date-time.
+///
+/// Always UTC, which the column header states once rather than every row
+/// repeating it. This is a server-side tool: the machine it runs on is the
+/// deployment VM, whose local time is an accident of provisioning and not
+/// something to silently reinterpret timestamps through. It also has to
 /// line up with `--older-than-days`, which the server evaluates in absolute
 /// seconds, and with the raw values in the database when someone goes
-/// looking there.
+/// looking there. (`--json` sidesteps the question entirely: it emits the
+/// epoch seconds the server actually sent.)
 ///
 /// Falls back to the bare integer if the value can't be a real date, so an
 /// impossible timestamp still shows the operator what's actually stored
 /// instead of a blank or a lie.
 fn format_timestamp(epoch_seconds: i64) -> String {
     chrono::DateTime::from_timestamp(epoch_seconds, 0)
-        .map(|moment| moment.format("%Y-%m-%d %H:%M UTC").to_string())
+        .map(|moment| moment.format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_else(|| epoch_seconds.to_string())
 }
 
@@ -280,15 +471,52 @@ fn generate_password() -> String {
 mod tests {
     use super::*;
 
+    fn seat(
+        seat_number: u8,
+        display_name: &str,
+        kind: api::SeatKind,
+        claimed: bool,
+        resigned: bool,
+        score: i32,
+    ) -> api::ParticipantDto {
+        api::ParticipantDto {
+            seat_number,
+            kind,
+            display_name: display_name.to_string(),
+            player_id: claimed.then(|| "player-id".to_string()),
+            engine_id: None,
+            score,
+            rating_before: None,
+            rating_after: None,
+            current_rating: None,
+            invitation_status: None,
+            invited_email: None,
+            resigned,
+        }
+    }
+
+    fn game(
+        status: api::GameStatus,
+        participants: Vec<api::ParticipantDto>,
+    ) -> api::AdminGameSummaryDto {
+        api::AdminGameSummaryDto {
+            id: "game-id".to_string(),
+            status,
+            created_at: 0,
+            last_activity_at: 0,
+            participants,
+        }
+    }
+
     #[test]
     fn formats_an_epoch_second_as_a_utc_date_time() {
         // 2026-07-26 13:52:02 UTC — the timestamp of commit 8975493.
-        assert_eq!(format_timestamp(1_785_073_922), "2026-07-26 13:52 UTC");
+        assert_eq!(format_timestamp(1_785_073_922), "2026-07-26 13:52");
     }
 
     #[test]
     fn formats_the_epoch_itself() {
-        assert_eq!(format_timestamp(0), "1970-01-01 00:00 UTC");
+        assert_eq!(format_timestamp(0), "1970-01-01 00:00");
     }
 
     /// Timestamps are `i64` on the wire, so a negative one is representable
@@ -296,7 +524,7 @@ mod tests {
     /// date rather than falling through to the raw-integer branch.
     #[test]
     fn formats_a_pre_epoch_timestamp() {
-        assert_eq!(format_timestamp(-1), "1969-12-31 23:59 UTC");
+        assert_eq!(format_timestamp(-1), "1969-12-31 23:59");
     }
 
     /// The fallback: `i64::MAX` seconds is far outside any representable
@@ -304,5 +532,55 @@ mod tests {
     #[test]
     fn falls_back_to_the_raw_value_when_it_cannot_be_a_date() {
         assert_eq!(format_timestamp(i64::MAX), i64::MAX.to_string());
+    }
+
+    /// The distinctions the old name-only rendering threw away: a bot reads
+    /// as a bot, a seat nobody has claimed reads as unclaimed rather than as
+    /// a player who happens to be called "Open seat", and a seat that's left
+    /// the game reads as out.
+    #[test]
+    fn seat_summary_marks_bots_unclaimed_seats_and_resignations() {
+        let summary = describe_seats(&game(
+            api::GameStatus::Active,
+            vec![
+                seat(0, "Alice", api::SeatKind::Human, true, false, 130),
+                seat(1, "Bob", api::SeatKind::Human, true, true, 88),
+                seat(2, "Open seat", api::SeatKind::Human, false, false, 0),
+                seat(3, "Greedy", api::SeatKind::Engine, false, false, 155),
+            ],
+        ));
+        assert_eq!(
+            summary,
+            "Alice 130 vs Bob [out] 88 vs Open seat [unclaimed] 0 vs Greedy [bot] 155"
+        );
+    }
+
+    /// Every seat in a game that hasn't started scores zero, so the column
+    /// would be pure noise.
+    #[test]
+    fn seat_summary_omits_scores_before_a_game_starts() {
+        let summary = describe_seats(&game(
+            api::GameStatus::Waiting,
+            vec![
+                seat(0, "Alice", api::SeatKind::Human, true, false, 0),
+                seat(1, "Open seat", api::SeatKind::Human, false, false, 0),
+            ],
+        ));
+        assert_eq!(summary, "Alice vs Open seat [unclaimed]");
+    }
+
+    /// Seats render in turn order regardless of the order the server
+    /// happened to serialize them in.
+    #[test]
+    fn seat_summary_is_ordered_by_seat_number() {
+        let summary = describe_seats(&game(
+            api::GameStatus::Active,
+            vec![
+                seat(2, "Carol", api::SeatKind::Human, true, false, 3),
+                seat(0, "Alice", api::SeatKind::Human, true, false, 1),
+                seat(1, "Bob", api::SeatKind::Human, true, false, 2),
+            ],
+        ));
+        assert_eq!(summary, "Alice 1 vs Bob 2 vs Carol 3");
     }
 }

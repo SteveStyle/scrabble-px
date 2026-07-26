@@ -499,24 +499,41 @@ pub async fn created_at_by_game(
 
 // ========== Admin Functions ==========
 
-pub async fn list_players(pool: &Pool<Sqlite>) -> Result<Vec<PlayerRecord>, sqlx::Error> {
+/// Every account, newest first, joined to its rating row. A `left join`
+/// rather than an inner one: `player_ratings` only has a row once a subject
+/// has finished a rated game, and an operator listing that quietly omitted
+/// every account that hasn't played yet would be worse than useless — those
+/// are exactly the rows worth looking at. An unrated account comes back with
+/// `rating: None` and `games_rated: 0`.
+///
+/// Returns the DTO directly rather than a `PlayerRecord`: this is the only
+/// caller, the shape is a join across two tables that no record type
+/// mirrors, and `PlayerRecord` carries a `password_hash` this has no reason
+/// to read.
+pub async fn list_player_summaries(
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<api::AdminPlayerSummaryDto>, sqlx::Error> {
     let rows = sqlx::query(
-        "select id, display_name, email, password_hash, created_at, updated_at, last_seen_at
-         from players order by created_at desc",
+        "select p.id, p.display_name, p.email, p.created_at, p.last_seen_at,
+                r.rating, coalesce(r.games_rated, 0)
+         from players p
+         left join player_ratings r
+             on r.subject_kind = 'player' and r.subject_id = p.id
+         order by p.created_at desc",
     )
     .fetch_all(pool)
     .await?;
 
     Ok(rows
         .into_iter()
-        .map(|r| PlayerRecord {
+        .map(|r| api::AdminPlayerSummaryDto {
             id: r.get(0),
             display_name: r.get(1),
             email: r.get(2),
-            password_hash: r.get(3),
-            created_at: r.get(4),
-            updated_at: r.get(5),
-            last_seen_at: r.get(6),
+            created_at: r.get(3),
+            last_seen_at: r.get(4),
+            rating: r.get(5),
+            games_rated: r.get(6),
         })
         .collect())
 }

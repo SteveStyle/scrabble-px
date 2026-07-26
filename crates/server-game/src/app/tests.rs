@@ -4537,7 +4537,7 @@ async fn admin_can_list_and_delete_users() {
     )
     .await;
 
-    let listed: Vec<PlayerDto> = read_json(
+    let listed: Vec<api::AdminPlayerSummaryDto> = read_json(
         send_admin::<()>(
             app.clone(),
             Method::GET,
@@ -4560,7 +4560,7 @@ async fn admin_can_list_and_delete_users() {
     .await;
     assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
 
-    let listed_after: Vec<PlayerDto> =
+    let listed_after: Vec<api::AdminPlayerSummaryDto> =
         read_json(send_admin::<()>(app, Method::GET, "/admin/users", loopback_peer(), None).await)
             .await;
     assert!(
@@ -4692,7 +4692,7 @@ async fn admin_can_reset_a_password() {
     // silently succeeding.
     assert_eq!(reset_response.status(), StatusCode::NOT_FOUND);
 
-    let listed: Vec<PlayerDto> = read_json(
+    let listed: Vec<api::AdminPlayerSummaryDto> = read_json(
         send_admin::<()>(
             app.clone(),
             Method::GET,
@@ -4924,6 +4924,52 @@ async fn admin_force_end_rejects_a_game_that_has_already_ended() {
     )
     .await;
     assert_eq!(second.status(), StatusCode::BAD_REQUEST);
+}
+
+/// The listing left-joins `player_ratings`, so an account that has never
+/// finished a rated game still appears — with `rating: None` rather than
+/// the 1500 `PlayerStatsDto` reports, since "never played" and "played and
+/// sits at the starting value" are different facts about an account, and an
+/// inner join would have hidden exactly the rows an operator is hunting for.
+#[tokio::test]
+async fn admin_user_listing_carries_rating_and_still_lists_unrated_accounts() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    let rated = register_player(app.clone(), "Rated").await;
+    let unrated = register_player(app.clone(), "Unrated").await;
+
+    sqlx::query(
+        "insert into player_ratings (subject_kind, subject_id, rating, games_rated, updated_at)
+         values ('player', ?1, 1612.5, 7, ?2)",
+    )
+    .bind(&rated.player_id)
+    .bind(now_unix_seconds())
+    .execute(&state.db)
+    .await
+    .expect("rating insert should succeed");
+
+    let listed: Vec<api::AdminPlayerSummaryDto> =
+        read_json(send_admin::<()>(app, Method::GET, "/admin/users", loopback_peer(), None).await)
+            .await;
+
+    let rated_row = listed
+        .iter()
+        .find(|user| user.id == rated.player_id)
+        .expect("the rated account should be listed");
+    assert_eq!(rated_row.rating, Some(1612.5));
+    assert_eq!(rated_row.games_rated, 7);
+
+    let unrated_row = listed
+        .iter()
+        .find(|user| user.id == unrated.player_id)
+        .expect("an unrated account must still be listed");
+    assert_eq!(
+        unrated_row.rating, None,
+        "unrated must be distinguishable from rated-at-1500"
+    );
+    assert_eq!(unrated_row.games_rated, 0);
 }
 
 /// `player_ratings`/`rating_history`/`password_reset_tokens` are keyed by

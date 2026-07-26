@@ -16,7 +16,15 @@ use serde::{Deserialize, Serialize};
 /// binary's own `app_version()`.
 // 2.0: every timestamp DTO field changed from a `String` (unix seconds as
 // text) to a plain `i64` — a breaking wire change, hence the major bump.
-pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 3 };
+// 2.4: `GET /admin/users` returns `AdminPlayerSummaryDto` instead of
+// `PlayerDto`, to carry rating alongside the account. Minor, not major,
+// despite being a changed response type: `/admin/*` is loopback-only with
+// exactly one client — `tile-lite-elite-admin`, built from this same tree
+// and shipped in the same container — so no player-facing client can be
+// running against a server it disagrees with. A major bump here would
+// instead fire the web client's version-skew reload for a change it can't
+// even observe.
+pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 4 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApiVersion {
@@ -601,6 +609,28 @@ pub struct InvitationPreviewDto {
 // per-request auth beyond "you're running on the same machine as the
 // server," so these types intentionally aren't reachable by the ordinary
 // player-facing clients.
+
+/// One row of the admin user listing: the account record, plus the rating
+/// subsystem's view of it. Distinct from `PlayerDto` (which
+/// `/auth/validate` returns to the player themselves) because rating is an
+/// operator-facing join, not part of a player's own identity payload —
+/// a player reads their rating from `/players/{id}/stats` instead.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AdminPlayerSummaryDto {
+    pub id: String,
+    pub display_name: String,
+    pub email: String,
+    pub created_at: i64,
+    pub last_seen_at: Option<i64>,
+    /// `None` — not 1500 — for an account that has never finished a rated
+    /// game, so the listing can distinguish "unrated" from "rated and sits
+    /// exactly at the starting value". `PlayerStatsDto` deliberately makes
+    /// the opposite choice (1500 for everyone) because it answers "what is
+    /// this player's rating", where an operator listing answers "has this
+    /// account ever actually played".
+    pub rating: Option<f64>,
+    pub games_rated: i64,
+}
 
 /// A game summary with `created_at`, for age-based filtering/display in the
 /// admin CLI — the ordinary player-facing `GameSummaryDto` deliberately
