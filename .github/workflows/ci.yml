@@ -30,7 +30,7 @@ jobs:
     name: fmt · clippy · test · wasm
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # srm-utils is a git dependency (github.com/SteveStyle/utils), pulled in
       # only by the archived old-crates. The checkout above doesn't fetch it;
@@ -92,10 +92,10 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # Build the staging images with a GitHub Actions layer cache. The big,
       # stable win is the builder stage's `cargo install dioxus-cli`/
@@ -106,8 +106,15 @@ jobs:
       # cached `builder` stage. Deps/app still recompile on a source change (no
       # cargo-chef here).
       - name: Build the staging images (cached)
-        uses: docker/bake-action@v5
+        uses: docker/bake-action@v7
         with:
+          # Build from the checked-out working directory. Required from v6
+          # onwards: bake-action changed its default to the *Git* context
+          # (buildkit fetches the repo itself from a remote bake definition)
+          # to match docker/build-push-action. Without this the build would
+          # no longer be the tree this job checked out — silently, since a
+          # git-context build of the same commit still succeeds.
+          source: .
           files: docker-compose.staging.yml
           load: true
           set: |
@@ -135,7 +142,7 @@ jobs:
           exit 1
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -153,7 +160,7 @@ jobs:
 
       - name: Upload Playwright report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report
           path: e2e/playwright-report/
