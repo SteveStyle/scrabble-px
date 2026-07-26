@@ -2861,47 +2861,59 @@ async fn create_and_start_engine_game(app: Router, creator_name: &str) -> GameSt
     .await
 }
 
+/// Covers both terminal states: an aborted game is as dead as a finished
+/// one, and before this the sweep matched `status = 'finished'` alone, so
+/// aborted games accumulated forever with nothing to collect them.
 #[tokio::test]
-async fn expire_old_finished_games_deletes_stale_games_but_not_recent_ones() {
+async fn expire_old_terminal_games_deletes_stale_finished_and_aborted_but_not_recent_ones() {
     let database_url = test_database_url();
     let state = create_test_state(&database_url).await;
     let app = build_router(state.clone());
 
-    let old = create_and_start_engine_game(app.clone(), "ExpireOld").await;
+    let old_finished = create_and_start_engine_game(app.clone(), "ExpireOld").await;
+    let old_aborted = create_and_start_engine_game(app.clone(), "ExpireOldAborted").await;
     let recent = create_and_start_engine_game(app.clone(), "ExpireRecent").await;
 
-    // `ended_at` is only ever set in SQL, by `save_game`, based on
-    // `status == Finished` at save time — bypass the normal flow and
-    // write it directly so the test controls the exact age.
+    // `ended_at` is only ever set in SQL, by `save_game`, based on the
+    // status at save time — bypass the normal flow and write it directly
+    // so the test controls the exact age.
     let now = now_unix_seconds();
     let eight_days_ago = now - 8 * 24 * 60 * 60;
     let one_day_ago = now - 24 * 60 * 60;
-    sqlx::query("update games set status = 'finished', ended_at = ?1 where id = ?2")
-        .bind(eight_days_ago)
-        .bind(&old.id)
-        .execute(&state.db)
-        .await
-        .expect("update should succeed");
-    sqlx::query("update games set status = 'finished', ended_at = ?1 where id = ?2")
-        .bind(one_day_ago)
-        .bind(&recent.id)
-        .execute(&state.db)
-        .await
-        .expect("update should succeed");
+    for (id, status, ended_at) in [
+        (&old_finished.id, "finished", eight_days_ago),
+        (&old_aborted.id, "aborted", eight_days_ago),
+        (&recent.id, "finished", one_day_ago),
+    ] {
+        sqlx::query("update games set status = ?1, ended_at = ?2 where id = ?3")
+            .bind(status)
+            .bind(ended_at)
+            .bind(id)
+            .execute(&state.db)
+            .await
+            .expect("update should succeed");
+    }
     {
         let mut games = state.games.write().await;
-        for id in [&old.id, &recent.id] {
-            let game = games.get_mut(id).expect("game should exist");
-            game.status = api::GameStatus::Finished;
+        for (id, status) in [
+            (&old_finished.id, api::GameStatus::Finished),
+            (&old_aborted.id, api::GameStatus::Aborted),
+            (&recent.id, api::GameStatus::Finished),
+        ] {
+            games.get_mut(id).expect("game should exist").status = status;
         }
     }
 
-    expire_old_finished_games(&state).await;
+    expire_old_terminal_games(&state).await;
 
     let games = state.games.read().await;
     assert!(
-        !games.contains_key(&old.id),
+        !games.contains_key(&old_finished.id),
         "a game finished 8 days ago should have been deleted"
+    );
+    assert!(
+        !games.contains_key(&old_aborted.id),
+        "a game aborted 8 days ago should have been deleted too"
     );
     assert!(
         games.contains_key(&recent.id),
@@ -2911,8 +2923,12 @@ async fn expire_old_finished_games_deletes_stale_games_but_not_recent_ones() {
         .await
         .expect("list should succeed");
     assert!(
-        !remaining_ids.contains(&old.id),
-        "the stale game's row should be gone from the database too"
+        !remaining_ids.contains(&old_finished.id),
+        "the stale finished game's row should be gone from the database too"
+    );
+    assert!(
+        !remaining_ids.contains(&old_aborted.id),
+        "the stale aborted game's row should be gone from the database too"
     );
 }
 
@@ -4780,6 +4796,282 @@ async fn admin_can_list_and_delete_games() {
         read_json(send_admin::<()>(app, Method::GET, "/admin/games", loopback_peer(), None).await)
             .await;
     assert!(!listed_after.iter().any(|game| game.id == created.game.id));
+}
+
+/// `Aborted` was added to `GameStatus` after the admin listing's status
+/// allowlist was written, so `--status aborted` was rejected outright —
+/// aborted games could be seen only by listing everything.
+#[tokio::test]
+async fn admin_games_list_filters_by_aborted_status() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state);
+
+    let aborted_game = create_two_human_game(app.clone()).await;
+    let live_game = create_and_start_engine_game(app.clone(), "AbortFilterLive").await;
+
+    let abort = send_empty_auth(
+        app.clone(),
+        Method::POST,
+        &format!("/games/{}/abort", aborted_game.game.id),
+        Some(&aborted_game.alice.session_token),
+    )
+    .await;
+    assert_eq!(abort.status(), StatusCode::OK);
+
+    let listed: Vec<AdminGameSummaryDto> = read_json(
+        send_admin::<()>(
+            app.clone(),
+            Method::GET,
+            "/admin/games?status=aborted",
+            loopback_peer(),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        listed.iter().any(|game| game.id == aborted_game.game.id),
+        "the aborted game should be selectable by status"
+    );
+    assert!(
+        !listed.iter().any(|game| game.id == live_game.id),
+        "an active game must not match status=aborted"
+    );
+
+    // An actually-unknown status still fails, and says what's valid.
+    let bad = send_admin::<()>(
+        app,
+        Method::GET,
+        "/admin/games?status=nonsense",
+        loopback_peer(),
+        None,
+    )
+    .await;
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+}
+
+/// `Finished` and `Aborted` mean different things, and force-end used to
+/// overwrite either with a fresh `Finished` — turning a creator's abort
+/// into an apparent real ending and stacking a second `admin_force_end`
+/// move onto games that were already over.
+#[tokio::test]
+async fn admin_force_end_rejects_a_game_that_has_already_ended() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state);
+
+    let aborted = create_two_human_game(app.clone()).await;
+    let abort = send_empty_auth(
+        app.clone(),
+        Method::POST,
+        &format!("/games/{}/abort", aborted.game.id),
+        Some(&aborted.alice.session_token),
+    )
+    .await;
+    assert_eq!(abort.status(), StatusCode::OK);
+
+    let force_end_aborted = send_admin::<()>(
+        app.clone(),
+        Method::POST,
+        &format!("/admin/games/{}/force-end", aborted.game.id),
+        loopback_peer(),
+        None,
+    )
+    .await;
+    assert_eq!(force_end_aborted.status(), StatusCode::BAD_REQUEST);
+
+    let still_aborted: GameStateDto = read_json(
+        send_empty_auth(
+            app.clone(),
+            Method::GET,
+            &format!("/games/{}", aborted.game.id),
+            Some(&aborted.alice.session_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        still_aborted.status,
+        api::GameStatus::Aborted,
+        "a refused force-end must leave the abort intact"
+    );
+    assert!(
+        !still_aborted
+            .moves
+            .iter()
+            .any(|record| record.move_type == "admin_force_end"),
+        "a refused force-end must not record a move"
+    );
+
+    // The same guard applies to a game force-ended once already.
+    let played = create_and_start_engine_game(app.clone(), "ForceEndTwice").await;
+    let first = send_admin::<()>(
+        app.clone(),
+        Method::POST,
+        &format!("/admin/games/{}/force-end", played.id),
+        loopback_peer(),
+        None,
+    )
+    .await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let second = send_admin::<()>(
+        app,
+        Method::POST,
+        &format!("/admin/games/{}/force-end", played.id),
+        loopback_peer(),
+        None,
+    )
+    .await;
+    assert_eq!(second.status(), StatusCode::BAD_REQUEST);
+}
+
+/// `player_ratings`/`rating_history`/`password_reset_tokens` are keyed by
+/// `players.id` with no foreign key to enforce it, and the rating tables
+/// arrived (migration `0002`) after `delete_player` was written — so a
+/// deleted account kept serving a rating from `GET /players/{id}/stats`
+/// and could keep a live emailed reset link.
+#[tokio::test]
+async fn admin_deleting_a_user_removes_their_rating_rows_and_reset_tokens() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    let alice = register_player(app.clone(), "Alice").await;
+    let bystander = register_player(app.clone(), "Bystander").await;
+
+    let now = now_unix_seconds();
+    for player_id in [&alice.player_id, &bystander.player_id] {
+        sqlx::query(
+            "insert into player_ratings (subject_kind, subject_id, rating, games_rated, updated_at)
+             values ('player', ?1, 1520.0, 3, ?2)",
+        )
+        .bind(player_id)
+        .bind(now)
+        .execute(&state.db)
+        .await
+        .expect("rating insert should succeed");
+        sqlx::query(
+            "insert into rating_history
+                (id, subject_kind, subject_id, game_id, rating_before, rating_after, created_at)
+             values (?1, 'player', ?2, 'some-game', 1500.0, 1520.0, ?3)",
+        )
+        .bind(format!("history-{player_id}"))
+        .bind(player_id)
+        .bind(now)
+        .execute(&state.db)
+        .await
+        .expect("history insert should succeed");
+        sqlx::query(
+            "insert into password_reset_tokens
+                (id, player_id, token_hash, created_at, expires_at, consumed_at)
+             values (?1, ?2, 'hash', ?3, ?4, null)",
+        )
+        .bind(format!("token-{player_id}"))
+        .bind(player_id)
+        .bind(now)
+        .bind(now + 3600)
+        .execute(&state.db)
+        .await
+        .expect("token insert should succeed");
+    }
+
+    let deleted = send_admin::<()>(
+        app,
+        Method::DELETE,
+        &format!("/admin/users/{}", alice.player_id),
+        loopback_peer(),
+        None,
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+
+    for (table, column) in [
+        ("player_ratings", "subject_id"),
+        ("rating_history", "subject_id"),
+        ("password_reset_tokens", "player_id"),
+    ] {
+        let remaining: i64 =
+            sqlx::query_scalar(&format!("select count(*) from {table} where {column} = ?1"))
+                .bind(&alice.player_id)
+                .fetch_one(&state.db)
+                .await
+                .expect("count should succeed");
+        assert_eq!(
+            remaining, 0,
+            "{table} should have no rows for a deleted user"
+        );
+
+        // The delete is scoped to the one account, not the whole table.
+        let untouched: i64 =
+            sqlx::query_scalar(&format!("select count(*) from {table} where {column} = ?1"))
+                .bind(&bystander.player_id)
+                .fetch_one(&state.db)
+                .await
+                .expect("count should succeed");
+        assert_eq!(untouched, 1, "{table} must keep other players' rows");
+    }
+}
+
+/// Each `rating_history` row carries the `game_id` it came from and
+/// `RatingPointDto` hands that id to the client, so an orphan left by a
+/// game delete makes the rating graph plot a point linking to a game
+/// nobody can open.
+#[tokio::test]
+async fn admin_deleting_a_game_removes_its_rating_history() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    let doomed = create_and_start_engine_game(app.clone(), "RatingHistoryDoomed").await;
+    let survivor = create_and_start_engine_game(app.clone(), "RatingHistorySurvivor").await;
+
+    let now = now_unix_seconds();
+    for game_id in [&doomed.id, &survivor.id] {
+        sqlx::query(
+            "insert into rating_history
+                (id, subject_kind, subject_id, game_id, rating_before, rating_after, created_at)
+             values (?1, 'player', 'someone', ?2, 1500.0, 1516.0, ?3)",
+        )
+        .bind(format!("history-{game_id}"))
+        .bind(game_id)
+        .bind(now)
+        .execute(&state.db)
+        .await
+        .expect("history insert should succeed");
+    }
+
+    let deleted = send_admin::<()>(
+        app,
+        Method::DELETE,
+        &format!("/admin/games/{}", doomed.id),
+        loopback_peer(),
+        None,
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+
+    let orphaned: i64 =
+        sqlx::query_scalar("select count(*) from rating_history where game_id = ?1")
+            .bind(&doomed.id)
+            .fetch_one(&state.db)
+            .await
+            .expect("count should succeed");
+    assert_eq!(
+        orphaned, 0,
+        "a deleted game should leave no rating history behind"
+    );
+
+    let survivor_points: i64 =
+        sqlx::query_scalar("select count(*) from rating_history where game_id = ?1")
+            .bind(&survivor.id)
+            .fetch_one(&state.db)
+            .await
+            .expect("count should succeed");
+    assert_eq!(
+        survivor_points, 1,
+        "another game's rating history must be untouched"
+    );
 }
 
 #[tokio::test]

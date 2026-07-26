@@ -12,7 +12,7 @@ pub(crate) async fn list_games(
 
     expire_overdue_turns(&state).await;
     send_move_time_reminders(&state).await;
-    expire_old_finished_games(&state).await;
+    expire_old_terminal_games(&state).await;
     if let Err(error) = persistence::delete_expired_sessions(&state.db).await {
         tracing::error!(%error, "failed to delete expired sessions");
     }

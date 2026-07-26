@@ -432,18 +432,25 @@ pub async fn list_game_ids(pool: &Pool<Sqlite>) -> Result<Vec<String>, sqlx::Err
         .collect())
 }
 
-/// Games finished more than `cutoff` ago — `ended_at` is set once, in
-/// `save_game`, the moment a game's status becomes `Finished`; it's only
-/// ever tracked here in SQL, never on `GameSession` itself, since nothing
-/// else needs to read it back.
-pub async fn list_finished_game_ids_older_than(
+/// Games that reached a terminal state more than `cutoff` ago — `ended_at`
+/// is set in `save_game` the moment a game's status becomes `Finished` *or*
+/// `Aborted`; it's only ever tracked here in SQL, never on `GameSession`
+/// itself, since nothing else needs to read it back.
+///
+/// Both terminal states, not just `Finished`: an aborted game is every bit
+/// as dead as a finished one, and matching on `'finished'` alone (which this
+/// did before `Aborted` existed) left abandoned games accumulating in the
+/// database forever with nothing to ever collect them.
+pub async fn list_terminal_game_ids_older_than(
     pool: &Pool<Sqlite>,
     cutoff: i64,
 ) -> Result<Vec<String>, sqlx::Error> {
-    let rows = sqlx::query("select id from games where status = 'finished' and ended_at < ?1")
-        .bind(cutoff)
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query(
+        "select id from games where status in ('finished', 'aborted') and ended_at < ?1",
+    )
+    .bind(cutoff)
+    .fetch_all(pool)
+    .await?;
     Ok(rows
         .into_iter()
         .map(|row| row.get::<String, _>(0))
@@ -578,14 +585,26 @@ pub async fn invalidate_sessions_for_player(
     Ok(())
 }
 
-/// Deletes a player along with their sessions and invitations, but
-/// preserves game history: `game_participants.player_id` is unclaimed
-/// (set to null) rather than deleting the participant row or the game,
-/// matching how an anonymous, never-claimed seat already behaves — the
-/// seat and its moves stay, just no longer bound to an account.
+/// Deletes a player along with everything keyed to their account —
+/// sessions, invitations, outstanding password-reset tokens, and their
+/// rating record and per-game rating history — but preserves game history:
+/// `game_participants.player_id` is unclaimed (set to null) rather than
+/// deleting the participant row or the game, matching how an anonymous,
+/// never-claimed seat already behaves — the seat and its moves stay, just
+/// no longer bound to an account.
+///
+/// The rating rows go because they're keyed by `subject_id = players.id`
+/// with no foreign key to enforce it: left behind, `GET
+/// /players/{id}/stats` keeps serving a deleted account's rating and
+/// history indefinitely. The reset tokens go for the same reason — a live
+/// emailed link outliving the account it was issued for.
 pub async fn delete_player(pool: &Pool<Sqlite>, player_id: &str) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin().await?;
     sqlx::query("delete from sessions where player_id = ?1")
+        .bind(player_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("delete from password_reset_tokens where player_id = ?1")
         .bind(player_id)
         .execute(&mut *tx)
         .await?;
@@ -595,6 +614,14 @@ pub async fn delete_player(pool: &Pool<Sqlite>, player_id: &str) -> Result<bool,
     .bind(player_id)
     .execute(&mut *tx)
     .await?;
+    sqlx::query("delete from player_ratings where subject_kind = 'player' and subject_id = ?1")
+        .bind(player_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("delete from rating_history where subject_kind = 'player' and subject_id = ?1")
+        .bind(player_id)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("update game_participants set player_id = null where player_id = ?1")
         .bind(player_id)
         .execute(&mut *tx)
@@ -608,12 +635,26 @@ pub async fn delete_player(pool: &Pool<Sqlite>, player_id: &str) -> Result<bool,
 }
 
 /// Deletes a game and everything that belongs to it (participants, moves,
-/// chat, invitations). Doesn't touch player accounts. Caller is responsible
-/// for also dropping it from the in-memory `AppState.games` map — this only
-/// handles the database side.
+/// chat, invitations, rating history). Doesn't touch player accounts.
+/// Caller is responsible for also dropping it from the in-memory
+/// `AppState.games` map — this only handles the database side.
+///
+/// `rating_history` is included because each row carries the `game_id` it
+/// came from and `RatingPointDto` hands that id to the client: an orphaned
+/// row leaves the rating graph plotting a point that links to a game
+/// nobody can open. What this deliberately does *not* do is unwind the
+/// rating itself — `player_ratings.rating` keeps the value this game moved
+/// it to. Recomputing every subsequent game's ELO to excise one result is
+/// far more than a delete should do, and the alternative (leaving the
+/// history row) would misreport which game produced the current rating
+/// either way. The graph loses a point; the current rating stays honest.
 pub async fn delete_game(pool: &Pool<Sqlite>, game_id: &str) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin().await?;
     sqlx::query("delete from game_moves where game_id = ?1")
+        .bind(game_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("delete from rating_history where game_id = ?1")
         .bind(game_id)
         .execute(&mut *tx)
         .await?;

@@ -102,9 +102,10 @@ pub(crate) async fn admin_list_games(
         Some("waiting") => Some(api::GameStatus::Waiting),
         Some("active") => Some(api::GameStatus::Active),
         Some("finished") => Some(api::GameStatus::Finished),
+        Some("aborted") => Some(api::GameStatus::Aborted),
         Some(other) => {
             return Err(ApiProblem::bad_request(format!(
-                "Unknown status '{other}', expected waiting/active/finished"
+                "Unknown status '{other}', expected waiting/active/finished/aborted"
             )));
         }
         None => None,
@@ -178,7 +179,8 @@ pub(crate) async fn admin_delete_game(
 /// Directly marks a game `Finished` without going through per-seat
 /// resignation — for an operator to clear out a stuck or abandoned game
 /// (e.g. a human seat that will never act again). Doesn't touch scores or
-/// `winner_seat`.
+/// `winner_seat`. Rejects a game that has already ended (see
+/// `GameSession::admin_force_finish`) rather than overwriting its result.
 pub(crate) async fn admin_force_end_game(
     State(state): State<AppState>,
     Path(game_id): Path<String>,
@@ -188,7 +190,7 @@ pub(crate) async fn admin_force_end_game(
         let game = games
             .get_mut(&game_id)
             .ok_or_else(|| ApiProblem::not_found("Game not found"))?;
-        game.admin_force_finish();
+        game.admin_force_finish().map_err(ApiProblem::bad_request)?;
         let dto = game.to_dto();
         persistence::save_game(&state.db, game)
             .await

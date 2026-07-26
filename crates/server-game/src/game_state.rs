@@ -912,7 +912,18 @@ impl GameSession {
     /// every other kind — specifically, rating: an admin force-end
     /// shouldn't move anyone's ELO, same reasoning as a timeout or a
     /// creator-forced resignation not moving it either.
-    pub fn admin_force_finish(&mut self) {
+    /// Rejects a game that has already ended, for the same reason `abort`
+    /// does: `Finished` and `Aborted` mean genuinely different things (a
+    /// played-out result vs. no result at all), and silently overwriting
+    /// either with a fresh `Finished` would rewrite history — turning an
+    /// abort into an apparent real ending, or stacking a second
+    /// `admin_force_end` record onto a game that needed no intervention.
+    /// The guard is what makes the command idempotent-by-refusal rather
+    /// than destructive on a mistyped id.
+    pub fn admin_force_finish(&mut self) -> Result<(), String> {
+        if self.status == GameStatus::Finished || self.status == GameStatus::Aborted {
+            return Err("The game has already ended".to_string());
+        }
         self.moves.push(MoveRecord {
             move_number: self.turn_number,
             seat_number: self.current_seat,
@@ -925,6 +936,7 @@ impl GameSession {
         });
         self.status = GameStatus::Finished;
         self.mark_changed();
+        Ok(())
     }
 
     /// The creator's "abort" — cancels the whole game at once, conceptually

@@ -144,10 +144,15 @@ pub(crate) fn format_duration_days_hours(total_seconds: u64) -> String {
     }
 }
 
-/// Permanently deletes any game finished more than 7 days ago — chat,
-/// moves, participants, and invitations all go with it (`persistence::delete_game`
-/// is the same cascading delete admin's "delete game" uses). No background
-/// scheduler: called lazily from `list_games`, same as `expire_overdue_turns`.
+/// Permanently deletes any game that has been terminal — `Finished` *or*
+/// `Aborted` — for more than 7 days: chat, moves, participants, invitations,
+/// and rating history all go with it (`persistence::delete_game` is the same
+/// cascading delete admin's "delete game" uses). No background scheduler:
+/// called lazily from `list_games`, same as `expire_overdue_turns`.
+///
+/// Aborted games are included because they're just as dead as finished ones
+/// and nothing else ever collects them — see
+/// `persistence::list_terminal_game_ids_older_than`.
 ///
 /// Concurrency: two callers racing into this (e.g. two participants both
 /// hitting `GET /games` at once) can't corrupt anything or double-fire a
@@ -158,13 +163,13 @@ pub(crate) fn format_duration_days_hours(total_seconds: u64) -> String {
 /// independently idempotent as a second line of defense regardless of
 /// locking — a SQL `delete ... where id = ?` on an already-gone row affects
 /// zero rows, and removing an already-removed key from the map is a no-op.
-pub(crate) async fn expire_old_finished_games(state: &AppState) {
+pub(crate) async fn expire_old_terminal_games(state: &AppState) {
     let now = now_unix_seconds();
     let cutoff = now - 7 * 24 * 60 * 60;
-    let stale_ids = match persistence::list_finished_game_ids_older_than(&state.db, cutoff).await {
+    let stale_ids = match persistence::list_terminal_game_ids_older_than(&state.db, cutoff).await {
         Ok(ids) => ids,
         Err(error) => {
-            tracing::error!(%error, "failed to query finished games for expiry");
+            tracing::error!(%error, "failed to query terminal games for expiry");
             return;
         }
     };
@@ -177,7 +182,7 @@ pub(crate) async fn expire_old_finished_games(state: &AppState) {
         match persistence::delete_game(&state.db, &game_id).await {
             Ok(_) => {
                 games.remove(&game_id);
-                tracing::info!(game_id, "finished game auto-deleted after 7 days");
+                tracing::info!(game_id, "terminal game auto-deleted after 7 days");
             }
             Err(error) => {
                 tracing::error!(game_id, %error, "failed to auto-delete expired game");
