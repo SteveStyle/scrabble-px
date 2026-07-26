@@ -9,6 +9,12 @@ path = "src/main.rs"
 
 [dependencies]
 api = { path = "../api" }
+# Only to render the server's epoch-second timestamps as readable dates.
+# `default-features = false` deliberately drops `clock`, which exists to read
+# the machine's local timezone and would pull in iana-time-zone for it — this
+# tool formats everything as UTC (see `format_timestamp`), so it never needs
+# to know what timezone the operator is in.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 clap = { version = "4", features = ["derive", "env"] }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls"] }

@@ -122,7 +122,7 @@ fn run_users(
                     user.display_name,
                     user.email,
                     user.last_seen_at
-                        .map_or_else(|| "never".to_string(), |t| t.to_string())
+                        .map_or_else(|| "never".to_string(), format_timestamp)
                 );
             }
         }
@@ -192,11 +192,11 @@ fn run_games(
                     .collect::<Vec<_>>()
                     .join(" vs ");
                 println!(
-                    "{}  {:<9}  created: {:<12}  last activity: {:<12}  {}",
+                    "{}  {:<9}  created: {:<20}  last activity: {:<20}  {}",
                     game.id,
                     format!("{:?}", game.status).to_lowercase(),
-                    game.created_at,
-                    game.last_activity_at,
+                    format_timestamp(game.created_at),
+                    format_timestamp(game.last_activity_at),
                     players
                 );
             }
@@ -221,6 +221,26 @@ fn run_games(
         }
     }
     Ok(())
+}
+
+/// Renders one of the server's timestamps — seconds since the Unix epoch
+/// (`game_state::now_unix_seconds`) — as a readable UTC date-time.
+///
+/// Always UTC, spelled out on every row rather than converted to the
+/// operator's local time. This is a server-side tool: the machine it runs on
+/// is the deployment VM, whose local time is an accident of provisioning and
+/// not something to silently reinterpret timestamps through. It also has to
+/// line up with `--older-than-days`, which the server evaluates in absolute
+/// seconds, and with the raw values in the database when someone goes
+/// looking there.
+///
+/// Falls back to the bare integer if the value can't be a real date, so an
+/// impossible timestamp still shows the operator what's actually stored
+/// instead of a blank or a lie.
+fn format_timestamp(epoch_seconds: i64) -> String {
+    chrono::DateTime::from_timestamp(epoch_seconds, 0)
+        .map(|moment| moment.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| epoch_seconds.to_string())
 }
 
 fn fmt_err(error: reqwest::Error) -> String {
@@ -254,4 +274,35 @@ fn generate_password() -> String {
     (0..16)
         .map(|_| CHARSET[rng.gen_range(0..CHARSET.len())] as char)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_an_epoch_second_as_a_utc_date_time() {
+        // 2026-07-26 13:52:02 UTC — the timestamp of commit 8975493.
+        assert_eq!(format_timestamp(1_785_073_922), "2026-07-26 13:52 UTC");
+    }
+
+    #[test]
+    fn formats_the_epoch_itself() {
+        assert_eq!(format_timestamp(0), "1970-01-01 00:00 UTC");
+    }
+
+    /// Timestamps are `i64` on the wire, so a negative one is representable
+    /// even though the server never writes one; it should still read as a
+    /// date rather than falling through to the raw-integer branch.
+    #[test]
+    fn formats_a_pre_epoch_timestamp() {
+        assert_eq!(format_timestamp(-1), "1969-12-31 23:59 UTC");
+    }
+
+    /// The fallback: `i64::MAX` seconds is far outside any representable
+    /// date, so the operator sees what's actually stored instead of a blank.
+    #[test]
+    fn falls_back_to_the_raw_value_when_it_cannot_be_a_date() {
+        assert_eq!(format_timestamp(i64::MAX), i64::MAX.to_string());
+    }
 }
