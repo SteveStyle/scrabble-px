@@ -13,6 +13,10 @@
 		@assets path /assets/*
 		header @assets Cache-Control "public, max-age=31536000, immutable"
 
+		# See ./Caddyfile for why this one is deliberately uncached.
+		@version path /version.txt
+		header @version Cache-Control "no-store"
+
 		root * /srv
 		try_files {path} /index.html
 		file_server

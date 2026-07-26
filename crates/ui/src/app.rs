@@ -193,21 +193,12 @@ pub fn RootApp() -> Element {
         bootstrapped.set(true);
         let server_url = server_url.clone();
         spawn(async move {
-            match check_api_version(&server_url).await {
-                VersionCheck::Compatible | VersionCheck::Unreachable => {}
-                VersionCheck::MinorMismatch { server, client } => {
-                    info_message.set(Some(format!(
-                        "Server API v{server} differs from this client's v{client} (non-breaking) — {}",
-                        update_hint_soft()
-                    )));
-                }
-                VersionCheck::MajorMismatch { server, client } => {
-                    error_message.set(Some(format!(
-                        "This client (API v{client}) is incompatible with the server (API v{server}). {}",
-                        update_hint_hard()
-                    )));
-                    return;
-                }
+            if !apply_version_check(
+                check_api_version(&server_url).await,
+                info_message,
+                error_message,
+            ) {
+                return;
             }
 
             let stored = crate::local_storage::load();
@@ -308,6 +299,17 @@ pub fn RootApp() -> Element {
                     direction_override,
                 )
                 .await;
+                // A reconnect usually means the server was redeployed, which
+                // may have changed its api version. Re-check now so a tab left
+                // open across a deploy warns (minor skew) or blocks (major)
+                // just like a fresh load. Applied after the reload because a
+                // successful load clears `info_message`, which would otherwise
+                // bury a soft skew notice.
+                apply_version_check(
+                    check_api_version(&server_url).await,
+                    info_message,
+                    error_message,
+                );
                 is_reconnecting.set(false);
             });
         });
@@ -2147,6 +2149,161 @@ async fn check_api_version(server_url: &str) -> VersionCheck {
     }
 }
 
+/// Respond to a `VersionCheck` and report whether the client should keep
+/// talking to the server. Shared by the initial bootstrap and the
+/// reconnect-recovery loop, so a tab left open across a deploy reacts just
+/// like a fresh load instead of silently running a stale client. Returns
+/// `false` only on a breaking (major) mismatch, where the caller should stop.
+///
+/// The response differs by platform because the *remedy* does. On the web,
+/// fixing either kind of skew is the same act and costs the user nothing —
+/// reload, and the origin serves the current bundle — so the client just does
+/// it (via `watch_for_new_bundle`) rather than nagging someone to press a key
+/// we can press ourselves. On desktop the remedy is a download and install,
+/// which genuinely needs the user, so it keeps the banners.
+fn apply_version_check(
+    check: VersionCheck,
+    mut info_message: Signal<Option<String>>,
+    mut error_message: Signal<Option<String>>,
+) -> bool {
+    let (server, client, breaking) = match check {
+        VersionCheck::Compatible | VersionCheck::Unreachable => return true,
+        VersionCheck::MinorMismatch { server, client } => (server, client, false),
+        VersionCheck::MajorMismatch { server, client } => (server, client, true),
+    };
+
+    // Built on both platforms: web uses them as the give-up text once the
+    // auto-update has waited long enough, at which point "please refresh"
+    // is exactly the right thing to say.
+    let soft = format!(
+        "Server API v{server} differs from this client's v{client} (non-breaking) — {}",
+        update_hint_soft()
+    );
+    let hard = format!(
+        "This client (API v{client}) is incompatible with the server (API v{server}). {}",
+        update_hint_hard()
+    );
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        if breaking {
+            // Say why the app has stopped working rather than showing a bare
+            // "updating..." — the reload may be seconds away (waiting on the
+            // web container to finish restarting), and an unexplained dead
+            // app for that long is worse than an explained one.
+            error_message.set(Some(hard));
+        } else {
+            info_message.set(Some(
+                "A new version is available — updating shortly...".to_string(),
+            ));
+        }
+        // On a breaking mismatch the error above already stands; only the
+        // soft notice needs replacing if we end up giving up.
+        watch_for_new_bundle(info_message, if breaking { None } else { Some(soft) });
+        !breaking
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if breaking {
+            error_message.set(Some(hard));
+            false
+        } else {
+            info_message.set(Some(soft));
+            true
+        }
+    }
+}
+
+/// How often a pending auto-update re-checks whether the origin has started
+/// serving a different bundle, and how many times before it gives up. ~60s
+/// total: comfortably longer than the gap between the server and the web
+/// container being recreated during a deploy, short enough that a genuinely
+/// stuck deploy surfaces as a banner instead of spinning silently forever.
+#[cfg(target_arch = "wasm32")]
+const BUNDLE_POLL_MS: u64 = 3000;
+#[cfg(target_arch = "wasm32")]
+const BUNDLE_POLL_ATTEMPTS: usize = 20;
+
+/// The build identity of the bundle this origin is serving *right now*,
+/// from the `/version.txt` written into the web image at build time (see
+/// the Dockerfile). `None` if it can't be read, which covers the moment the
+/// web container is mid-restart — in which case the answer to "would
+/// reloading help?" is "can't tell", and the caller correctly declines to
+/// reload.
+#[cfg(target_arch = "wasm32")]
+async fn fetch_served_bundle_version() -> Option<String> {
+    let response = Request::get("/version.txt").send().await.ok()?;
+    if !response.ok() {
+        return None;
+    }
+    parse_served_version(&response.text().await.ok()?)
+}
+
+/// Validates that a `/version.txt` body really is a version string before
+/// anything compares it against ours.
+///
+/// A 200 response is not enough on its own. Caddy's SPA fallback
+/// (`try_files {path} /index.html`) serves **index.html with status 200** for
+/// any path that isn't a real file, so an origin without a `/version.txt` —
+/// a `dx serve` dev build, a hand-built image — answers this probe with a
+/// page of HTML rather than a 404. Taken at face value that HTML would never
+/// equal our own version, so the watcher would reload, get the same fallback
+/// again, and spin: precisely the loop the version check exists to prevent.
+///
+/// Anything that isn't shaped like `Major.Minor.Patch[+build]` is therefore
+/// treated as "no answer". HTML fails on the leading `<`.
+// Deliberately not `#[cfg(target_arch = "wasm32")]` like its caller: keeping
+// it target-independent is what lets the tests below run under a normal
+// `cargo test`, which is the only place this logic is actually exercised.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn parse_served_version(body: &str) -> Option<String> {
+    let version = body.trim();
+    let plausible = !version.is_empty()
+        && version.len() <= 64
+        && version.starts_with(|c: char| c.is_ascii_digit())
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-' | '_'));
+    plausible.then(|| version.to_string())
+}
+
+/// Reload the page as soon — and only as soon — as doing so would actually
+/// land on different code.
+///
+/// The naive version of this (reload the moment skew is detected) loops.
+/// `docker compose up -d` recreates `server` before `web`, so there's a
+/// window where the new server is live while this container still serves the
+/// old bundle; a tab reloading into that window gets the same bundle back and
+/// tries again. Worse, reloading a moment later, while `web` itself is
+/// restarting, lands the tab on a browser connection-error page with no
+/// client code left running to recover itself.
+///
+/// Comparing the served build against our own sidesteps both: an unchanged
+/// or unreadable `/version.txt` means we simply wait and ask again. It also
+/// naturally handles skew that a reload can't fix at all — a fresh load
+/// already has the current bundle, so if the versions match we poll, give up,
+/// and fall back to telling the user, which is all that was ever possible.
+#[cfg(target_arch = "wasm32")]
+fn watch_for_new_bundle(mut info_message: Signal<Option<String>>, give_up_message: Option<String>) {
+    spawn(async move {
+        let running = crate::app_version();
+        for _ in 0..BUNDLE_POLL_ATTEMPTS {
+            if let Some(served) = fetch_served_bundle_version().await
+                && served != running
+            {
+                if let Some(window) = web_sys::window() {
+                    let _ = window.location().reload();
+                }
+                return;
+            }
+            sleep_ms(BUNDLE_POLL_MS).await;
+        }
+        if let Some(message) = give_up_message {
+            info_message.set(Some(message));
+        }
+    });
+}
+
 /// Loads the games list and a target game (a specific id if given, else the
 /// most recent one), replacing whatever's currently shown. Shared by the
 /// initial bootstrap and the reconnect-recovery loop so both end up in the
@@ -3640,6 +3797,47 @@ mod tests {
             },
             is_used: false,
         }
+    }
+
+    #[test]
+    fn served_version_accepts_a_plain_release_version() {
+        assert_eq!(parse_served_version("0.4.10"), Some("0.4.10".to_string()));
+    }
+
+    #[test]
+    fn served_version_accepts_a_build_suffix_and_trims_whitespace() {
+        assert_eq!(
+            parse_served_version("  0.4.10+a1c9f02\n"),
+            Some("0.4.10+a1c9f02".to_string())
+        );
+    }
+
+    /// The one that matters: Caddy's SPA fallback answers a missing
+    /// /version.txt with index.html and a 200, and treating that as a
+    /// version would put the update watcher into a reload loop.
+    #[test]
+    fn served_version_rejects_an_html_spa_fallback() {
+        assert_eq!(
+            parse_served_version("<!DOCTYPE html>\n<html><head><title>Tile Lite Elite</title>"),
+            None
+        );
+    }
+
+    #[test]
+    fn served_version_rejects_empty_or_whitespace_only_bodies() {
+        assert_eq!(parse_served_version(""), None);
+        assert_eq!(parse_served_version("   \n  "), None);
+    }
+
+    #[test]
+    fn served_version_rejects_anything_not_starting_with_a_digit() {
+        assert_eq!(parse_served_version("v0.4.10"), None);
+        assert_eq!(parse_served_version("not a version"), None);
+    }
+
+    #[test]
+    fn served_version_rejects_an_implausibly_long_body() {
+        assert_eq!(parse_served_version(&"1".repeat(65)), None);
     }
 
     #[test]

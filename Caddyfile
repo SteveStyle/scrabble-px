@@ -43,6 +43,18 @@ tileliteelite.com, www.tileliteelite.com, 129.151.69.246.sslip.io {
 		@assets path /assets/*
 		header @assets Cache-Control "public, max-age=31536000, immutable"
 
+		# The exact opposite of /assets above, for the same reason stated
+		# inversely: this file's whole job is to change when a deploy lands.
+		# An open tab polls it to find out whether the bundle being served
+		# has moved on from the one it's running (see `watch_for_new_bundle`
+		# in crates/ui/src/app.rs). A cached copy would report the old build
+		# indefinitely and the auto-update would never fire. It's outside
+		# /assets/* so nothing above catches it, but the default is a
+		# conditional GET against an ETag rather than no caching at all —
+		# worth being explicit about, given what it's for.
+		@version path /version.txt
+		header @version Cache-Control "no-store"
+
 		root * /srv
 		try_files {path} /index.html
 		file_server
