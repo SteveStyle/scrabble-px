@@ -64,7 +64,7 @@ See `src/config.rs` for the compiled-in default environments and the
 
 ## Project Structure
 
-```
+```text
 crates/ui/
 ├── assets/styling/main.css   # All CSS
 ├── src/
@@ -99,5 +99,3 @@ Launch scripts live in the repo root's `scripts/` folder, not here — see
 - Web builds require `RUSTC_WRAPPER=""` to bypass sccache (sccache and WASM targets conflict).
 - `+reference-types,+multivalue` WASM target features are set in `.cargo/config.toml` — required by wasm-bindgen 0.2.103.
 - `wasm-bindgen-cli` must match the version in `Cargo.lock`: `cargo install wasm-bindgen-cli --version 0.2.103`.
-
-

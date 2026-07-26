@@ -9,15 +9,17 @@ The project has successfully implemented the core MVP architecture: a server-aut
 ### ✅ Suggested Boundaries - Implemented
 
 #### `crates/api/`
+
 - **Purpose**: Request/response types shared by clients and server
 - **Status**: ✅ Implemented
 - **Contents**: Enums for SeatKind, GameStatus, DirectionDto, PremiumDto, EngineProfileDto, GameStateDto, GameRelationship, SeatClaim (Creator/Named/Open/Email), SeatInvitationStatus, InvitationStatus, InvitationPreviewDto, ChangePasswordRequest, UpdatePlayerDetailsRequest, etc.
 - **Notes**: Correctly uses `#[serde(rename_all = "snake_case")]` for JSON serialization (supports lowercase variants expected by clients). `GameSummaryDto` carries a caller-relative `relationship` tag (`YourTurn`/`Participant`/`InvitedByName`/`InvitedOpen`) and `invitation_id` — the server returns one flat, tagged list per caller from `GET /games` rather than pre-split buckets, so the client sorts/groups/filters however it wants.
 
 #### `crates/rules-shared/`
+
 - **Purpose**: Pure Scrabble rules, move generation, scoring, legality, previews
 - **Status**: ✅ Implemented
-- **Contents**: 
+- **Contents**:
   - `board.rs` - BoardCell, BoardState, EmptyCell, FilledCell
   - `dictionary.rs` - `Dictionary` trait + `SowpodsDictionary`, backed by a sorted-word-list `SortedPrefixCursor` for incremental prefix search (see below)
   - `cache.rs` - RuleCache, CrossCheck, AnchorFlags (performance optimization)
@@ -28,6 +30,7 @@ The project has successfully implemented the core MVP architecture: a server-aut
 - **Notes**: Properly separated from server concerns; clients can import for local preview. Move generation was found to be exponential-time on certain real board positions (an engine could take 13–26s on a single turn, well past the 5s engine timeout, causing spurious auto-passes on winnable positions). Fixed with dictionary-backed prefix pruning: `SortedPrefixCursor` narrows a sorted sub-slice of the word list one letter at a time as move generation explores the board, pruning a branch the instant no word can possibly continue — a 337×/283× speedup on the reproduction case, byte-identical output. `examples/repro_lexicon.rs` reproduces the exact board/racks that exposed the bug and is kept permanently as a benchmark harness for comparing future generator/engine approaches (a trie or GADDAG were discussed as future comparison points, not built).
 
 #### `crates/engine-core/`
+
 - **Purpose**: Engine search, heuristics, move selection, engine-only metadata
 - **Status**: ✅ Implemented
 - **Contents**:
@@ -39,6 +42,7 @@ The project has successfully implemented the core MVP architecture: a server-aut
 - **Notes**: Properly versioned from the start; GreedyEngine is reference implementation
 
 #### `crates/server-game/`
+
 - **Purpose**: Game lifecycle, turn sequencing, persistence, engine proxy
 - **Status**: ✅ Implemented
 - **Contents**:
@@ -48,6 +52,7 @@ The project has successfully implemented the core MVP architecture: a server-aut
 - **Notes**: Server is properly authoritative; all rule validation happens server-side. Engine-originated moves flow through the exact same `apply_*` methods a human's HTTP action does — no special-cased trust path for engines. New games get a genuinely random shuffle seed by default (`rand::random()`). Seat ownership is enforced on every action-capable endpoint, and an unclaimed human seat now means an invitation is still outstanding — not "open to anyone" the way it used to (anonymous/unauthenticated game creation and play has been retired entirely in favor of the invitation model, below).
 
 #### `crates/ui/`
+
 - **Purpose**: Web and desktop presentation layers (Dioxus framework)
 - **Status**: ✅ Implemented
 - **Contents**:
@@ -60,12 +65,14 @@ The project has successfully implemented the core MVP architecture: a server-aut
 - **Notes**: Dual-target (web WASM + desktop native), uses same codebase via feature flags. Move composition supports both drag-and-drop and click/keyboard placement. Backspace had a real bug — it deleted the wrong tile and overshot the cursor by one extra cell after deleting, because it reused the same "skip past a just-typed tile" helper that forward-typing needs, when backspace actually needs to land *on* the previous tile, not skip past it; fixed with a dedicated backward-search helper, and Delete was added as a separate forward-delete that removes a tile without moving the cursor (previously only Backspace existed). Native HTML5 drag-and-drop was reported not working reliably in the desktop build (WSLg/webkit2gtk); investigated but not fixed — Dioxus's `DragData` API doesn't expose `dataTransfer`, which WebKit is known to want for reliable drag sequences, and there's no way to verify a fix without a real display. Click-to-place remains a fully working alternative.
 
 #### `crates/admin-cli/`
+
 - **Purpose**: Operator tooling for a running server — list/delete users, reset passwords, list/delete/force-end games
 - **Status**: ✅ Implemented
 - **Contents**: `main.rs` — a `clap`-based CLI (`tile-lite-elite-admin`) that's a thin HTTP client against `server-game`'s `/admin/*` endpoints; no business logic of its own (cascading deletes and password hashing stay server-side, so the CLI can't drift from what the server actually does)
 - **Notes**: Not authenticated by account/token — the server's admin routes only accept loopback connections (see `require_loopback` in `server-game/app.rs`), regardless of what `TILE_LITE_ELITE_BIND` is set to. Running the CLI *is* the access control: it only works from the server's own terminal — including in the container deployment, where it's reachable via `docker compose exec server tile-lite-elite-admin ...` (a genuinely loopback connection from inside that container).
 
 #### Deployment (new — not part of the original crate boundaries, but now a real part of the architecture)
+
 - **Purpose**: Run the app somewhere other than a developer's own machine
 - **Status**: ✅ Implemented and live
 - **Contents**: `Dockerfile` (multi-stage: one `builder` stage, two final targets — the server binary + `admin-cli`, and Caddy serving the release web build), `docker-compose.yml`, `Caddyfile`, `scripts/deploy.sh`, `scripts/setup-dev-environment.sh`
@@ -245,11 +252,13 @@ The project has successfully implemented the core MVP architecture: a server-aut
 ### ⚠️ Partially Implemented
 
 **WebSocket Events**:
+
 - Route `/games/{game_id}/events` exists, filtered per-game
 - Client subscribes, applies live updates, retries forever (3s) instead of giving up after the first drop
 - **Still missing**: the server doesn't replay missed events to a freshly (re)connected socket — a reconnecting client falls back to an explicit HTTP reload, which the client's background recovery loop does automatically
 
 **Engine Execution**:
+
 - EngineRegistry holds engines; GreedyEngine compiles and produces moves
 - Server calls `run_engine_turns()` after game start, human moves, and suggest-move
 - Engine moves flow through the same `apply_*` methods a human action goes through
@@ -257,6 +266,7 @@ The project has successfully implemented the core MVP architecture: a server-aut
 - **Missing**: sandboxing, diagnostics/explanation output, a test that actually forces the timeout branch
 
 **Authentication**:
+
 - ✅ Schema: players table, sessions table, password_reset_tokens table
 - ✅ POST /auth/register, /auth/login, /auth/validate, /auth/change-password, /auth/update-details, /auth/forgot-password, /auth/reset-password — all fully implemented
 - ✅ GET /players/search?q= — case-insensitive display-name prefix search, backs the "invite by name" autocomplete
@@ -267,6 +277,7 @@ The project has successfully implemented the core MVP architecture: a server-aut
 - ⚠️ Email addresses are not verified in MVP (captured at registration, never confirmed) — unrelated to the transactional-email delivery above, which works regardless of whether an address has been verified.
 
 **Game Invitations**:
+
 - ✅ Schema includes game_invitations table, with `invited_player_id` nullable for open/stranger/unclaimed-email invitations and `invited_email` set only for an email invitation (excluded from the generic open-invitations query, so it isn't visible to every signed-in player the way a real `Open` seat is)
 - ✅ POST /games/{game_id}/invite — invite a specific player by name, by email, or (both null) open the seat to any logged-in player; also the resend path for a declined seat
 - ✅ POST /games/{game_id}/seats, POST /games/{game_id}/seats/{n}/{remove,withdraw}, POST /games/{game_id}/reorder-seats — creator-managed roster editing on a `Waiting` game, after it already exists (add a seat without sending its invitation yet, remove a claimed-or-not seat, let a seat's own holder withdraw, reorder turn order)
@@ -346,6 +357,7 @@ The invitation flow, the move-time-limit auto-retirement, and the WebSocket even
 Status: **Core loop solid, player identity and matchmaking real (not just schema), deployed and live**
 
 ✅ Done:
+
 - Server-owned game state, rule enforcement
 - Human vs engine games, shared rules library, prefix-pruned move generation
 - All four player actions (place, pass, exchange, resign)
@@ -370,6 +382,7 @@ Status: **Core loop solid, player identity and matchmaking real (not just schema
 - Structured logging via `tracing`, configurable verbosity (`RUST_LOG`), covering auth/game-lifecycle/invitations/admin actions plus per-request HTTP tracing
 
 ❌ Not Yet:
+
 - Email verification (addresses are captured and used for delivery, never confirmed as owned by the registrant)
 - Engine decision diagnostics (why an engine chose a move, not just that it timed out)
 - Multiple engine implementations, engine benchmarking CLI
@@ -380,6 +393,7 @@ Status: **Core loop solid, player identity and matchmaking real (not just schema
 ### v1 (Next Phase)
 
 Expected next focus:
+
 - Multiple engine implementations, using `examples/repro_lexicon.rs` as a shared benchmark harness
 - Engine benchmarking CLI
 - Email verification with short codes
