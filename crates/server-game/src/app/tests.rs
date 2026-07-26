@@ -3107,6 +3107,80 @@ async fn expired_absolute_token_is_rejected_and_a_no_expiry_one_idle_expires() {
     assert_eq!(idle.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// Reads `players.last_seen_at` directly — there's no API that exposes it
+/// except the loopback-only admin listing, and this is asserting the column
+/// itself rather than any particular projection of it.
+async fn player_last_seen(db: &sqlx::Pool<sqlx::Sqlite>, player_id: &str) -> Option<i64> {
+    sqlx::query("select last_seen_at from players where id = ?1")
+        .bind(player_id)
+        .fetch_one(db)
+        .await
+        .expect("player should exist")
+        .get::<Option<i64>, _>(0)
+}
+
+#[tokio::test]
+async fn player_last_seen_is_seeded_at_login_and_refreshed_past_the_throttle() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+    let db = state.db.clone();
+
+    let alice = register_player(app.clone(), "Alice").await;
+
+    // Registering creates a session, and that alone has to seed the column:
+    // the throttled bump below is keyed on session idle time, which starts at
+    // zero, so a brand-new session would otherwise never trigger it and
+    // someone who signed up and played for ten minutes would read as never
+    // seen at all.
+    let seeded = player_last_seen(&db, &alice.player_id)
+        .await
+        .expect("registering should seed players.last_seen_at");
+
+    // Inside the throttle window, an authenticated request must not rewrite
+    // it — the whole point of the throttle is to avoid a write per request.
+    let response = send_empty_auth(
+        app.clone(),
+        Method::GET,
+        "/games",
+        Some(&alice.session_token),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        player_last_seen(&db, &alice.player_id).await,
+        Some(seeded),
+        "a request inside the throttle window should not rewrite last_seen_at"
+    );
+
+    // Backdate the session past the throttle (but well inside the idle
+    // window, so it stays valid) and the next request should move it.
+    let stale = now_unix_seconds() - persistence::LAST_SEEN_BUMP_THROTTLE_SECS - 60;
+    sqlx::query("update sessions set last_seen_at = ?1 where token_hash = ?2")
+        .bind(stale)
+        .bind(hash_token(&alice.session_token))
+        .execute(&db)
+        .await
+        .expect("backdate last_seen");
+
+    let response = send_empty_auth(
+        app.clone(),
+        Method::GET,
+        "/games",
+        Some(&alice.session_token),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let refreshed = player_last_seen(&db, &alice.player_id)
+        .await
+        .expect("last_seen_at should still be set");
+    assert!(
+        refreshed >= seeded,
+        "activity past the throttle should refresh players.last_seen_at \
+         (was {seeded}, now {refreshed})"
+    );
+}
+
 #[tokio::test]
 async fn delete_expired_sessions_removes_only_past_expiry_ones() {
     let database_url = test_database_url();

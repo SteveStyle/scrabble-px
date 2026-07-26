@@ -67,7 +67,8 @@ pub(crate) async fn authenticated_player_id(
 }
 
 /// Resolves a session token to a player id, enforcing both session limits
-/// and keeping the session's `last_seen_at` fresh. Shared by
+/// and keeping the session's — and the player's — `last_seen_at` fresh.
+/// Shared by
 /// `authenticated_player_id` (header token, every REST call), `game_events`
 /// (query-parameter token — the browser `WebSocket` handshake can't set
 /// custom headers), and `validate_session` (client startup).
@@ -96,6 +97,9 @@ pub(crate) async fn player_id_for_token(state: &AppState, token: &str) -> Option
     }
     if idle > persistence::LAST_SEEN_BUMP_THROTTLE_SECS {
         let _ = persistence::update_session_last_seen(&state.db, &session.id).await;
+        // Same throttle, so tracking the player costs no extra write per
+        // request — the session bump had already earned this one.
+        let _ = persistence::update_player_last_seen(&state.db, &session.player_id).await;
     }
 
     Some(session.player_id)

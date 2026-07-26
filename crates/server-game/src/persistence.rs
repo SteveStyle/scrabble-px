@@ -910,6 +910,18 @@ pub async fn create_session(
     .execute(pool)
     .await?;
 
+    // Creating a session *is* the person showing up, so seed their
+    // player-level last-seen here as well as on later activity. Without this
+    // the throttled bump in `player_id_for_token` never fires for a new
+    // session (its idle time starts at zero), so someone who logged in and
+    // played for ten minutes would still read as never seen.
+    //
+    // Best-effort on purpose: the session above is already committed, so
+    // returning Err here would report a failed login to the caller while a
+    // perfectly valid session exists. A stale activity timestamp is the
+    // better failure.
+    let _ = update_player_last_seen(pool, player_id).await;
+
     Ok(SessionRecord {
         id: id.to_string(),
         player_id: player_id.to_string(),
@@ -1010,6 +1022,33 @@ pub async fn update_session_last_seen(pool: &Pool<Sqlite>, id: &str) -> Result<(
     sqlx::query("update sessions set last_seen_at = ?1 where id = ?2")
         .bind(now)
         .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// The player-level counterpart to `update_session_last_seen`: "when was this
+/// person last active", independent of which device they were on.
+///
+/// Kept as its own column rather than derived from `sessions` because
+/// sessions are per-device and get deleted on logout and by expiry cleanup,
+/// taking their `last_seen_at` with them — so a max() over sessions reports
+/// nothing at all for exactly the dormant accounts an operator most wants to
+/// see. Deliberately does not touch `updated_at`, which means "the profile
+/// was edited", not "the account was used".
+///
+/// Written on session creation (login/register) and then, for a live session,
+/// under the same `LAST_SEEN_BUMP_THROTTLE_SECS` throttle as the session bump
+/// — so this costs no extra write per request, and is accurate to within the
+/// throttle window.
+pub async fn update_player_last_seen(
+    pool: &Pool<Sqlite>,
+    player_id: &str,
+) -> Result<(), sqlx::Error> {
+    let now = now_unix_seconds();
+    sqlx::query("update players set last_seen_at = ?1 where id = ?2")
+        .bind(now)
+        .bind(player_id)
         .execute(pool)
         .await?;
     Ok(())
