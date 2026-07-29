@@ -27,7 +27,7 @@ use api::{GameStatus, SeatKind};
 use rules_shared::{Rack, VariantRules};
 use server_game::game_state::{EngineRegistry, GameSession, ParticipantState};
 
-const RESULTS_CSV_HEADER: &str = "timestamp_unix_seconds,git_commit,num_games,games_completed,samples,min_ms,q1_ms,median_ms,mean_ms,q3_ms,p95_ms,p99_ms,max_ms\n";
+const RESULTS_CSV_HEADER: &str = "timestamp_unix_seconds,git_commit,edition,num_games,games_completed,samples,min_ms,q1_ms,median_ms,mean_ms,q3_ms,p95_ms,p99_ms,max_ms,first_move_median_ms,first_move_mean_ms,first_move_max_ms\n";
 
 /// The short commit hash `HEAD` is on, with a `-dirty` suffix if the working
 /// tree has uncommitted changes — unlike a real deploy (which refuses a
@@ -99,13 +99,24 @@ async fn main() {
         .nth(1)
         .and_then(|arg| arg.parse().ok())
         .unwrap_or(30);
+    // Editions differ by dictionary size (german/spanish carry 2-4x the
+    // words of official), so "how slow is a move" is not one number across
+    // the registry — it has to be asked per edition.
+    let edition = std::env::args().nth(2).unwrap_or_else(|| "official".into());
+    let base_rules = VariantRules::by_name(&edition)
+        .unwrap_or_else(|| panic!("unknown edition '{edition}' — see VariantRules::EDITION_NAMES"));
 
     let engines = EngineRegistry::default();
     let mut samples_ms: Vec<f64> = Vec::new();
+    // The opening move of a game is a distinct population: an empty board
+    // with no anchors, and the first turn to touch any lazily-built shared
+    // state. Pooling it with the other 40-odd moves of a game averages away
+    // the exact thing a player actually notices.
+    let mut first_move_ms: Vec<f64> = Vec::new();
     let mut games_completed = 0usize;
 
     for game_index in 0..num_games {
-        let rules = VariantRules::official();
+        let rules = base_rules.clone();
         let participants = vec![
             engine_participant(0, "Greedy A"),
             engine_participant(1, "Greedy B"),
@@ -120,13 +131,17 @@ async fn main() {
         );
         game.start();
 
-        for _ in 0..MAX_TURNS_PER_GAME {
+        for turn in 0..MAX_TURNS_PER_GAME {
             let before = Instant::now();
             let advanced = game
                 .maybe_run_engine_turn(&engines, ENGINE_TURN_TIMEOUT)
                 .await
                 .expect("engine turn should not error in a clean engine-vs-engine game");
-            samples_ms.push(before.elapsed().as_secs_f64() * 1000.0);
+            let elapsed_ms = before.elapsed().as_secs_f64() * 1000.0;
+            if turn == 0 {
+                first_move_ms.push(elapsed_ms);
+            }
+            samples_ms.push(elapsed_ms);
             if !advanced || game.status != GameStatus::Active {
                 break;
             }
@@ -140,6 +155,7 @@ async fn main() {
     let n = samples_ms.len();
     let mean = samples_ms.iter().sum::<f64>() / n as f64;
 
+    println!("edition: {edition}");
     println!("games played: {num_games} ({games_completed} reached Finished)");
     println!("move-timing samples: {n}");
     println!();
@@ -160,12 +176,28 @@ async fn main() {
     println!("p99:          {p99:>8.2} ms");
     println!("max:          {max:>8.2} ms");
 
+    let mut first_sorted = first_move_ms.clone();
+    first_sorted.sort_by(|a, b| a.partial_cmp(b).expect("no NaNs in timing data"));
+    let first_median = percentile(&first_sorted, 0.50);
+    let first_mean = first_sorted.iter().sum::<f64>() / first_sorted.len().max(1) as f64;
+    let first_max = first_sorted.last().copied().unwrap_or(0.0);
+
+    println!();
+    println!("opening move only ({} games):", first_sorted.len());
+    println!("  median:     {first_median:>8.2} ms");
+    println!("  mean:       {first_mean:>8.2} ms");
+    println!("  max:        {first_max:>8.2} ms");
+    println!(
+        "  vs all-move median: {:.1}x",
+        first_median / median.max(f64::EPSILON)
+    );
+
     let timestamp_unix_seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time before epoch")
         .as_secs();
     let row = format!(
-        "{timestamp_unix_seconds},{},{num_games},{games_completed},{n},{min:.2},{q1:.2},{median:.2},{mean:.2},{q3:.2},{p95:.2},{p99:.2},{max:.2}\n",
+        "{timestamp_unix_seconds},{},{edition},{num_games},{games_completed},{n},{min:.2},{q1:.2},{median:.2},{mean:.2},{q3:.2},{p95:.2},{p99:.2},{max:.2},{first_median:.2},{first_mean:.2},{first_max:.2}\n",
         git_commit_label(),
     );
     match append_result_row(&row) {

@@ -1,3 +1,5 @@
-timestamp_unix_seconds,git_commit,num_games,games_completed,samples,min_ms,q1_ms,median_ms,mean_ms,q3_ms,p95_ms,p99_ms,max_ms
-1784742754,95b37e8-dirty,50,50,2112,0.12,0.38,0.55,0.83,0.86,1.95,6.92,18.83
-1784742777,95b37e8-dirty,20,20,846,0.13,0.39,0.52,0.79,0.84,1.87,5.63,19.78
+timestamp_unix_seconds,git_commit,edition,num_games,games_completed,samples,min_ms,q1_ms,median_ms,mean_ms,q3_ms,p95_ms,p99_ms,max_ms,first_move_median_ms,first_move_mean_ms,first_move_max_ms
+1784742754,95b37e8-dirty,official,50,50,2112,0.12,0.38,0.55,0.83,0.86,1.95,6.92,18.83,,,
+1784742777,95b37e8-dirty,official,20,20,846,0.13,0.39,0.52,0.79,0.84,1.87,5.63,19.78,,,
+1785346713,10ec9bc-dirty,official,30,30,1218,0.11,0.40,0.61,1.02,1.00,2.74,8.91,21.88,0.80,2.73,20.68
+1785346725,10ec9bc-dirty,german,20,20,831,0.11,0.45,0.64,0.96,0.98,2.15,8.08,42.48,0.76,2.11,11.37
