@@ -947,4 +947,72 @@ mod tests {
             Some(crate::model::MoveError::InvalidMove)
         ));
     }
+
+    /// Reproduces a live over-scoring bug, taken from a real game on the
+    /// production board: F(13,0) R(13,1) P(12,2) A(13,2) were already
+    /// down, and a bot played YET below the top-right triple word with a
+    /// *blank* standing in for the Y.
+    ///
+    /// The blank correctly scores 0 in the main word, but the cross-check
+    /// cache scores cross words purely by letter — it has no way to know
+    /// the tile arriving on the square is a blank — so FY is charged a
+    /// full Y and the triple word triples the points that don't exist:
+    /// 37 instead of 25. Ignored until the cache carries a blank score.
+    #[test]
+    #[ignore = "known bug: blanks score their face value in cross words"]
+    fn blank_scores_zero_in_the_cross_word_it_forms_not_just_the_main_word() {
+        let rules = sample_rules();
+        let dictionary = WordListDictionary::new();
+        let engine = RulesEngine {
+            rules: &rules,
+            dictionary: &dictionary,
+        };
+
+        let mut board = BoardState::new(&rules);
+        for (x, y, letter) in [(13, 0, 'F'), (13, 1, 'R'), (12, 2, 'P'), (13, 2, 'A')] {
+            board.set(
+                Position::new(x, y),
+                BoardCell::Filled(FilledCell {
+                    letter: Letter::from(letter),
+                    is_blank: false,
+                }),
+            );
+        }
+        let mut cache = RuleCache::default();
+        cache.recompute_all(&board, &rules, &dictionary);
+
+        let state = RulesPosition {
+            board: &board,
+            cache: &cache,
+            rack: None,
+        };
+        let candidate = MoveCandidate {
+            start: Position::new(14, 0),
+            direction: Direction::Vertical,
+            tiles: vec![
+                TilePlacement {
+                    offset: 0,
+                    tile: Tile::Blank {
+                        acting_as: Some(Letter::from('Y')),
+                    },
+                },
+                TilePlacement {
+                    offset: 1,
+                    tile: Tile::Letter(Letter::from('E')),
+                },
+                TilePlacement {
+                    offset: 2,
+                    tile: Tile::Letter(Letter::from('T')),
+                },
+            ],
+        };
+
+        let validated = engine.validate_move(&state, &candidate).unwrap();
+        assert_eq!(validated.preview.main_word, "YET");
+        // (0 + 1 + 1) tripled by the corner triple word.
+        assert_eq!(validated.score.main_word_score, 6);
+        // FY is F alone, tripled, at 12; then RE at 2 and PAT at 5.
+        assert_eq!(validated.score.cross_word_score, 19);
+        assert_eq!(validated.score.total, 25);
+    }
 }
