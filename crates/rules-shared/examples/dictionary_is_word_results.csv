@@ -1,0 +1,9 @@
+host,list,hash_ns,binary_search_ns
+laptop-ryzen7235hs,sowpods,164,206
+laptop-ryzen7235hs,enable2k,145,197
+laptop-ryzen7235hs,german,182,300
+laptop-ryzen7235hs,spanish,206,357
+prod-epyc7551-2core,sowpods,180,2815
+prod-epyc7551-2core,enable2k,135,280
+prod-epyc7551-2core,german,238,435
+prod-epyc7551-2core,spanish,237,2996
