@@ -189,21 +189,36 @@ impl Candidate for Arena {
     const NAME: &'static str = "arena";
 
     fn build(text: &'static str, alphabet: &Alphabet) -> Self {
-        let mut words: Vec<&str> = text.split_whitespace().collect();
-        words.sort_unstable();
-        words.dedup();
+        // Encode first, then sort by the *letter* sequence — not by the
+        // string. An alphabet's order is its own, and need not match code
+        // point order: Spanish files Ñ between N and O (index 13), while
+        // U+00D1 sorts after Z. Sorting by string and searching by letter
+        // index would binary-search a differently-ordered array and quietly
+        // miss words. German happens to agree with code points; Spanish
+        // does not, which is exactly the kind of difference that only shows
+        // up in one edition.
+        let mut encoded: Vec<Vec<u8>> = text
+            .split_whitespace()
+            .map(|word| {
+                word.chars()
+                    .map(|ch| {
+                        let mut buffer = [0u8; 4];
+                        alphabet
+                            .to_letter(ch.encode_utf8(&mut buffer))
+                            .expect("word list should only contain alphabet graphemes")
+                            .0
+                    })
+                    .collect()
+            })
+            .collect();
+        encoded.sort_unstable();
+        encoded.dedup();
 
         let mut letters: Vec<u8> = Vec::with_capacity(text.len());
-        let mut offsets: Vec<u32> = Vec::with_capacity(words.len() + 1);
+        let mut offsets: Vec<u32> = Vec::with_capacity(encoded.len() + 1);
         offsets.push(0);
-        for word in &words {
-            for ch in word.chars() {
-                let mut buffer = [0u8; 4];
-                let letter = alphabet
-                    .to_letter(ch.encode_utf8(&mut buffer))
-                    .expect("word list should only contain alphabet graphemes");
-                letters.push(letter.0);
-            }
+        for word in &encoded {
+            letters.extend_from_slice(word);
             offsets.push(letters.len() as u32);
         }
         Self {
@@ -345,6 +360,27 @@ fn spread<'a>(words: &[&'a str], count: usize) -> Vec<&'a str> {
     (0..count).map(|i| words[i * stride]).collect()
 }
 
+/// Builds one variant, checks it against the baseline's answers, and drops
+/// it again — see the call site for why they are never all alive at once.
+fn check<C: Candidate>(
+    list: &str,
+    text: &'static str,
+    alphabet: &Alphabet,
+    encoded: &[Vec<Letter>],
+    expected: &[usize],
+) {
+    let built = C::build(text, alphabet);
+    for (letters, want) in encoded.iter().zip(expected) {
+        let got = built.walk(letters, alphabet);
+        assert_eq!(
+            got,
+            *want,
+            "{list}/{}: disagreed with baseline on a real word (walked {got} of {want} letters)",
+            C::NAME
+        );
+    }
+}
+
 fn measure<C: Candidate>(text: &'static str, alphabet: &Alphabet, encoded: &[Vec<Letter>]) {
     let construct_ms = median(
         (0..CONSTRUCTION_RUNS)
@@ -402,6 +438,42 @@ fn main() {
                     .collect::<Option<Vec<Letter>>>()
             })
             .collect();
+
+        // Agreement check, before any timing. A benchmark will happily
+        // report excellent numbers for a variant that returns wrong
+        // answers: the first `arena` sorted by string while searching by
+        // letter index, which is correct for every list whose alphabet
+        // happens to follow code point order and silently wrong for
+        // spanish, where Ñ is filed between N and O. Nothing in the
+        // timings could have shown that. Every variant must reach the
+        // same depth on the same word as the baseline does.
+        //
+        // Each variant is built, checked and dropped before the next is
+        // built. Holding all four at once costs ~73MB for german, which on
+        // the 954MB deployment VM perturbs the very thing being measured —
+        // an earlier version of this check made a hash lookup there appear
+        // to take 2738ns, fifteen times its real cost, purely from page
+        // pressure the harness itself created.
+        {
+            let expected: Vec<usize> = {
+                let baseline = Baseline::build(text, alphabet);
+                encoded
+                    .iter()
+                    .map(|letters| {
+                        let depth = baseline.walk(letters, alphabet);
+                        assert_eq!(
+                            depth,
+                            letters.len(),
+                            "{name}: a word from the list should walk to its full length"
+                        );
+                        depth
+                    })
+                    .collect()
+            };
+            check::<Slices>(name, text, alphabet, &encoded, &expected);
+            check::<Arena>(name, text, alphabet, &encoded, &expected);
+            check::<Tiered>(name, text, alphabet, &encoded, &expected);
+        }
 
         println!("{name} ({} words, {} walks)", all.len(), encoded.len());
         measure::<Baseline>(text, alphabet, &encoded);
