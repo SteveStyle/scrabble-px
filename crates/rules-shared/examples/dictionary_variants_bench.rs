@@ -273,7 +273,13 @@ fn partition_point(mut lo: usize, mut hi: usize, pred: impl Fn(usize) -> bool) -
 // tiered: arena + a dense index over the first two letters
 // ---------------------------------------------------------------------------
 
-struct Tiered {
+/// `arena` plus a dense index over the first two letters, and a size
+/// threshold below which the remaining search scans instead of bisecting.
+///
+/// `CUTOFF` is a const parameter so the sweep in `main` compares real
+/// monomorphised code rather than a branch on a runtime field — the whole
+/// question is what the compiler and the prefetcher do with each choice.
+struct Tiered<const CUTOFF: usize> {
     arena: Arena,
     alphabet_len: usize,
     /// `[lo, hi)` into the arena for each first-two-letter pair, laid out
@@ -281,21 +287,105 @@ struct Tiered {
     /// 26-letter alphabet this is 676 ranges — about 5KB, small enough to
     /// stay resident indefinitely, which is the entire point.
     pairs: Box<[(u32, u32)]>,
+    /// Whether each two-letter prefix is itself a word. Two-letter words
+    /// are the most-consulted entries on a board, and this answers them
+    /// without touching the arena at all.
+    pair_is_word: Box<[bool]>,
 }
 
-impl Candidate for Tiered {
+impl<const CUTOFF: usize> Tiered<CUTOFF> {
+    /// Narrows `[lo, hi)` to the words whose letter at `depth` is `target`.
+    /// Below `CUTOFF` entries this scans forward instead of bisecting:
+    /// consecutive words sit adjacent in the arena, so a short scan is
+    /// sequential and prefetchable where a binary search jumps.
+    #[inline]
+    fn narrow(&self, lo: usize, hi: usize, depth: usize, target: u8) -> (usize, usize) {
+        // A word that ends before `depth` sorts *before* every word that
+        // continues past it ("AB" precedes "ABC"), so "no letter here" has
+        // to count as sorting before the target, not after. Treating it as
+        // after stops the scan dead on the shorter word — which is what the
+        // agreement check caught.
+        if hi - lo <= CUTOFF {
+            let mut start = lo;
+            while start < hi
+                && self
+                    .arena
+                    .word(start)
+                    .get(depth)
+                    .is_none_or(|c| *c < target)
+            {
+                start += 1;
+            }
+            let mut end = start;
+            while end < hi && self.arena.word(end).get(depth) == Some(&target) {
+                end += 1;
+            }
+            (start, end)
+        } else {
+            let start = partition_point(lo, hi, |i| {
+                self.arena.word(i).get(depth).is_none_or(|c| *c < target)
+            });
+            let end = partition_point(start, hi, |i| {
+                self.arena.word(i).get(depth).is_none_or(|c| *c <= target)
+            });
+            (start, end)
+        }
+    }
+
+    /// Membership without the HashSet: the tier answers the first two
+    /// letters, so what remains is a search over a few hundred entries
+    /// rather than the whole list. That is a different question from the
+    /// one measured earlier, where binary search over the full range lost
+    /// badly to hashing.
+    fn contains(&self, letters: &[u8]) -> bool {
+        match letters.len() {
+            0 => false,
+            1 => {
+                let (lo, hi) = (0, self.arena.len());
+                let (s, e) = self.narrow(lo, hi, 0, letters[0]);
+                (s..e).any(|i| self.arena.word(i).len() == 1)
+            }
+            _ => {
+                let slot = letters[0] as usize * self.alphabet_len + letters[1] as usize;
+                if letters.len() == 2 {
+                    return self.pair_is_word[slot];
+                }
+                let (lo, hi) = self.pairs[slot];
+                let (mut lo, mut hi) = (lo as usize, hi as usize);
+                if lo == hi {
+                    return false;
+                }
+                for (offset, target) in letters[2..].iter().enumerate() {
+                    let (s, e) = self.narrow(lo, hi, offset + 2, *target);
+                    if s == e {
+                        return false;
+                    }
+                    lo = s;
+                    hi = e;
+                }
+                (lo..hi).any(|i| self.arena.word(i).len() == letters.len())
+            }
+        }
+    }
+}
+
+impl<const CUTOFF: usize> Candidate for Tiered<CUTOFF> {
     const NAME: &'static str = "tiered";
 
     fn build(text: &'static str, alphabet: &Alphabet) -> Self {
         let arena = Arena::build(text, alphabet);
         let n = alphabet.len();
         let mut pairs = vec![(0u32, 0u32); n * n];
+        let mut pair_is_word = vec![false; n * n];
         for index in 0..arena.len() {
             let word = arena.word(index);
             if word.len() < 2 {
                 continue;
             }
             let slot = word[0] as usize * n + word[1] as usize;
+            if word.len() == 2 {
+                pair_is_word[slot] = true;
+            }
             let entry = &mut pairs[slot];
             if entry.0 == entry.1 {
                 *entry = (index as u32, index as u32 + 1);
@@ -307,11 +397,12 @@ impl Candidate for Tiered {
             arena,
             alphabet_len: n,
             pairs: pairs.into_boxed_slice(),
+            pair_is_word: pair_is_word.into_boxed_slice(),
         }
     }
 
     fn resident_bytes(&self) -> usize {
-        self.arena.resident_bytes() + self.pairs.len() * 8
+        self.arena.resident_bytes() + self.pairs.len() * 8 + self.pair_is_word.len()
     }
 
     fn walk(&self, letters: &[Letter], alphabet: &Alphabet) -> usize {
@@ -322,24 +413,18 @@ impl Candidate for Tiered {
         let (lo, hi) = self.pairs[slot];
         if lo == hi {
             // The dense index answered outright: nothing starts with this
-            // pair, and no binary search happened at all.
+            // pair, and no search happened at all.
             return 0;
         }
         let (mut lo, mut hi) = (lo as usize, hi as usize);
         for (offset, letter) in letters[2..].iter().enumerate() {
             let depth = offset + 2;
-            let target = letter.0;
-            let start = partition_point(lo, hi, |i| {
-                self.arena.word(i).get(depth).is_some_and(|c| *c < target)
-            });
-            let end = partition_point(lo, hi, |i| {
-                self.arena.word(i).get(depth).is_none_or(|c| *c <= target)
-            });
-            if start == end {
+            let (s, e) = self.narrow(lo, hi, depth, letter.0);
+            if s == e {
                 return depth;
             }
-            lo = start;
-            hi = end;
+            lo = s;
+            hi = e;
         }
         letters.len()
     }
@@ -379,6 +464,23 @@ fn check<C: Candidate>(
             C::NAME
         );
     }
+}
+
+fn measure_labelled<C: Candidate>(
+    label: &str,
+    text: &'static str,
+    alphabet: &Alphabet,
+    encoded: &[Vec<Letter>],
+) {
+    let built = C::build(text, alphabet);
+    let resident_mb = built.resident_bytes() as f64 / (1024.0 * 1024.0);
+    let start = Instant::now();
+    let mut steps = 0usize;
+    for letters in encoded {
+        steps += built.walk(letters, alphabet);
+    }
+    let walk_ns = start.elapsed().as_secs_f64() * 1e9 / steps.max(1) as f64;
+    println!("  {label:<15} {resident_mb:>9.1} MB {walk_ns:>9.0} ns/step");
 }
 
 fn measure<C: Candidate>(text: &'static str, alphabet: &Alphabet, encoded: &[Vec<Letter>]) {
@@ -472,14 +574,49 @@ fn main() {
             };
             check::<Slices>(name, text, alphabet, &encoded, &expected);
             check::<Arena>(name, text, alphabet, &encoded, &expected);
-            check::<Tiered>(name, text, alphabet, &encoded, &expected);
+            check::<Tiered<0>>(name, text, alphabet, &encoded, &expected);
+            check::<Tiered<16>>(name, text, alphabet, &encoded, &expected);
+            check::<Tiered<64>>(name, text, alphabet, &encoded, &expected);
+            check::<Tiered<256>>(name, text, alphabet, &encoded, &expected);
         }
 
         println!("{name} ({} words, {} walks)", all.len(), encoded.len());
         measure::<Baseline>(text, alphabet, &encoded);
         measure::<Slices>(text, alphabet, &encoded);
         measure::<Arena>(text, alphabet, &encoded);
-        measure::<Tiered>(text, alphabet, &encoded);
+        // Cutoff sweep. 0 is pure binary search; larger values scan a
+        // wider tail. The crossover is a cache-behaviour question, so it
+        // has to be found rather than reasoned about.
+        measure_labelled::<Tiered<0>>("tiered/bsearch", text, alphabet, &encoded);
+        measure_labelled::<Tiered<16>>("tiered/scan16", text, alphabet, &encoded);
+        measure_labelled::<Tiered<64>>("tiered/scan64", text, alphabet, &encoded);
+        measure_labelled::<Tiered<256>>("tiered/scan256", text, alphabet, &encoded);
+
+        // Does the tier make the HashSet redundant? Earlier this lost
+        // badly, but that measured binary search over the *whole* list;
+        // with the first two letters answered by the tier, what is left is
+        // a few hundred entries.
+        {
+            let tiered = Tiered::<64>::build(text, alphabet);
+            let encoded_sample: Vec<Vec<u8>> = encoded
+                .iter()
+                .map(|w| w.iter().map(|l| l.0).collect())
+                .collect();
+            let start = Instant::now();
+            let mut found = 0usize;
+            for word in &encoded_sample {
+                if tiered.contains(word) {
+                    found += 1;
+                }
+            }
+            let tier_ns = start.elapsed().as_secs_f64() * 1e9 / encoded_sample.len() as f64;
+            assert_eq!(
+                found,
+                encoded_sample.len(),
+                "{name}: tiered membership should find every real word"
+            );
+            println!("  is_word    tiered {tier_ns:>6.0} ns  (vs hash/bsearch below)");
+        }
 
         // Settles the open question of whether the HashSet can simply be
         // dropped: a hash lookup is O(1) but touches the bucket and then
