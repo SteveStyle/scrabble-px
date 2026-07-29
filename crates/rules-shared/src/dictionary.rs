@@ -298,9 +298,62 @@ pub fn dictionary_by_name(name: &str) -> Option<&'static WordListDictionary> {
 mod tests {
     use super::{
         Dictionary, ENABLE2K, GERMAN, PrefixCursor, SOWPODS, SPANISH, SortedPrefixCursor,
-        dictionary_by_name, is_word,
+        dictionary_by_name, enable2k_word_list, german_word_list, is_word, sowpods_word_list,
+        spanish_word_list,
     };
     use crate::model::{Alphabet, Letter, VariantRules};
+
+    /// The compiled-in word lists are required to arrive sorted, deduped
+    /// and free of blank lines, so construction can trust the file instead
+    /// of re-establishing those properties on every startup.
+    ///
+    /// "Sorted" means **byte order** (`LC_ALL=C sort -u`), which for UTF-8
+    /// is identical to code-point order and therefore to the `Vec<char>`
+    /// comparison `sorted_words` is built on. A locale-aware sort is *not*
+    /// equivalent — German collation files `Ä` beside `A` — and would
+    /// quietly break the prefix cursor's binary search on the two
+    /// non-ASCII lists while leaving the ASCII ones looking fine.
+    ///
+    /// This is a data invariant, not a code one: it fails when someone
+    /// re-imports a list without normalising it, which is exactly when a
+    /// silent wrong answer would otherwise be easiest to ship.
+    #[test]
+    fn every_compiled_in_word_list_is_sorted_deduped_and_blank_free() {
+        for (name, text) in [
+            ("sowpods", sowpods_word_list()),
+            ("enable2k", enable2k_word_list()),
+            ("german", german_word_list()),
+            ("spanish", spanish_word_list()),
+        ] {
+            let lines: Vec<&str> = text.lines().collect();
+            assert!(!lines.is_empty(), "{name} is empty");
+
+            for (index, line) in lines.iter().enumerate() {
+                assert!(
+                    !line.is_empty(),
+                    "{name} line {} is blank — `split_whitespace` would hide it, but it \
+                     breaks the sorted/deduped guarantee construction relies on",
+                    index + 1
+                );
+                assert_eq!(
+                    line.trim(),
+                    *line,
+                    "{name} line {} has surrounding whitespace",
+                    index + 1
+                );
+            }
+
+            for pair in lines.windows(2) {
+                assert!(
+                    pair[0].as_bytes() < pair[1].as_bytes(),
+                    "{name} is not strictly ascending in byte order at {:?} -> {:?} \
+                     (re-normalise with `LC_ALL=C sort -u`, never a locale-aware sort)",
+                    pair[0],
+                    pair[1]
+                );
+            }
+        }
+    }
 
     fn advance_all<'a>(
         mut cursor: SortedPrefixCursor<'a>,

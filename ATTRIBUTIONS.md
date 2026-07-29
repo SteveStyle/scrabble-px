@@ -9,9 +9,19 @@ The project's own code is dual-licensed under [MIT](LICENSE-MIT) and
 
 Each edition compiles its word list straight into the binary from
 `crates/rules-shared/src/`, and the server serves it verbatim at
-`GET /dictionaries/{name}`. All four were normalised on import to one
-uppercase word per line, at most 15 letters, restricted to that edition's
-alphabet — so none of them is byte-identical to its upstream file.
+`GET /dictionaries/{name}` (sign-in required). All four were normalised on
+import to one uppercase word per line, at most 15 letters, restricted to
+that edition's alphabet — so none of them is byte-identical to its upstream
+file.
+
+They are also stored sorted and deduped, so dictionary construction can
+trust the file rather than re-establishing those properties on every
+startup. Re-normalise with `LC_ALL=C sort -u` and **never** a locale-aware
+sort: byte order matches the code-point order the prefix cursor's binary
+search assumes, whereas German collation would file `Ä` beside `A` and
+silently break lookups on the two non-ASCII lists. The invariant is
+enforced by `every_compiled_in_word_list_is_sorted_deduped_and_blank_free`
+in `crates/rules-shared/src/dictionary.rs`.
 
 ### `enable2k.txt` — 169,266 words
 
@@ -43,7 +53,7 @@ alphabet — so none of them is byte-identical to its upstream file.
   Letterpress word list; that further derivation has not been verified
   here. Filtered to `A–Z` plus `Ñ`. Imported at roughly 636,000 words.
 
-### `sowpods.txt` — 267,753 words
+### `sowpods.txt` — 267,752 words
 
 - **Upstream:** unrecorded
 - **Licence:** unrecorded
