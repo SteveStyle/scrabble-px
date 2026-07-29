@@ -27,7 +27,7 @@ use api::{GameStatus, SeatKind};
 use rules_shared::{Rack, VariantRules};
 use server_game::game_state::{EngineRegistry, GameSession, ParticipantState};
 
-const RESULTS_CSV_HEADER: &str = "timestamp_unix_seconds,git_commit,edition,num_games,games_completed,samples,min_ms,q1_ms,median_ms,mean_ms,q3_ms,p95_ms,p99_ms,max_ms,first_move_median_ms,first_move_mean_ms,first_move_max_ms\n";
+const RESULTS_CSV_HEADER: &str = "timestamp_unix_seconds,git_commit,host,edition,num_games,games_completed,samples,min_ms,q1_ms,median_ms,mean_ms,q3_ms,p95_ms,p99_ms,max_ms,first_move_median_ms,first_move_mean_ms,first_move_max_ms\n";
 
 /// The short commit hash `HEAD` is on, with a `-dirty` suffix if the working
 /// tree has uncommitted changes — unlike a real deploy (which refuses a
@@ -49,6 +49,22 @@ fn git_commit_label() -> String {
         .ok()
         .is_some_and(|output| output.status.success() && !output.stdout.is_empty());
     if dirty { format!("{hash}-dirty") } else { hash }
+}
+
+/// The engine workload is memory-bound in its dictionary access, so the
+/// machine is part of the result — the same binary's p99 differs 6x between
+/// a modern laptop and the deployment VM. `BENCH_HOST` overrides for a run
+/// whose hostname isn't descriptive.
+fn host_label() -> String {
+    std::env::var("BENCH_HOST").unwrap_or_else(|_| {
+        Command::new("hostname")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "unknown".to_string())
+    })
 }
 
 fn append_result_row(row: &str) -> std::io::Result<std::path::PathBuf> {
@@ -155,7 +171,7 @@ async fn main() {
     let n = samples_ms.len();
     let mean = samples_ms.iter().sum::<f64>() / n as f64;
 
-    println!("edition: {edition}");
+    println!("host: {}  edition: {edition}", host_label());
     println!("games played: {num_games} ({games_completed} reached Finished)");
     println!("move-timing samples: {n}");
     println!();
@@ -197,8 +213,9 @@ async fn main() {
         .expect("system time before epoch")
         .as_secs();
     let row = format!(
-        "{timestamp_unix_seconds},{},{edition},{num_games},{games_completed},{n},{min:.2},{q1:.2},{median:.2},{mean:.2},{q3:.2},{p95:.2},{p99:.2},{max:.2},{first_median:.2},{first_mean:.2},{first_max:.2}\n",
+        "{timestamp_unix_seconds},{},{},{edition},{num_games},{games_completed},{n},{min:.2},{q1:.2},{median:.2},{mean:.2},{q3:.2},{p95:.2},{p99:.2},{max:.2},{first_median:.2},{first_mean:.2},{first_max:.2}\n",
         git_commit_label(),
+        host_label(),
     );
     match append_result_row(&row) {
         Ok(path) => println!("\nrecorded to {}", path.display()),

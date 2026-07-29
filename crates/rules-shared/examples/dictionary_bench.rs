@@ -34,11 +34,26 @@ use rules_shared::{
 /// `variant` names the implementation being measured, so rows from before
 /// and after a construction/lookup change stay distinguishable in one file
 /// rather than only being separable by reading the git log.
-const RESULTS_CSV_HEADER: &str = "timestamp_unix_seconds,git_commit,variant,list,words,construct_ms,is_word_hit_ns,is_word_miss_ns,prefix_advance_ns\n";
+const RESULTS_CSV_HEADER: &str = "timestamp_unix_seconds,git_commit,host,variant,list,words,construct_ms,is_word_hit_ns,is_word_miss_ns,prefix_advance_ns\n";
 
 /// The implementation these numbers describe. Bump this when the storage
 /// or lookup strategy changes, so the CSV keeps old rows comparable.
 const VARIANT: &str = "hashset+vec-of-vec-char";
+
+/// This workload is memory-bound, so the machine matters as much as the
+/// code — the same binary shows a 6x spread on prefix walks between a
+/// modern laptop and the deployment VM. Rows are useless without it.
+fn host_label() -> String {
+    std::env::var("BENCH_HOST").unwrap_or_else(|_| {
+        std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "unknown".to_string())
+    })
+}
 
 /// Same convention as `engine_timing_bench`: record the commit, and mark a
 /// dirty tree rather than refusing to run — benchmarking mid-change is the
@@ -98,9 +113,10 @@ fn main() {
         .expect("system time before epoch")
         .as_secs();
     let commit = git_commit_label();
+    let host = host_label();
     let mut rows = String::new();
 
-    println!("variant: {VARIANT}");
+    println!("variant: {VARIANT}  host: {host}");
     println!();
     println!(
         "{:<10} {:>8} {:>12} {:>12} {:>12} {:>12}",
@@ -192,7 +208,7 @@ fn main() {
             all.len(),
         );
         rows.push_str(&format!(
-            "{timestamp_unix_seconds},{commit},{VARIANT},{name},{},{construct_ms:.1},{hit_ns:.0},{miss_ns:.0},{walk_ns:.0}\n",
+            "{timestamp_unix_seconds},{commit},{host},{VARIANT},{name},{},{construct_ms:.1},{hit_ns:.0},{miss_ns:.0},{walk_ns:.0}\n",
             all.len(),
         ));
     }
