@@ -21,9 +21,10 @@ use serde::{Deserialize, Serialize};
 // despite being a changed response type: `/admin/*` is loopback-only with
 // exactly one client — `tile-lite-elite-admin`, built from this same tree
 // and shipped in the same container — so no player-facing client can be
-// running against a server it disagrees with. A major bump here would
-// instead fire the web client's version-skew reload for a change it can't
-// even observe.
+// running against a server it disagrees with. Either bump reaches those
+// clients, since any skew at all trips the web client's auto-update; what
+// major would add is blocking them — a hard error on web, a "download a
+// new client" banner on desktop — over a change they cannot observe.
 pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 4 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
