@@ -68,8 +68,6 @@ and `german` editions are the standard published sets for those games;
 `spanish` follows the traditional Castilian set including its CH/LL/RR
 digraph tiles. These are functional game data rather than creative work.
 
-The retired `wordfeud` edition (see `VariantRules::retired_wordfeud`) is
-kept only so games created under it still resolve. Wordfeud is a trademark
-of Bertheussen IT; this project is not affiliated with, endorsed by, or
-derived from it. Scrabble is a trademark of Hasbro in the United States and
-Canada and of Mattel elsewhere; this project is likewise unaffiliated.
+Scrabble is a trademark of Hasbro in the United States and Canada and of
+Mattel elsewhere. This project is not affiliated with, endorsed by, or
+derived from either.
