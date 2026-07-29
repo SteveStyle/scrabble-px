@@ -25,7 +25,16 @@ use serde::{Deserialize, Serialize};
 // clients, since any skew at all trips the web client's auto-update; what
 // major would add is blocking them — a hard error on web, a "download a
 // new client" banner on desktop — over a change they cannot observe.
-pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 4 };
+// 2.5: `GET /dictionaries/{name}` now requires a session token. Minor by
+// the same test as 2.4, though it does take a capability away rather than
+// add one: the only client that calls it is the wasm build (native builds
+// compile every dictionary in and never fetch), and any skew already
+// auto-reloads the web client into a build that sends the header. A
+// pre-2.5 web client that somehow didn't reload would keep playing and
+// lose only its client-side move preview, which already degrades to
+// absent whenever the fetch fails. Major would banner desktop users about
+// an endpoint their build never calls.
+pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 5 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApiVersion {

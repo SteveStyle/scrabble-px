@@ -381,8 +381,11 @@ pub fn RootApp() -> Element {
                 started.insert(language.clone());
             });
             let server_url = server_url.clone();
+            let token = session().map(|current| current.session_token.clone());
             spawn(async move {
-                if let Some(dictionary) = load_client_dictionary(&server_url, &language).await {
+                if let Some(dictionary) =
+                    load_client_dictionary(&server_url, &language, token).await
+                {
                     client_dictionaries.with_mut(|dictionaries| {
                         dictionaries.insert(language, dictionary);
                     });
@@ -2811,9 +2814,16 @@ where
 /// JSON body, which this isn't). Only the wasm build calls this: the
 /// native dictionary is compiled in, so `load_client_dictionary`'s native
 /// path never needs to fetch anything.
+///
+/// Takes a token because `/dictionaries/{name}` requires sign-in — see the
+/// handler's own note for why that endpoint isn't public.
 #[cfg(target_arch = "wasm32")]
-async fn get_text(url: &str) -> Result<String, String> {
-    let response = Request::get(url).send().await.map_err(|_| mark_offline())?;
+async fn get_text(url: &str, token: Option<&str>) -> Result<String, String> {
+    let mut request = Request::get(url);
+    if let Some(token) = token {
+        request = request.header("Authorization", &format!("Bearer {token}"));
+    }
+    let response = request.send().await.map_err(|_| mark_offline())?;
     mark_online();
     if !response.ok() {
         return Err(format!(
@@ -2837,6 +2847,7 @@ async fn get_text(url: &str) -> Result<String, String> {
 async fn load_client_dictionary(
     _server_url: &str,
     language: &str,
+    _token: Option<String>,
 ) -> Option<&'static rules_shared::WordListDictionary> {
     rules_shared::dictionary_by_name(language)
 }
@@ -2845,10 +2856,14 @@ async fn load_client_dictionary(
 async fn load_client_dictionary(
     server_url: &str,
     language: &str,
+    token: Option<String>,
 ) -> Option<&'static rules_shared::WordListDictionary> {
-    let text = get_text(&format!("{server_url}/dictionaries/{language}"))
-        .await
-        .ok()?;
+    let text = get_text(
+        &format!("{server_url}/dictionaries/{language}"),
+        token.as_deref(),
+    )
+    .await
+    .ok()?;
     Some(Box::leak(Box::new(
         rules_shared::WordListDictionary::from_word_list(text),
     )))

@@ -173,64 +173,65 @@ fn rack_with_letters(letters: &[char]) -> Rack {
     rack
 }
 
+/// The dictionary endpoint requires sign-in — see `catalog::get_dictionary`
+/// for why redistribution, not sensitivity, is what's being gated. Each
+/// language is checked separately because each is a distinct compiled-in
+/// asset, and the probe words exercise the non-ASCII ones properly.
 #[tokio::test]
-async fn dictionary_endpoint_serves_sowpods_unauthenticated() {
+async fn dictionary_endpoint_serves_every_language_to_a_signed_in_player() {
     let database_url = test_database_url();
     let state = create_test_state(&database_url).await;
     let app = build_router(state);
+    let alice = register_player(app.clone(), "Alice").await;
 
-    let response = send_empty(app, Method::GET, "/dictionaries/sowpods").await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body should read");
-    let text = String::from_utf8(bytes.to_vec()).expect("dictionary should be valid utf8");
-    assert!(text.split_whitespace().any(|word| word == "ACE"));
+    for (language, probe) in [
+        ("sowpods", "ACE"),
+        ("enable2k", "ACE"),
+        ("german", "\u{d6}L"),
+        ("spanish", "CARRO"),
+    ] {
+        let response = send_empty_auth(
+            app.clone(),
+            Method::GET,
+            &format!("/dictionaries/{language}"),
+            Some(&alice.session_token),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "{language} should be served to a signed-in player"
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read");
+        let text = String::from_utf8(bytes.to_vec()).expect("dictionary should be valid utf8");
+        assert!(
+            text.split_whitespace().any(|word| word == probe),
+            "{language} should contain {probe}"
+        );
+    }
 }
 
+/// The whole point of the gate: the word lists are no longer served to the
+/// open internet, only to players of this game.
 #[tokio::test]
-async fn dictionary_endpoint_serves_enable2k_unauthenticated() {
+async fn dictionary_endpoint_rejects_an_unauthenticated_caller() {
     let database_url = test_database_url();
     let state = create_test_state(&database_url).await;
     let app = build_router(state);
 
-    let response = send_empty(app, Method::GET, "/dictionaries/enable2k").await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body should read");
-    let text = String::from_utf8(bytes.to_vec()).expect("dictionary should be valid utf8");
-    assert!(text.split_whitespace().any(|word| word == "ACE"));
-}
+    let response = send_empty(app.clone(), Method::GET, "/dictionaries/sowpods").await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-#[tokio::test]
-async fn dictionary_endpoint_serves_german_unauthenticated() {
-    let database_url = test_database_url();
-    let state = create_test_state(&database_url).await;
-    let app = build_router(state);
-
-    let response = send_empty(app, Method::GET, "/dictionaries/german").await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body should read");
-    let text = String::from_utf8(bytes.to_vec()).expect("dictionary should be valid utf8");
-    assert!(text.split_whitespace().any(|word| word == "ÖL"));
-}
-
-#[tokio::test]
-async fn dictionary_endpoint_serves_spanish_unauthenticated() {
-    let database_url = test_database_url();
-    let state = create_test_state(&database_url).await;
-    let app = build_router(state);
-
-    let response = send_empty(app, Method::GET, "/dictionaries/spanish").await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let bytes = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body should read");
-    let text = String::from_utf8(bytes.to_vec()).expect("dictionary should be valid utf8");
-    assert!(text.split_whitespace().any(|word| word == "CARRO"));
+    let response = send_empty_auth(
+        app,
+        Method::GET,
+        "/dictionaries/sowpods",
+        Some("not-a-real-token"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -238,8 +239,17 @@ async fn dictionary_endpoint_404s_for_an_unknown_name() {
     let database_url = test_database_url();
     let state = create_test_state(&database_url).await;
     let app = build_router(state);
+    let alice = register_player(app.clone(), "Alice").await;
 
-    let response = send_empty(app, Method::GET, "/dictionaries/not-a-real-dictionary").await;
+    // Signed in, so this is a genuine 404 rather than the 401 an
+    // unauthenticated caller would get for any name at all.
+    let response = send_empty_auth(
+        app,
+        Method::GET,
+        "/dictionaries/not-a-real-dictionary",
+        Some(&alice.session_token),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
