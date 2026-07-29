@@ -974,6 +974,18 @@ mod tests {
         };
 
         let mut board = BoardState::new(&rules);
+        // The three squares the word lands on are given the premiums the
+        // production board had, rather than whatever the current edition
+        // puts there. What's under test is how a blank scores in a cross
+        // word on a word-multiplier square; that shouldn't be re-derived,
+        // or silently invalidated, every time the board layout changes.
+        for (x, y, premium) in [
+            (14, 0, Premium::TripleWord),
+            (14, 1, Premium::Blank),
+            (14, 2, Premium::Blank),
+        ] {
+            board.set(Position::new(x, y), BoardCell::Empty(EmptyCell { premium }));
+        }
         for (x, y, letter) in [(13, 0, 'F'), (13, 1, 'R'), (12, 2, 'P'), (13, 2, 'A')] {
             board.set(
                 Position::new(x, y),

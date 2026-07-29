@@ -489,35 +489,18 @@ impl VariantRules {
             width: 15,
             height: 15,
             bingo_bonus: 50,
-            premiums: mirrored_premiums(&[
-                (0, 0, Premium::TripleWord),
-                (3, 0, Premium::DoubleLetter),
-                (7, 0, Premium::TripleWord),
-                (1, 1, Premium::DoubleWord),
-                (5, 1, Premium::TripleLetter),
-                (2, 2, Premium::DoubleWord),
-                (6, 2, Premium::DoubleLetter),
-                (0, 3, Premium::DoubleLetter),
-                (3, 3, Premium::DoubleWord),
-                (7, 3, Premium::DoubleLetter),
-                (4, 4, Premium::DoubleWord),
-                (1, 5, Premium::TripleLetter),
-                (5, 5, Premium::TripleLetter),
-                (2, 6, Premium::DoubleLetter),
-                (6, 6, Premium::DoubleLetter),
-                (0, 7, Premium::TripleWord),
-                (3, 7, Premium::DoubleLetter),
-                (7, 7, Premium::DoubleWord),
-            ]),
+            premiums: house_premiums(),
         }
     }
 
-    /// Wordfeud's actual numbers (letter values, tile distribution, bingo
-    /// bonus, premium layout all genuinely differ from official) — reused
-    /// verbatim from `old-crates/*/src/board.rs`'s `SCRABBLE_VARIANT_WORDFEUD`,
-    /// the project's own superseded-but-still-accurate prior art. Still
-    /// English/ASCII and still 15×15, so this is proof of the edition
-    /// registry, not of any board-size or alphabet generalization.
+    /// Wordfeud's letter values, tile distribution and bingo bonus, which
+    /// genuinely differ from official — reused from `old-crates/*/src/board.rs`'s
+    /// `SCRABBLE_VARIANT_WORDFEUD`, the project's own superseded-but-still-accurate
+    /// prior art. It no longer carries Wordfeud's premium layout: that was
+    /// a live competitor's board design, and every edition here now plays
+    /// on `house_premiums()`. Still English/ASCII and still 15×15, so this
+    /// is proof of the edition registry, not of any board-size or alphabet
+    /// generalization.
     pub fn wordfeud() -> Self {
         Self {
             name: "wordfeud".to_string(),
@@ -534,37 +517,19 @@ impl VariantRules {
             width: 15,
             height: 15,
             bingo_bonus: 40,
-            premiums: mirrored_premiums(&[
-                (0, 0, Premium::TripleLetter),
-                (4, 0, Premium::TripleWord),
-                (7, 0, Premium::DoubleLetter),
-                (1, 1, Premium::DoubleLetter),
-                (5, 1, Premium::TripleLetter),
-                (2, 2, Premium::DoubleWord),
-                (6, 2, Premium::DoubleLetter),
-                (3, 3, Premium::TripleLetter),
-                (7, 3, Premium::DoubleWord),
-                (0, 4, Premium::TripleWord),
-                (4, 4, Premium::DoubleWord),
-                (6, 4, Premium::DoubleLetter),
-                (1, 5, Premium::TripleLetter),
-                (5, 5, Premium::TripleLetter),
-                (2, 6, Premium::DoubleLetter),
-                (4, 6, Premium::DoubleLetter),
-                (0, 7, Premium::DoubleLetter),
-                (3, 7, Premium::DoubleWord),
-            ]),
+            premiums: house_premiums(),
         }
     }
 
     /// North American English Scrabble (TWL/NWL word list territory).
     /// Real North American (Hasbro) and International (Mattel) sets are
     /// economically identical — same 100 tiles, same letter values, same
-    /// board — the only real-world difference is the word list, so this
+    /// tiles — the only real-world difference is the word list, so this
     /// deliberately duplicates `official()`'s numbers verbatim rather than
     /// deriving from it: it's a coincidence that they start out equal, not
     /// a guarantee, and the two should be free to diverge independently if
-    /// either edition's numbers are ever tuned.
+    /// either edition's numbers are ever tuned. The board is not part of
+    /// that: every edition shares `house_premiums()`.
     pub fn north_american() -> Self {
         Self {
             name: "north_american".to_string(),
@@ -581,26 +546,7 @@ impl VariantRules {
             width: 15,
             height: 15,
             bingo_bonus: 50,
-            premiums: mirrored_premiums(&[
-                (0, 0, Premium::TripleWord),
-                (3, 0, Premium::DoubleLetter),
-                (7, 0, Premium::TripleWord),
-                (1, 1, Premium::DoubleWord),
-                (5, 1, Premium::TripleLetter),
-                (2, 2, Premium::DoubleWord),
-                (6, 2, Premium::DoubleLetter),
-                (0, 3, Premium::DoubleLetter),
-                (3, 3, Premium::DoubleWord),
-                (7, 3, Premium::DoubleLetter),
-                (4, 4, Premium::DoubleWord),
-                (1, 5, Premium::TripleLetter),
-                (5, 5, Premium::TripleLetter),
-                (2, 6, Premium::DoubleLetter),
-                (6, 6, Premium::DoubleLetter),
-                (0, 7, Premium::TripleWord),
-                (3, 7, Premium::DoubleLetter),
-                (7, 7, Premium::DoubleWord),
-            ]),
+            premiums: house_premiums(),
         }
     }
 
@@ -611,10 +557,9 @@ impl VariantRules {
     /// letter tiles + 2 blanks = 102 total (vs. English's 100). No ß tile —
     /// real German Scrabble sets have none; ß-words are physically played
     /// as two separate S tiles (`STRASSE`, not `STRAßE`), which is exactly
-    /// why the German S count (7) is higher than English's (4). Board
-    /// layout/bingo bonus are the same as `official()` — that's standard
-    /// across language editions of standard Scrabble; only Wordfeud (a
-    /// different company's game) differs there.
+    /// why the German S count (7) is higher than English's (4). The bingo
+    /// bonus matches `official()` — standard across language editions —
+    /// and the board is `house_premiums()`, as every edition's is.
     pub fn german() -> Self {
         Self {
             name: "german".to_string(),
@@ -634,26 +579,7 @@ impl VariantRules {
             width: 15,
             height: 15,
             bingo_bonus: 50,
-            premiums: mirrored_premiums(&[
-                (0, 0, Premium::TripleWord),
-                (3, 0, Premium::DoubleLetter),
-                (7, 0, Premium::TripleWord),
-                (1, 1, Premium::DoubleWord),
-                (5, 1, Premium::TripleLetter),
-                (2, 2, Premium::DoubleWord),
-                (6, 2, Premium::DoubleLetter),
-                (0, 3, Premium::DoubleLetter),
-                (3, 3, Premium::DoubleWord),
-                (7, 3, Premium::DoubleLetter),
-                (4, 4, Premium::DoubleWord),
-                (1, 5, Premium::TripleLetter),
-                (5, 5, Premium::TripleLetter),
-                (2, 6, Premium::DoubleLetter),
-                (6, 6, Premium::DoubleLetter),
-                (0, 7, Premium::TripleWord),
-                (3, 7, Premium::DoubleLetter),
-                (7, 7, Premium::DoubleWord),
-            ]),
+            premiums: house_premiums(),
         }
     }
 
@@ -704,26 +630,7 @@ impl VariantRules {
             width: 15,
             height: 15,
             bingo_bonus: 50,
-            premiums: mirrored_premiums(&[
-                (0, 0, Premium::TripleWord),
-                (3, 0, Premium::DoubleLetter),
-                (7, 0, Premium::TripleWord),
-                (1, 1, Premium::DoubleWord),
-                (5, 1, Premium::TripleLetter),
-                (2, 2, Premium::DoubleWord),
-                (6, 2, Premium::DoubleLetter),
-                (0, 3, Premium::DoubleLetter),
-                (3, 3, Premium::DoubleWord),
-                (7, 3, Premium::DoubleLetter),
-                (4, 4, Premium::DoubleWord),
-                (1, 5, Premium::TripleLetter),
-                (5, 5, Premium::TripleLetter),
-                (2, 6, Premium::DoubleLetter),
-                (6, 6, Premium::DoubleLetter),
-                (0, 7, Premium::TripleWord),
-                (3, 7, Premium::DoubleLetter),
-                (7, 7, Premium::DoubleWord),
-            ]),
+            premiums: house_premiums(),
         }
     }
 
@@ -766,6 +673,59 @@ fn pad<const N: usize>(values: [u8; N]) -> [u8; MAX_ALPHABET_SIZE] {
 /// Expands 18 canonical premium-square positions (one symmetric quadrant)
 /// into the full 225-cell board via 4-way mirroring — every edition's board
 /// is symmetric, so this is shared regardless of which premiums it uses.
+/// This project's own board layout, shared by every edition.
+///
+/// Deliberately not the Scrabble arrangement, and deliberately not
+/// Wordfeud's either — both are a specific company's design, and every
+/// commercial game of this shape has drawn its own instead. Editions here
+/// differ by alphabet, tile distribution, letter values and dictionary,
+/// which is the real linguistic difference and nobody's property; the
+/// board they are played on is ours.
+///
+/// Three rules hold it together, and `premium_layout_*` in the tests
+/// enforce all of them so a future layout can't quietly break one:
+///
+/// 1. **Full square symmetry.** Every reflection and rotation of the
+///    square maps the board onto itself, so no direction or corner is
+///    worth more than another. `mirrored_premiums` only reflects on the
+///    two axes, so the diagonal has to be seeded by hand — that's why the
+///    off-diagonal entries below appear twice, as `(x, y)` and `(y, x)`.
+/// 2. **Big word multipliers stay hard to reach.** Two word multipliers on
+///    one line must be far enough apart that combining them costs real
+///    tiles: a ×4 needs a 7-cell span and a ×9 needs 9, against official
+///    Scrabble's 8. Because the mirror puts a twin of index `i` at `14-i`,
+///    that confines every word multiplier to index 0–4, 7 or 10–14 — never
+///    5, 6, 8 or 9. Most of the layout follows from this one constraint.
+/// 3. **The same scoring weather as the board it replaces.** Identical
+///    premium budget (8 TW, 17 DW including the star, 12 TL, 24 DL) and an
+///    identical best-case play, so ratings and engine timings carry over
+///    rather than restarting against a differently-scoring board.
+///
+/// The visible result: corners are double words rather than triple, the
+/// triple words sit inboard as an octagon, there's no diagonal staircase,
+/// and the double letters form a lattice around the star.
+fn house_premiums() -> [Premium; 225] {
+    mirrored_premiums(&[
+        (0, 0, Premium::DoubleWord),
+        (2, 0, Premium::TripleLetter),
+        (0, 2, Premium::TripleLetter),
+        (7, 0, Premium::DoubleWord),
+        (0, 7, Premium::DoubleWord),
+        (1, 1, Premium::DoubleLetter),
+        (3, 1, Premium::TripleWord),
+        (1, 3, Premium::TripleWord),
+        (4, 2, Premium::DoubleWord),
+        (2, 4, Premium::DoubleWord),
+        (6, 3, Premium::DoubleLetter),
+        (3, 6, Premium::DoubleLetter),
+        (6, 4, Premium::DoubleLetter),
+        (4, 6, Premium::DoubleLetter),
+        (5, 5, Premium::TripleLetter),
+        (6, 6, Premium::DoubleLetter),
+        (7, 7, Premium::DoubleWord),
+    ])
+}
+
 fn mirrored_premiums(canonical: &[(u8, u8, Premium)]) -> [Premium; 225] {
     let mut premiums = [Premium::Blank; 225];
 
@@ -843,10 +803,114 @@ pub enum MoveError {
 #[cfg(test)]
 mod tests {
     use super::{
-        Direction, Letter, LetterMask, Position, Rack, Tile, VariantRules, mask_contains,
+        Direction, Letter, LetterMask, Position, Premium, Rack, Tile, VariantRules, mask_contains,
         mask_insert, mask_is_empty, mask_remove,
     };
     use std::str::FromStr;
+
+    fn every_edition() -> Vec<VariantRules> {
+        vec![
+            VariantRules::official(),
+            VariantRules::wordfeud(),
+            VariantRules::north_american(),
+            VariantRules::german(),
+            VariantRules::spanish(),
+        ]
+    }
+
+    fn premium_at(rules: &VariantRules, x: usize, y: usize) -> Premium {
+        rules.premiums[y * 15 + x]
+    }
+
+    /// Rule 1 of `house_premiums`. `mirrored_premiums` only reflects on the
+    /// two axes, so diagonal symmetry depends entirely on the seed list
+    /// naming both `(x, y)` and `(y, x)` — an easy thing to forget, and
+    /// invisible unless something checks. Without it one direction of play
+    /// is worth more than the other.
+    #[test]
+    fn premium_layout_has_every_symmetry_of_the_square() {
+        for rules in every_edition() {
+            for y in 0..15 {
+                for x in 0..15 {
+                    let cell = premium_at(&rules, x, y);
+                    assert_eq!(cell, premium_at(&rules, 14 - x, y), "{} h-flip", rules.name);
+                    assert_eq!(cell, premium_at(&rules, x, 14 - y), "{} v-flip", rules.name);
+                    assert_eq!(cell, premium_at(&rules, y, x), "{} transpose", rules.name);
+                    assert_eq!(
+                        cell,
+                        premium_at(&rules, 14 - y, 14 - x),
+                        "{} anti-transpose",
+                        rules.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// Rule 2 of `house_premiums`: combining word multipliers has to cost
+    /// tiles. A ×4 must need a 7-cell span and a ×9 a 9-cell one, so
+    /// neither is reachable with a casual short word. The first draft of
+    /// this layout put two double words three cells apart, handing out a
+    /// ×4 for three tiles — this is the check that would have caught it.
+    #[test]
+    fn premium_layout_keeps_big_word_multipliers_expensive() {
+        for rules in every_edition() {
+            let mut lines: Vec<Vec<Premium>> = Vec::new();
+            for y in 0..15 {
+                lines.push((0..15).map(|x| premium_at(&rules, x, y)).collect());
+            }
+            for x in 0..15 {
+                lines.push((0..15).map(|y| premium_at(&rules, x, y)).collect());
+            }
+
+            for line in &lines {
+                let multipliers: Vec<(usize, u32)> = line
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, premium)| premium.word_multiplier() > 1)
+                    .map(|(index, premium)| (index, premium.word_multiplier() as u32))
+                    .collect();
+                for (i, (left, left_mult)) in multipliers.iter().enumerate() {
+                    for (right, right_mult) in &multipliers[i + 1..] {
+                        let span = right - left + 1;
+                        let combined = left_mult * right_mult;
+                        let required = if combined >= 9 { 9 } else { 7 };
+                        assert!(
+                            span >= required,
+                            "{}: x{combined} available across only {span} cells",
+                            rules.name
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Rule 3: the premium budget every edition is balanced against. A
+    /// layout that quietly gained or lost premium squares would shift the
+    /// scoring band the ratings and engine timings were measured on.
+    #[test]
+    fn premium_layout_spends_the_same_budget_in_every_edition() {
+        for rules in every_edition() {
+            let count = |wanted: Premium| {
+                rules
+                    .premiums
+                    .iter()
+                    .filter(|premium| **premium == wanted)
+                    .count()
+            };
+            assert_eq!(count(Premium::TripleWord), 8, "{} TW", rules.name);
+            assert_eq!(count(Premium::DoubleWord), 17, "{} DW", rules.name);
+            assert_eq!(count(Premium::TripleLetter), 12, "{} TL", rules.name);
+            assert_eq!(count(Premium::DoubleLetter), 24, "{} DL", rules.name);
+            assert_eq!(
+                premium_at(&rules, 7, 7),
+                Premium::DoubleWord,
+                "{} centre star",
+                rules.name
+            );
+        }
+    }
 
     #[test]
     fn parse_position() {

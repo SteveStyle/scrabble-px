@@ -1433,10 +1433,10 @@ async fn spanish_game_plays_carro_with_two_ordinary_r_tiles() {
         ]
     );
     // Two ordinary R tiles score 1 point each (2 total), not RR's 8 —
-    // confirms this really did use two separate letter tiles. This
-    // 5-square span (x=7..11) also reaches a DoubleLetter premium at
-    // x=11 (the O), on top of the center DoubleWord: (3+1+1+1+1×2)*2.
-    assert_eq!(updated.participants[0].score, (3 + 1 + 1 + 1 + 2) * 2);
+    // confirms this really did use two separate letter tiles. The
+    // 5-square span (x=7..11) starts on the centre DoubleWord and reaches
+    // no letter premium after it, so the whole word simply doubles.
+    assert_eq!(updated.participants[0].score, (3 + 1 + 1 + 1 + 1) * 2);
 }
 
 async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {
