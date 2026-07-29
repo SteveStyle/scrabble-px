@@ -209,7 +209,8 @@ impl<D: Dictionary> RulesEngine<'_, D> {
 
                     saw_placement = true;
                     word.extend(self.rules.letter_grapheme(letter).chars());
-                    let tile_score = if matches!(placement.tile, crate::model::Tile::Blank { .. }) {
+                    let is_blank = matches!(placement.tile, crate::model::Tile::Blank { .. });
+                    let tile_score = if is_blank {
                         0
                     } else {
                         self.rules.letter_values[letter.as_usize()] as Score
@@ -217,8 +218,13 @@ impl<D: Dictionary> RulesEngine<'_, D> {
                     main_word_score += tile_score * empty_cell.premium.letter_multiplier() as Score;
                     word_multiplier *= empty_cell.premium.word_multiplier() as Score;
 
-                    let perpendicular_score = cross_check.perpendicular_score(letter);
-                    if perpendicular_score > 0 {
+                    // A blank is worth nothing in the cross word it forms
+                    // too, not just in the main word, so it scores the
+                    // cell's precalculated blank total. Whether a cross
+                    // word exists here is a separate question from whether
+                    // it scores: a blank crossing blanks is worth zero.
+                    let perpendicular_score = cross_check.perpendicular_score(letter, is_blank);
+                    if cross_check.forms_cross_word() {
                         cross_word_score += perpendicular_score;
                         cross_words.push(CrossWordPreview {
                             pos: current,
@@ -953,13 +959,12 @@ mod tests {
     /// down, and a bot played YET below the top-right triple word with a
     /// *blank* standing in for the Y.
     ///
-    /// The blank correctly scores 0 in the main word, but the cross-check
-    /// cache scores cross words purely by letter — it has no way to know
-    /// the tile arriving on the square is a blank — so FY is charged a
-    /// full Y and the triple word triples the points that don't exist:
-    /// 37 instead of 25. Ignored until the cache carries a blank score.
+    /// The blank scores 0 in the main word, but the cross-check cache used
+    /// to score cross words purely by letter — with no way to know the
+    /// tile arriving on the square was a blank — so FY was charged a full
+    /// Y and the triple word tripled points that don't exist: 37 instead
+    /// of 25.
     #[test]
-    #[ignore = "known bug: blanks score their face value in cross words"]
     fn blank_scores_zero_in_the_cross_word_it_forms_not_just_the_main_word() {
         let rules = sample_rules();
         let dictionary = WordListDictionary::new();
@@ -1014,5 +1019,64 @@ mod tests {
         // FY is F alone, tripled, at 12; then RE at 2 and PAT at 5.
         assert_eq!(validated.score.cross_word_score, 19);
         assert_eq!(validated.score.total, 25);
+    }
+
+    /// A blank laid against another blank still forms a cross word — it
+    /// just happens to be worth nothing. Scoring can't be used as the test
+    /// for whether a cross word is there, or this one goes unreported.
+    #[test]
+    fn a_cross_word_of_nothing_but_blanks_is_still_reported_at_zero() {
+        let rules = sample_rules();
+        let dictionary = WordListDictionary::new();
+        let engine = RulesEngine {
+            rules: &rules,
+            dictionary: &dictionary,
+        };
+
+        let mut board = BoardState::new(&rules);
+        board.set(
+            Position::new(6, 7),
+            BoardCell::Filled(FilledCell {
+                letter: Letter::from('A'),
+                is_blank: true,
+            }),
+        );
+        let mut cache = RuleCache::default();
+        cache.recompute_all(&board, &rules, &dictionary);
+
+        let state = RulesPosition {
+            board: &board,
+            cache: &cache,
+            rack: None,
+        };
+        // XI down the middle, the X a blank, so the cross word it makes
+        // with the blank A already there is AX for no points at all.
+        let candidate = MoveCandidate {
+            start: Position::new(7, 7),
+            direction: Direction::Vertical,
+            tiles: vec![
+                TilePlacement {
+                    offset: 0,
+                    tile: Tile::Blank {
+                        acting_as: Some(Letter::from('X')),
+                    },
+                },
+                TilePlacement {
+                    offset: 1,
+                    tile: Tile::Letter(Letter::from('I')),
+                },
+            ],
+        };
+
+        let validated = engine.validate_move(&state, &candidate).unwrap();
+        assert_eq!(validated.preview.main_word, "XI");
+        let cross: Vec<_> = validated
+            .preview
+            .cross_words
+            .iter()
+            .map(|cross| (cross.word.as_str(), cross.score))
+            .collect();
+        assert_eq!(cross, vec![("AX", 0)]);
+        assert_eq!(validated.score.cross_word_score, 0);
     }
 }

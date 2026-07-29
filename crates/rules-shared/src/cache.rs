@@ -42,11 +42,30 @@ impl CrossCheck {
         }
     }
 
-    pub fn perpendicular_score(self, letter: Letter) -> Score {
+    /// Score of the cross word this cell would join, for a tile playing as
+    /// `letter`. Legality is always judged on the letter — a blank has to
+    /// spell a real word like any other tile — but a blank is worth
+    /// nothing, so it scores the cell's blank total instead of the
+    /// letter's.
+    pub fn perpendicular_score(self, letter: Letter, is_blank: bool) -> Score {
         match self {
             CrossCheck::Unconstrained => 0,
+            CrossCheck::Constrained(check) if is_blank => {
+                if mask_contains(check.allowed_mask, letter) {
+                    check.blank_score
+                } else {
+                    0
+                }
+            }
             CrossCheck::Constrained(check) => check.score_by_letter[letter.as_usize()],
         }
+    }
+
+    /// Whether a tile landing here joins a cross word at all, which is not
+    /// the same question as whether that word scores: a blank crossing
+    /// blanks forms a real word worth zero.
+    pub fn forms_cross_word(self) -> bool {
+        matches!(self, CrossCheck::Constrained(_))
     }
 }
 
@@ -54,6 +73,10 @@ impl CrossCheck {
 pub struct ConstrainedCrossCheck {
     pub allowed_mask: LetterMask,
     pub score_by_letter: [Score; MAX_ALPHABET_SIZE],
+    /// What the cross word scores when the tile completing it is a blank.
+    /// Letter-independent, since a blank adds nothing to the total no
+    /// matter which letter it is standing in for.
+    pub blank_score: Score,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -300,6 +323,12 @@ pub fn compute_cross_check<D: Dictionary>(
     CrossCheck::Constrained(ConstrainedCrossCheck {
         allowed_mask,
         score_by_letter,
+        // A blank contributes nothing whichever letter it stands in for,
+        // so the whole cross word is worth the surrounding tiles alone —
+        // one value for the cell rather than one per letter. The square's
+        // letter multiplier is irrelevant against a zero-value tile; its
+        // word multiplier still applies to what the neighbours are worth.
+        blank_score: surrounding_score * empty_cell.premium.word_multiplier() as Score,
     })
 }
 
