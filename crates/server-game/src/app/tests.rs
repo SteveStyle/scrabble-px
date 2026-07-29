@@ -766,7 +766,7 @@ async fn creating_a_game_with_an_unknown_variant_is_rejected() {
 /// must be persisted/reloaded under the ruleset it was actually created
 /// with — never silently falling back to official.
 #[tokio::test]
-async fn wordfeud_game_scores_the_same_move_differently_and_persists_its_own_rules() {
+async fn german_game_scores_the_same_move_differently_and_persists_its_own_rules() {
     let database_url = test_database_url();
     let state = create_test_state(&database_url).await;
     let app = build_router(state.clone());
@@ -824,36 +824,34 @@ async fn wordfeud_game_scores_the_same_move_differently_and_persists_its_own_rul
     }
 
     let official_game = create_and_start(app.clone(), &alice.session_token, None, 501).await;
-    let wordfeud_game = create_and_start(
+    let german_game = create_and_start(
         app.clone(),
         &alice.session_token,
-        Some("wordfeud".to_string()),
+        Some("german".to_string()),
         502,
     )
     .await;
-    assert_eq!(wordfeud_game.variant, "wordfeud");
-    assert_eq!(wordfeud_game.board_layout, "wordfeud");
-    assert_eq!(wordfeud_game.language, "sowpods");
+    assert_eq!(german_game.variant, "german");
+    assert_eq!(german_game.language, "german");
 
-    // Letter values for B/A/G genuinely differ between the two
-    // rulesets (see `VariantRules::official`/`wordfeud`), and the
-    // center square is a double-word premium in official but a plain
-    // square in Wordfeud's layout — so "BAG" played through the center
-    // on an otherwise-empty board scores differently under each,
-    // purely from the rules, with everything else held constant.
+    // "ADD" is in both word lists, and D is worth 2 under official but 1
+    // under German — so the same play scores 5 one side and 3 the other,
+    // purely from the rules, with everything else held constant. Every
+    // shorter word the rack can also make (AD, DA, DAD) differs too, so
+    // whichever candidate enumeration picks, the comparison stays honest.
     let official_rules = VariantRules::official();
-    let wordfeud_rules = VariantRules::wordfeud();
-    // Premiums live on the board itself, not on `RulesEngine.rules` — so
-    // computing an "expected wordfeud score" needs the wordfeud game's
-    // own board (with wordfeud's premium layout), not the official
-    // game's, even though both are still empty at this point.
+    let german_rules = VariantRules::german();
+    // Premiums live on the board itself, not on `RulesEngine.rules` — both
+    // editions play `house_premiums()` now, but reading each game's own
+    // board keeps this test measuring the rules rather than assuming the
+    // layouts stay identical.
     let official_board = board_from_dto(&official_game.board, &official_rules.alphabet)
         .expect("fresh board should parse");
-    let wordfeud_board = board_from_dto(&wordfeud_game.board, &wordfeud_rules.alphabet)
+    let german_board = board_from_dto(&german_game.board, &german_rules.alphabet)
         .expect("fresh board should parse");
     let official_position = GameState::from_board(official_board, &official_rules, &*SOWPODS);
-    let wordfeud_position = GameState::from_board(wordfeud_board, &wordfeud_rules, &*SOWPODS);
-    let rack = rack_with_letters(&['B', 'A', 'G']);
+    let german_position = GameState::from_board(german_board, &german_rules, &*GERMAN);
+    let rack = rack_with_letters(&['A', 'D', 'D']);
     // Enumeration only depends on board geometry/dictionary/rack (not
     // premiums or letter values), so the same candidate is valid and
     // identical under either ruleset — reusing it is what makes this
@@ -872,17 +870,17 @@ async fn wordfeud_game_scores_the_same_move_differently_and_persists_its_own_rul
         .expect("candidate should be legal under official rules")
         .score
         .total;
-    let wordfeud_engine = RulesEngine {
-        rules: &wordfeud_rules,
-        dictionary: &*SOWPODS,
+    let german_engine = RulesEngine {
+        rules: &german_rules,
+        dictionary: &*GERMAN,
     };
-    let expected_wordfeud_score = wordfeud_engine
-        .validate_game_move(&wordfeud_position, Some(&rack), &candidate)
-        .expect("the same candidate should also be legal under wordfeud rules")
+    let expected_german_score = german_engine
+        .validate_game_move(&german_position, Some(&rack), &candidate)
+        .expect("the same candidate should also be legal under german rules")
         .score
         .total;
     assert_ne!(
-        expected_official_score, expected_wordfeud_score,
+        expected_official_score, expected_german_score,
         "test setup should pick a move whose score actually differs between rulesets"
     );
 
@@ -890,7 +888,7 @@ async fn wordfeud_game_scores_the_same_move_differently_and_persists_its_own_rul
     // random deal) so the same candidate is legal to actually submit,
     // same technique `human_move_endpoint_advances_state_and_triggers_engine_reply`
     // uses.
-    for game_id in [&official_game.id, &wordfeud_game.id] {
+    for game_id in [&official_game.id, &german_game.id] {
         let mut games = state.games.write().await;
         let game = games
             .get_mut(game_id)
@@ -917,11 +915,11 @@ async fn wordfeud_game_scores_the_same_move_differently_and_persists_its_own_rul
         .await,
     )
     .await;
-    let wordfeud_response: GameStateDto = read_json(
+    let german_response: GameStateDto = read_json(
         send_json_auth(
             app,
             Method::POST,
-            &format!("/games/{}/actions", wordfeud_game.id),
+            &format!("/games/{}/actions", german_game.id),
             Some(&alice.session_token),
             &GameActionRequest {
                 seat_number: 0,
@@ -939,21 +937,21 @@ async fn wordfeud_game_scores_the_same_move_differently_and_persists_its_own_rul
         expected_official_score as i32
     );
     assert_eq!(
-        wordfeud_response.participants[0].score,
-        expected_wordfeud_score as i32
+        german_response.participants[0].score,
+        expected_german_score as i32
     );
 
     // Persistence round-trip: a fresh AppState reading the same DB must
-    // reconstruct the wordfeud game with wordfeud's rules, not silently
+    // reconstruct the german game with german's rules, not silently
     // default back to official.
     let reloaded = create_test_state(&database_url).await;
     let games = reloaded.games.read().await;
     let restored = games
-        .get(&wordfeud_game.id)
-        .expect("wordfeud game should reload from its sqlite snapshot");
-    assert_eq!(restored.variant, "wordfeud");
-    assert_eq!(restored.rules.bingo_bonus, wordfeud_rules.bingo_bonus);
-    assert_eq!(restored.rules.letter_values, wordfeud_rules.letter_values);
+        .get(&german_game.id)
+        .expect("german game should reload from its sqlite snapshot");
+    assert_eq!(restored.variant, "german");
+    assert_eq!(restored.rules.bingo_bonus, german_rules.bingo_bonus);
+    assert_eq!(restored.rules.letter_values, german_rules.letter_values);
 }
 
 /// The North American edition's whole point is a second real

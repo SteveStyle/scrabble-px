@@ -304,7 +304,7 @@ pub struct GameSummaryDto {
     pub id: String,
     pub status: GameStatus,
     /// The bundled edition this game was created under (e.g. "official",
-    /// "wordfeud", "north_american") — see `GameStateDto.variant`.
+    /// "north_american", "german") — see `GameStateDto.variant`.
     pub variant: String,
     pub current_seat: u8,
     pub participants: Vec<ParticipantDto>,

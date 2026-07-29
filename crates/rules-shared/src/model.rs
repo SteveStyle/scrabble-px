@@ -433,7 +433,7 @@ impl Rack {
 
 #[derive(Debug, Clone)]
 pub struct VariantRules {
-    /// The bundled edition name ("official", "wordfeud", ...) — board
+    /// The bundled edition name ("official", "north_american", ...) — board
     /// layout, letter values, tile distribution, and dictionary all travel
     /// together under this one name (real Scrabble editions don't mix and
     /// match these independently, so neither does this type).
@@ -489,34 +489,6 @@ impl VariantRules {
             width: 15,
             height: 15,
             bingo_bonus: 50,
-            premiums: house_premiums(),
-        }
-    }
-
-    /// Wordfeud's letter values, tile distribution and bingo bonus, which
-    /// genuinely differ from official — reused from `old-crates/*/src/board.rs`'s
-    /// `SCRABBLE_VARIANT_WORDFEUD`, the project's own superseded-but-still-accurate
-    /// prior art. It no longer carries Wordfeud's premium layout: that was
-    /// a live competitor's board design, and every edition here now plays
-    /// on `house_premiums()`. Still English/ASCII and still 15×15, so this
-    /// is proof of the edition registry, not of any board-size or alphabet
-    /// generalization.
-    pub fn wordfeud() -> Self {
-        Self {
-            name: "wordfeud".to_string(),
-            language: "sowpods".to_string(),
-            alphabet: Alphabet::latin26(),
-            letter_values: pad::<26>([
-                1, 4, 4, 2, 1, 4, 3, 4, 1, 10, 5, 1, 3, 1, 1, 4, 10, 1, 1, 1, 2, 4, 4, 8, 4, 10,
-            ]),
-            tile_distribution: pad::<26>([
-                10, 2, 2, 5, 12, 2, 3, 3, 9, 1, 1, 4, 2, 6, 7, 2, 1, 6, 5, 7, 4, 2, 2, 1, 2, 1,
-            ]),
-            blank_tiles: 2,
-            rack_size: 7,
-            width: 15,
-            height: 15,
-            bingo_bonus: 40,
             premiums: house_premiums(),
         }
     }
@@ -636,25 +608,71 @@ impl VariantRules {
 
     /// Every edition name the UI's picker can enumerate without duplicating
     /// the list `by_name` matches against.
-    pub const EDITION_NAMES: &[&str] = &[
-        "official",
-        "wordfeud",
-        "north_american",
-        "german",
-        "spanish",
-    ];
+    pub const EDITION_NAMES: &[&str] = &["official", "north_american", "german", "spanish"];
 
-    /// The edition registry — every bundled ruleset this server knows
-    /// about, looked up by name. `None` for an unrecognized name (the
-    /// caller decides whether that's a client error).
+    /// Editions that were once offered and no longer are. New games can't be
+    /// created under these, but games that already were keep playing under
+    /// them forever, so their rules must stay resolvable — see
+    /// `by_name_including_retired`.
+    pub const RETIRED_EDITION_NAMES: &[&str] = &["wordfeud"];
+
+    /// The edition registry — every bundled ruleset a *new* game can be
+    /// created under, looked up by name. `None` for an unrecognized name
+    /// (the caller decides whether that's a client error), and deliberately
+    /// `None` for a retired edition too: this is the gate on game creation.
     pub fn by_name(name: &str) -> Option<Self> {
         match name {
             "official" => Some(Self::official()),
-            "wordfeud" => Some(Self::wordfeud()),
             "north_american" => Some(Self::north_american()),
             "german" => Some(Self::german()),
             "spanish" => Some(Self::spanish()),
             _ => None,
+        }
+    }
+
+    /// `by_name`, plus editions that have been retired from the picker.
+    ///
+    /// Anything reconstructing an *existing* game's rules from its stored
+    /// variant name wants this, not `by_name` — the clients' tile-face
+    /// values and move preview, and any engine deciding whether it can play
+    /// a given game. The server itself doesn't need it: a game persists its
+    /// whole ruleset, so `persistence` reloads the real thing rather than
+    /// looking it up by name.
+    pub fn by_name_including_retired(name: &str) -> Option<Self> {
+        match name {
+            "wordfeud" => Some(Self::retired_wordfeud()),
+            _ => Self::by_name(name),
+        }
+    }
+
+    /// Retired: this was an English edition carrying a second tile economy
+    /// (its own letter values, distribution and a 40-point bingo bonus) at a
+    /// time when it was the only proof the edition registry could hold more
+    /// than one. It was withdrawn once every edition moved to
+    /// `house_premiums()` and the project settled on one tile economy per
+    /// language — at which point a second English edition named after
+    /// somebody else's product had nothing left to justify it.
+    ///
+    /// Kept, and kept under its original name, purely so games created under
+    /// it still resolve; the name is a stored data value now, not an offer.
+    /// Delete this once no game references it.
+    fn retired_wordfeud() -> Self {
+        Self {
+            name: "wordfeud".to_string(),
+            language: "sowpods".to_string(),
+            alphabet: Alphabet::latin26(),
+            letter_values: pad::<26>([
+                1, 4, 4, 2, 1, 4, 3, 4, 1, 10, 5, 1, 3, 1, 1, 4, 10, 1, 1, 1, 2, 4, 4, 8, 4, 10,
+            ]),
+            tile_distribution: pad::<26>([
+                10, 2, 2, 5, 12, 2, 3, 3, 9, 1, 1, 4, 2, 6, 7, 2, 1, 6, 5, 7, 4, 2, 2, 1, 2, 1,
+            ]),
+            blank_tiles: 2,
+            rack_size: 7,
+            width: 15,
+            height: 15,
+            bingo_bonus: 40,
+            premiums: house_premiums(),
         }
     }
 }
@@ -811,7 +829,6 @@ mod tests {
     fn every_edition() -> Vec<VariantRules> {
         vec![
             VariantRules::official(),
-            VariantRules::wordfeud(),
             VariantRules::north_american(),
             VariantRules::german(),
             VariantRules::spanish(),
@@ -985,34 +1002,67 @@ mod tests {
         assert!(!rack.consume_tile(Tile::Letter(Letter::from('Z'))));
     }
 
+    /// Every edition bundles its own economics rather than deferring to a
+    /// shared default, so no two are wholly interchangeable. `official` and
+    /// `north_american` deliberately carry identical letter values and tile
+    /// distributions (see `north_american`'s doc comment) — they're
+    /// separated by dictionary alone, which is exactly why this checks for
+    /// difference in *some* field rather than in the economics specifically.
     #[test]
-    fn wordfeud_bundles_its_own_letter_values_and_bingo_bonus_distinct_from_official() {
-        let official = VariantRules::official();
-        let wordfeud = VariantRules::wordfeud();
-        assert_eq!(official.name, "official");
-        assert_eq!(wordfeud.name, "wordfeud");
-        assert_ne!(official.bingo_bonus, wordfeud.bingo_bonus);
-        assert_ne!(official.letter_values, wordfeud.letter_values);
-        assert_ne!(official.tile_distribution, wordfeud.tile_distribution);
-        // Both editions are still 15x15/English at this stage of the
-        // project — only the bundled economics/board layout differ.
-        assert_eq!(official.width, wordfeud.width);
-        assert_eq!(official.height, wordfeud.height);
-        assert_eq!(official.language, wordfeud.language);
+    fn no_two_editions_are_interchangeable() {
+        let editions = every_edition();
+        for (i, a) in editions.iter().enumerate() {
+            for b in &editions[i + 1..] {
+                assert_ne!(a.name, b.name, "edition names must be unique");
+                assert!(
+                    a.language != b.language
+                        || a.alphabet != b.alphabet
+                        || a.letter_values != b.letter_values
+                        || a.tile_distribution != b.tile_distribution
+                        || a.bingo_bonus != b.bingo_bonus,
+                    "{} and {} differ in name only — one of them is redundant",
+                    a.name,
+                    b.name
+                );
+            }
+        }
     }
 
     #[test]
     fn by_name_resolves_known_editions_and_rejects_unknown_ones() {
         assert_eq!(VariantRules::by_name("official").unwrap().name, "official");
-        assert_eq!(VariantRules::by_name("wordfeud").unwrap().name, "wordfeud");
         assert_eq!(VariantRules::by_name("spanish").unwrap().name, "spanish");
         assert!(VariantRules::EDITION_NAMES.contains(&"spanish"));
         assert!(VariantRules::by_name("not-a-real-edition").is_none());
+        // Retired: no new game can be created under it, but an existing
+        // one must still resolve the rules it was created with.
+        assert!(VariantRules::by_name("wordfeud").is_none());
+        assert!(!VariantRules::EDITION_NAMES.contains(&"wordfeud"));
+        let retired = VariantRules::by_name_including_retired("wordfeud")
+            .expect("a retired edition must still resolve for games already using it");
+        assert_eq!(retired.name, "wordfeud");
+        assert_eq!(retired.bingo_bonus, 40);
+        assert!(VariantRules::by_name_including_retired("not-a-real-edition").is_none());
+    }
+
+    /// Retirement removes an edition from the picker without changing how
+    /// the games already using it play — so every retired name must still
+    /// resolve, and must never reappear as something a new game can pick.
+    #[test]
+    fn retired_editions_resolve_but_are_never_offered() {
+        for name in VariantRules::RETIRED_EDITION_NAMES {
+            assert!(
+                VariantRules::by_name_including_retired(name).is_some(),
+                "retired edition {name} no longer resolves — games using it would break"
+            );
+            assert!(VariantRules::by_name(name).is_none());
+            assert!(!VariantRules::EDITION_NAMES.contains(name));
+        }
     }
 
     #[test]
     fn every_editions_premiums_are_still_a_symmetric_15x15_board() {
-        for rules in [VariantRules::official(), VariantRules::wordfeud()] {
+        for rules in every_edition() {
             assert_eq!(rules.premiums.len(), 225);
             for y in 0..15u8 {
                 for x in 0..15u8 {

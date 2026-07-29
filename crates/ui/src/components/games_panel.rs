@@ -31,7 +31,7 @@ enum NewGameKind {
 pub struct CustomGameSubmission {
     pub seats: Vec<CreateSeatRequest>,
     pub move_time_limit_seconds: Option<u64>,
-    /// The edition to create the game under (e.g. "official", "wordfeud",
+    /// The edition to create the game under (e.g. "official",
     /// "north_american") — `None` lets the server fall back to its own
     /// default ("official").
     pub variant: Option<String>,
@@ -1013,11 +1013,15 @@ fn game_row(
 
 /// Collins is an English dictionary — linking to it for a German or
 /// Spanish word would send the reader to a lookup for a language it
-/// doesn't cover. Both English editions' word lists (SOWPODS for
-/// official/Wordfeud, ENABLE2K for North American) are genuinely English;
-/// everything else isn't.
+/// doesn't cover. Both English editions' word lists (SOWPODS for official,
+/// ENABLE2K for North American) are genuinely English; everything else
+/// isn't.
+///
+/// Retired-aware, because this is asked about games that already exist: one
+/// created under a since-withdrawn edition is still playable, and its words
+/// are still English, so it should keep its links.
 fn is_english_dictionary(variant: &str) -> bool {
-    rules_shared::VariantRules::by_name(variant)
+    rules_shared::VariantRules::by_name_including_retired(variant)
         .is_some_and(|rules| matches!(rules.language.as_str(), "sowpods" | "enable2k"))
 }
 
@@ -1870,8 +1874,9 @@ mod tests {
     #[test]
     fn only_english_editions_link_to_an_english_dictionary() {
         assert!(is_english_dictionary("official"));
-        assert!(is_english_dictionary("wordfeud"));
         assert!(is_english_dictionary("north_american"));
+        // Retired, but games created under it still link their words.
+        assert!(is_english_dictionary("wordfeud"));
         assert!(!is_english_dictionary("german"));
         assert!(!is_english_dictionary("spanish"));
         assert!(!is_english_dictionary("not-a-real-edition"));

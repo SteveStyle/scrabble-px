@@ -67,11 +67,13 @@ pub fn Home(
 
     // Resolved once and reused everywhere this component needs the active
     // game's actual alphabet/letter values, rather than assuming the
-    // standard Latin 26 — different editions (Wordfeud, German, ...)
-    // genuinely differ here. Falls back to `official()` only for an
-    // edition name this client build doesn't recognize, which shouldn't
-    // happen for a real loaded game.
-    let rules = rules_shared::VariantRules::by_name(&game.variant)
+    // standard Latin 26 — different editions (German, Spanish, ...)
+    // genuinely differ here. Retired-aware: this is an already-created
+    // game, which may predate an edition's withdrawal from the picker.
+    // Falls back to `official()` only for an edition name this client
+    // build doesn't recognize, which shouldn't happen for a real loaded
+    // game.
+    let rules = rules_shared::VariantRules::by_name_including_retired(&game.variant)
         .unwrap_or_else(rules_shared::VariantRules::official);
 
     // Show blank picker when there is a staged blank tile still needing a letter.

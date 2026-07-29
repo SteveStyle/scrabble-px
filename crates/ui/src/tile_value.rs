@@ -1,8 +1,8 @@
 //! Point values shown on tile faces (letter + value, like a physical
 //! Scrabble tile) — sourced from the active game's own resolved
 //! `VariantRules.letter_values`/`.alphabet` (passed in by the caller),
-//! since different editions genuinely have different values (Wordfeud,
-//! German, ...), not just one shared table.
+//! since different editions genuinely have different values (German,
+//! Spanish, ...), not just one shared table.
 
 fn value_for_letter(
     letter: &str,

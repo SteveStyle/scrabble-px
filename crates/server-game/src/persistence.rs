@@ -21,8 +21,8 @@ use rules_shared::{Alphabet, GameState, Premium, Score, Tile, VariantRules};
 ///
 /// `letter_values`/`tile_distribution` are `Vec<u8>` (not a fixed-size
 /// array) specifically so a game persisted before the alphabet widened
-/// beyond 26 letters (every game up to and including north_american/
-/// wordfeud) still deserializes as-is — same reasoning, and the same
+/// beyond 26 letters (every game created before the German edition) still
+/// deserializes as-is — same reasoning, and the same
 /// zero-pad-on-load technique, as `rules_shared::Rack.counts`'s existing
 /// `deserialize_letter_array`. `alphabet` is `#[serde(default)]`'d to
 /// `Alphabet::latin26()` for the same reason: every game persisted before

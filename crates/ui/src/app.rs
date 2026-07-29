@@ -3287,7 +3287,7 @@ fn compute_client_preview(
     // three under one name), so `variant` alone determines which ruleset
     // this game actually uses. Falls back to no preview (rather than a
     // wrong one) for an edition this client doesn't recognize.
-    let rules = rules_shared::VariantRules::by_name(&game.variant)?;
+    let rules = rules_shared::VariantRules::by_name_including_retired(&game.variant)?;
     let board_state = crate::client_rules::to_rules_board_state(&game.board, &rules.alphabet);
     let state = rules_shared::GameState::from_board(board_state, &rules, dictionary);
     let rack = game
@@ -3688,7 +3688,7 @@ fn rack_tiles_for_seat(
         return Vec::new();
     };
 
-    let rules = rules_shared::VariantRules::by_name(&game.variant)
+    let rules = rules_shared::VariantRules::by_name_including_retired(&game.variant)
         .unwrap_or_else(rules_shared::VariantRules::official);
     let used_ids: std::collections::HashSet<usize> = staged
         .iter()

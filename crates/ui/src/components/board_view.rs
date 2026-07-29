@@ -12,7 +12,7 @@ pub fn BoardView(
     can_stage_moves: bool,
     selected_cell: Option<usize>,
     /// The active game's letter values/alphabet, for tile-face point
-    /// values — different editions (Wordfeud, German, ...) genuinely
+    /// values — different editions (German, Spanish, ...) genuinely
     /// differ here, so this can't be a hardcoded constant.
     letter_values: [u8; rules_shared::MAX_ALPHABET_SIZE],
     alphabet: rules_shared::Alphabet,

@@ -82,13 +82,16 @@ impl GreedyEngine {
                 // whichever `VariantRules` the request carries — so every
                 // edition the server knows about is listed here explicitly
                 // as a deliberate declaration, not a limitation.
-                supported_variants: vec![
-                    "official".to_string(),
-                    "wordfeud".to_string(),
-                    "north_american".to_string(),
-                    "german".to_string(),
-                    "spanish".to_string(),
-                ],
+                // Retired editions are included deliberately: the server
+                // refuses to run an engine whose metadata omits a game's
+                // variant (`game_state::maybe_run_engine_turn`), so dropping
+                // a withdrawn edition from this list would strand any bot
+                // still seated in a game created under it.
+                supported_variants: VariantRules::EDITION_NAMES
+                    .iter()
+                    .chain(VariantRules::RETIRED_EDITION_NAMES)
+                    .map(|name| (*name).to_string())
+                    .collect(),
                 capabilities: EngineCapabilities {
                     supports_timed_play: false,
                     supports_analysis: false,
@@ -157,7 +160,7 @@ impl GameEngine for GreedyEngine {
 #[cfg(test)]
 mod tests {
     use super::{EngineAction, EngineRequest, GameEngine, GreedyEngine};
-    use rules_shared::{GameState, Letter, Rack, SOWPODS, VariantRules};
+    use rules_shared::{GERMAN, GameState, Letter, Rack, SOWPODS, VariantRules};
 
     #[test]
     fn greedy_engine_plays_opening_move_when_available() {
@@ -185,12 +188,16 @@ mod tests {
         // internally regardless of what `EngineRequest` carried, which would
         // have silently misplayed (wrong letter values/premiums) any other
         // edition. It must actually use `request.rules`.
-        let rules = VariantRules::wordfeud();
-        let state = GameState::new(&rules, &*SOWPODS);
+        // German, because it is the edition furthest from official: its own
+        // dictionary, its own 29-letter alphabet, and its own letter values
+        // (H is 2 here, 4 in official) — so a hardcoded `official()` shows up
+        // as a wrong score rather than an accidentally-identical one.
+        let rules = VariantRules::german();
+        let state = GameState::new(&rules, &*GERMAN);
         let engine = GreedyEngine::new();
         let mut rack = Rack::default();
         rack.add_letter(Letter::from('A'));
-        rack.add_letter(Letter::from('T'));
+        rack.add_letter(Letter::from('H'));
 
         assert!(engine.metadata().supported_variants.contains(&rules.name));
 
