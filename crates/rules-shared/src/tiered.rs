@@ -67,17 +67,30 @@ const _: () = {
 /// at most the alphabet, so neither length has to be general.
 ///
 /// ```text
-///  31          30 29        23 22                       0
-/// ┌──────────────┬─────────────┬──────────────────────────┐
-/// │ tag (2)      │ is_word (1) │ len (6|7) │ start (23|22)│
-/// └──────────────┴─────────────┴──────────────────────────┘
+///     31         30           29 …          22 | 21 … 0
+///  ┌────────────┬─────────────┬───────────────────────────┐
+///  │ kind (1)   │ is_word (1) │ len (7|8) │ start (23|22) │
+///  └────────────┴─────────────┴───────────────────────────┘
+///     0 = Index                 1..127        edge index
+///     1 = Leaf                  1..255        word index
 /// ```
 ///
-/// `Empty` is tag zero so that an all-zero word *is* an empty slot: the
-/// dense table can be zero-initialised, and a construction bug that skips
+/// **`Empty` needs no tag of its own**: a length of zero is impossible for
+/// either variant — an indexed node has at least one child, a leaf covers
+/// at least one word — so the all-zero word is unambiguously empty and
+/// nothing else. The kind bit is then only ever asked about a slot already
+/// known to be occupied.
+///
+/// That is what makes a zeroed allocation a table of empty slots, so
+/// `vec![Child::EMPTY; n²]` is `memset` and a construction bug that skips
 /// a slot reads as "no such prefix" rather than as a valid pointer at
-/// entry 0. The sparse arrays never contain `Empty` — there, absence is
-/// the letter simply not appearing in the node's letter run.
+/// entry 0. It relies on the lengths being stored **unbiased**: storing
+/// `len - 1` to squeeze one more value out of the field would make the
+/// all-zero word decode as a real one-element node, and would cost the
+/// spare bit to fix.
+///
+/// The sparse arrays never contain `Empty` — there, absence is the letter
+/// simply not appearing in the node's letter run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Child(u32);
 
@@ -95,25 +108,23 @@ pub enum ChildKind {
 }
 
 impl Child {
-    const TAG_SHIFT: u32 = 30;
-    const IS_WORD_SHIFT: u32 = 29;
+    const KIND_SHIFT: u32 = 31;
+    const IS_WORD_SHIFT: u32 = 30;
 
-    const TAG_EMPTY: u32 = 0;
-    const TAG_INDEX: u32 = 1;
-    const TAG_LEAF: u32 = 2;
+    const KIND_LEAF: u32 = 1;
 
-    // Index: 6 bits of fan-out (bounded by MAX_ALPHABET_SIZE), 23 of start.
-    const INDEX_LEN_BITS: u32 = 6;
+    // Index: 7 bits of fan-out (bounded by MAX_ALPHABET_SIZE), 23 of start.
+    const INDEX_LEN_BITS: u32 = 7;
     const INDEX_START_BITS: u32 = 23;
-    // Leaf: 7 bits of length (bounded by T1), 22 of first word index.
-    const LEAF_LEN_BITS: u32 = 7;
+    // Leaf: 8 bits of length (bounded by T1), 22 of first word index.
+    const LEAF_LEN_BITS: u32 = 8;
     const LEAF_START_BITS: u32 = 22;
 
-    /// Largest fan-out a node may have. Equals `MAX_ALPHABET_SIZE`, which
-    /// is what actually bounds it; the widest node measured is 28.
-    pub const MAX_FANOUT: usize = 1 << Self::INDEX_LEN_BITS;
+    /// Largest fan-out a node may have. Bounded by `MAX_ALPHABET_SIZE`
+    /// rather than by the field; the widest node measured is 28.
+    pub const MAX_FANOUT: usize = (1 << Self::INDEX_LEN_BITS) - 1;
     /// Largest word range a leaf may cover, which is what bounds [`T1`].
-    pub const MAX_LEAF_LEN: usize = 1 << Self::LEAF_LEN_BITS;
+    pub const MAX_LEAF_LEN: usize = (1 << Self::LEAF_LEN_BITS) - 1;
     /// Largest addressable sparse-edge array. Worst measured is 151,804
     /// (Spanish at T1=32).
     pub const MAX_EDGES: usize = 1 << Self::INDEX_START_BITS;
@@ -121,8 +132,8 @@ impl Child {
     pub const MAX_WORDS: usize = 1 << Self::LEAF_START_BITS;
 
     const _LAYOUT: () = {
-        assert!(2 + 1 + Self::INDEX_LEN_BITS + Self::INDEX_START_BITS == 32);
-        assert!(2 + 1 + Self::LEAF_LEN_BITS + Self::LEAF_START_BITS == 32);
+        assert!(1 + 1 + Self::INDEX_LEN_BITS + Self::INDEX_START_BITS == 32);
+        assert!(1 + 1 + Self::LEAF_LEN_BITS + Self::LEAF_START_BITS == 32);
         assert!(Self::MAX_FANOUT >= crate::model::MAX_ALPHABET_SIZE);
     };
 
@@ -145,14 +156,12 @@ impl Child {
             (start as usize) < Self::MAX_EDGES,
             "edge index {start} overflows Child"
         );
+        // Unbiased on purpose: a zero length is what makes the all-zero
+        // word mean `Empty`, so it must stay unreachable for a real one.
         assert!(fanout > 0, "an indexed group has at least one child");
         Self(
-            (Self::TAG_INDEX << Self::TAG_SHIFT)
-                | ((is_word as u32) << Self::IS_WORD_SHIFT)
-                // Stored biased by one: a fan-out of 0 cannot occur, so
-                // the field reaches MAX_FANOUT rather than stopping one
-                // short of it.
-                | ((fanout as u32 - 1) << Self::INDEX_START_BITS)
+            ((is_word as u32) << Self::IS_WORD_SHIFT)
+                | ((fanout as u32) << Self::INDEX_START_BITS)
                 | start,
         )
     }
@@ -172,9 +181,9 @@ impl Child {
         );
         assert!(len > 0, "a leaf covers at least one word");
         Self(
-            (Self::TAG_LEAF << Self::TAG_SHIFT)
+            (Self::KIND_LEAF << Self::KIND_SHIFT)
                 | ((is_word as u32) << Self::IS_WORD_SHIFT)
-                | ((len as u32 - 1) << Self::LEAF_START_BITS)
+                | ((len as u32) << Self::LEAF_START_BITS)
                 | from,
         )
     }
@@ -190,25 +199,27 @@ impl Child {
         self.0 & (1 << Self::IS_WORD_SHIFT) != 0
     }
 
+    /// Empty is tested first and by value, because a zero length can only
+    /// mean empty — the kind bit is meaningless until that is ruled out.
     pub fn kind(self) -> ChildKind {
-        match self.0 >> Self::TAG_SHIFT {
-            Self::TAG_EMPTY => ChildKind::Empty,
-            Self::TAG_INDEX => ChildKind::Index {
-                start: self.0 & ((1 << Self::INDEX_START_BITS) - 1),
-                fanout: (((self.0 >> Self::INDEX_START_BITS) & ((1 << Self::INDEX_LEN_BITS) - 1))
-                    + 1) as u8,
-            },
-            Self::TAG_LEAF => ChildKind::Leaf {
+        if self.is_empty() {
+            ChildKind::Empty
+        } else if self.0 >> Self::KIND_SHIFT == Self::KIND_LEAF {
+            ChildKind::Leaf {
                 from: self.0 & ((1 << Self::LEAF_START_BITS) - 1),
-                len: (((self.0 >> Self::LEAF_START_BITS) & ((1 << Self::LEAF_LEN_BITS) - 1)) + 1)
+                len: ((self.0 >> Self::LEAF_START_BITS) & ((1 << Self::LEAF_LEN_BITS) - 1)) as u8,
+            }
+        } else {
+            ChildKind::Index {
+                start: self.0 & ((1 << Self::INDEX_START_BITS) - 1),
+                fanout: ((self.0 >> Self::INDEX_START_BITS) & ((1 << Self::INDEX_LEN_BITS) - 1))
                     as u8,
-            },
-            _ => unreachable!("Child has only three tags and none can be constructed"),
+            }
         }
     }
 
     pub fn is_empty(self) -> bool {
-        self.0 >> Self::TAG_SHIFT == Self::TAG_EMPTY
+        self.0 == 0
     }
 }
 
@@ -266,6 +277,29 @@ mod tests {
             Child(0).kind(),
             ChildKind::Index { .. } | ChildKind::Leaf { .. }
         ));
+    }
+
+    /// `Empty` has no tag of its own — it is *implied* by a zero length,
+    /// which is the invariant that buys the extra bit. So no constructible
+    /// child may ever be zero, at any corner of either field. If a bias
+    /// ever crept back into the length encoding this is what would catch
+    /// it: `Child::index(0, 1, false)` would become `Child(0)`.
+    #[test]
+    fn no_real_child_is_ever_zero() {
+        for start in [0u32, 1, (Child::MAX_EDGES - 1) as u32] {
+            for fanout in [1u8, Child::MAX_FANOUT as u8] {
+                for is_word in [false, true] {
+                    assert_ne!(Child::index(start, fanout, is_word), Child::EMPTY);
+                }
+            }
+        }
+        for from in [0u32, 1, (Child::MAX_WORDS - 1) as u32] {
+            for len in [1u8, Child::MAX_LEAF_LEN as u8] {
+                for is_word in [false, true] {
+                    assert_ne!(Child::leaf(from, len, is_word), Child::EMPTY);
+                }
+            }
+        }
     }
 
     #[test]
