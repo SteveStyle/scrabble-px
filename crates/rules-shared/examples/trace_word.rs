@@ -194,6 +194,37 @@ fn main() {
         "total letters in arena: {}",
         words.iter().map(|w| w.len()).sum::<usize>()
     );
+    // The full child table of the first sparse node, which is what the
+    // design doc's "the node at CA" figure draws. Printed in full so the
+    // figure can pick cells that genuinely differ rather than inventing
+    // flags: most CA? trigrams are words, which is easy to get wrong.
+    let root = dense[&slot];
+    if root.1 - root.0 > T1 {
+        let kids = children(&words, root, 2);
+        let start = node_start[&root];
+        println!(
+            "\n--- node at {prefix2}: {} edges from {start} ---",
+            kids.len()
+        );
+        println!("  edge  +pos  letter  is_word  size  kind");
+        for (pos, (letter, lo, hi)) in kids.iter().enumerate() {
+            let indexed = hi - lo > T1;
+            println!(
+                "  {:>4}  {:>4}  {:>6}  {:>7}  {:>4}  {}",
+                start + pos,
+                pos,
+                grapheme_of(alphabet, *letter),
+                is_word_at(&words, (*lo, *hi), 3),
+                hi - lo,
+                if indexed {
+                    format!("Index @{}", node_start[&(*lo, *hi)])
+                } else {
+                    format!("Leaf from {lo}")
+                }
+            );
+        }
+    }
+
     println!("\n--- first-letter ranges (checking the doc's figures) ---");
     for target_letter in [0u8, 1, 2] {
         let lo = words.iter().position(|w| w[0] == target_letter).unwrap();
