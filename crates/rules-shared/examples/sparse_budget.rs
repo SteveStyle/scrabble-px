@@ -105,8 +105,8 @@ fn encode(text: &str, alphabet: &Alphabet) -> Vec<Vec<u8>> {
 
 fn main() {
     println!(
-        "{:<10} {:>4} {:>9} {:>9} {:>9} {:>8}  {}",
-        "list", "T1", "edges", "nodes", "leaves", "fanout", "u16 child?"
+        "{:<10} {:>4} {:>9} {:>9} {:>9} {:>8}  u16 child?",
+        "list", "T1", "edges", "nodes", "leaves", "fanout"
     );
 
     for (name, text, rules) in [
@@ -133,7 +133,7 @@ fn main() {
                 "NO"
             };
             println!(
-                "{:<10} {t1:>4} {:>9} {:>9} {:>9} {:>8}  {verdict}",
+                "           {t1:>4} {:>9} {:>9} {:>9} {:>8}  {verdict}",
                 budget.edges, budget.nodes, budget.leaves, budget.max_fanout
             );
         }
