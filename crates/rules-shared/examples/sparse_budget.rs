@@ -133,8 +133,8 @@ fn main() {
                 "NO"
             };
             println!(
-                "{:<10} {:>4} {:>9} {:>9} {:>9} {:>8}  {verdict}",
-                "", t1, budget.edges, budget.nodes, budget.leaves, budget.max_fanout
+                "{:<10} {t1:>4} {:>9} {:>9} {:>9} {:>8}  {verdict}",
+                budget.edges, budget.nodes, budget.leaves, budget.max_fanout
             );
         }
     }
