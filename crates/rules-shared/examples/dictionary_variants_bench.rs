@@ -663,90 +663,90 @@ fn three_options(name: &str, text: &'static str, alphabet: &Alphabet, encoded: &
 /// does not have — which is why measuring single-word membership
 /// understates the structure at the place it is really called.
 fn cross_check_block(name: &str, text: &'static str, alphabet: &Alphabet, encoded: &[Vec<Letter>]) {
-    // Contexts modelling a square with tiles on both sides.
-    let contexts: Vec<(Vec<u8>, Vec<u8>)> = encoded
-        .iter()
-        .filter(|w| w.len() >= 4)
-        .take(2000)
-        .map(|w| {
-            let bytes: Vec<u8> = w.iter().map(|l| l.0).collect();
-            (bytes[..2].to_vec(), bytes[3..].to_vec())
-        })
-        .collect();
-    if contexts.is_empty() {
-        return;
-    }
     let n = alphabet.len();
-
     let built = SparseHashed::build(text, alphabet);
 
-    // Hash, exactly as cache.rs does it: a String per letter per cell.
-    let start = Instant::now();
-    let mut hash_hits = 0usize;
-    for (before, after) in &contexts {
-        for index in 0..n as u8 {
-            let mut word = String::with_capacity(before.len() + 1 + after.len());
-            for letter in before.iter().chain(&[index]).chain(after.iter()) {
-                if let Some(g) = alphabet.to_grapheme(Letter(*letter)) {
-                    word.extend(g.chars());
+    // The varying square's position matters, because the two methods scale
+    // differently with it. Hoisting the prefix only helps when there *is*
+    // one, so split 0 — the square at the very start of the cross word —
+    // is the structure's worst case and worth reporting separately.
+    for split in [0usize, 1, 2, 3] {
+        let contexts: Vec<(Vec<u8>, Vec<u8>)> = encoded
+            .iter()
+            .filter(|w| w.len() >= split + 2)
+            .take(2000)
+            .map(|w| {
+                let bytes: Vec<u8> = w.iter().map(|l| l.0).collect();
+                (bytes[..split].to_vec(), bytes[split + 1..].to_vec())
+            })
+            .collect();
+        if contexts.is_empty() {
+            continue;
+        }
+
+        // Hash, exactly as cache.rs does it: a String per letter per cell.
+        let start = Instant::now();
+        let mut hash_hits = 0usize;
+        for (before, after) in &contexts {
+            for index in 0..n as u8 {
+                let mut word = String::with_capacity(before.len() + 1 + after.len());
+                for letter in before.iter().chain(&[index]).chain(after.iter()) {
+                    if let Some(g) = alphabet.to_grapheme(Letter(*letter)) {
+                        word.extend(g.chars());
+                    }
+                }
+                if built.words.contains(word.as_str()) {
+                    hash_hits += 1;
                 }
             }
-            if built.words.contains(word.as_str()) {
-                hash_hits += 1;
-            }
         }
-    }
-    let hash_ns = start.elapsed().as_secs_f64() * 1e9 / contexts.len() as f64;
+        let hash_ns = start.elapsed().as_secs_f64() * 1e9 / contexts.len() as f64;
 
-    // Structure, hoisting the shared prefix out of the letter loop.
-    let start = Instant::now();
-    let mut walk_hits = 0usize;
-    for (before, after) in &contexts {
-        let mut prefix = Some(built.dict.root());
-        for letter in before {
-            prefix = prefix.and_then(|c| built.dict.advance(c, *letter).map(|s| s.cursor));
-        }
-        let Some(prefix) = prefix else { continue };
-        for index in 0..n as u8 {
-            let Some(step) = built.dict.advance(prefix, index) else {
-                continue;
-            };
-            let mut cursor = Some(step.cursor);
-            let mut is_word = step.is_word;
-            for letter in after {
-                cursor = cursor.and_then(|c| {
-                    built.dict.advance(c, *letter).map(|s| {
-                        is_word = s.is_word;
-                        s.cursor
-                    })
-                });
-                if cursor.is_none() {
-                    break;
+        // Structure, hoisting the shared prefix out of the letter loop.
+        let start = Instant::now();
+        let mut walk_hits = 0usize;
+        for (before, after) in &contexts {
+            let mut prefix = Some(built.dict.root());
+            for letter in before {
+                prefix = prefix.and_then(|c| built.dict.advance(c, *letter).map(|s| s.cursor));
+            }
+            let Some(prefix) = prefix else { continue };
+            for index in 0..n as u8 {
+                let Some(step) = built.dict.advance(prefix, index) else {
+                    continue;
+                };
+                let mut cursor = Some(step.cursor);
+                let mut is_word = step.is_word;
+                for letter in after {
+                    cursor = cursor.and_then(|c| {
+                        built.dict.advance(c, *letter).map(|s| {
+                            is_word = s.is_word;
+                            s.cursor
+                        })
+                    });
+                    if cursor.is_none() {
+                        break;
+                    }
+                }
+                if cursor.is_some() && is_word {
+                    walk_hits += 1;
                 }
             }
-            if cursor.is_some() && is_word {
-                walk_hits += 1;
-            }
         }
-    }
-    let walk_ns = start.elapsed().as_secs_f64() * 1e9 / contexts.len() as f64;
+        let walk_ns = start.elapsed().as_secs_f64() * 1e9 / contexts.len() as f64;
 
-    assert_eq!(
-        hash_hits, walk_hits,
-        "{name}: the two cross-check methods should allow the same letters"
-    );
-    println!(
-        "    {:<34} {:>16} {:>7.0} ns/cell",
-        "4. cross-check block, hash", "", hash_ns
-    );
-    println!(
-        "    {:<34} {:>16} {:>7.0} ns/cell   ({} cells, {} letters each)",
-        "4. cross-check block, structure",
-        "",
-        walk_ns,
-        contexts.len(),
-        n
-    );
+        assert_eq!(
+            hash_hits, walk_hits,
+            "{name}: the two methods should allow the same letters at split {split}"
+        );
+        let suffix = contexts[0].1.len();
+        println!(
+            "    4. cross-check, prefix {split} suffix {suffix}: hash {hash_ns:>7.0}  structure \
+             {walk_ns:>7.0} ns/cell  {:>4.1}x  ({} cells x {n} letters)",
+            hash_ns / walk_ns.max(1.0),
+            contexts.len()
+        );
+    }
 }
 
 fn median(mut values: Vec<f64>) -> f64 {
