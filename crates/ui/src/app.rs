@@ -256,6 +256,17 @@ pub fn RootApp() -> Element {
     // very first load if the server was down at launch — needs an explicit
     // reload to catch up.
     let mut is_reconnecting = use_signal(|| false);
+
+    // Start the long-running update check once, at mount. A deploy that
+    // doesn't change the API version leaves this tab working but stale —
+    // see `watch_for_updates_while_idle`.
+    #[cfg(target_arch = "wasm32")]
+    use_effect(move || {
+        static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !STARTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            watch_for_updates_while_idle(staged_placements);
+        }
+    });
     {
         let server_url = server_url.clone();
         use_effect(move || {
@@ -2226,6 +2237,15 @@ const BUNDLE_POLL_MS: u64 = 3000;
 #[cfg(target_arch = "wasm32")]
 const BUNDLE_POLL_ATTEMPTS: usize = 20;
 
+/// How often a running tab asks whether a newer bundle is being served.
+///
+/// Separate from `BUNDLE_POLL_MS`, which is the tight poll used to ride out
+/// a single deploy window. This one runs for the life of the page, so it is
+/// slow on purpose: `/version.txt` is a few bytes, but a tab left open for
+/// days shouldn't generate a request every three seconds to learn nothing.
+#[cfg(target_arch = "wasm32")]
+const UPDATE_CHECK_MS: u64 = 60_000;
+
 /// The build identity of the bundle this origin is serving *right now*,
 /// from the `/version.txt` written into the web image at build time (see
 /// the Dockerfile). `None` if it can't be read, which covers the moment the
@@ -2267,6 +2287,72 @@ fn parse_served_version(body: &str) -> Option<String> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-' | '_'));
     plausible.then(|| version.to_string())
+}
+
+/// Whether a running tab should reload onto whatever the origin is serving
+/// now.
+///
+/// Split out from the polling loop so the rules are testable on the host —
+/// the timer, the fetch and the reload call are wasm-only plumbing, and
+/// this is the part that decides anything.
+fn should_reload_onto(running: &str, served: Option<&str>, staged_tiles: usize) -> bool {
+    match served {
+        // Unreadable: the web container may be mid-restart, and a missing
+        // file is not evidence of a new bundle.
+        None => false,
+        // Already current. This is also what stops a reload loop: after
+        // reloading, the running build *is* the served one.
+        Some(served) if served == running => false,
+        // A reload throws away an unsubmitted move. Unlike API skew there
+        // is no correctness argument for doing that — the tab works fine —
+        // so wait until the board is clear.
+        Some(_) => staged_tiles == 0,
+    }
+}
+
+/// Watches for a newer bundle for the whole life of the page, and reloads
+/// onto it when doing so would cost the player nothing.
+///
+/// `watch_for_new_bundle` only ever starts on *API* skew, which means a tab
+/// that is actually broken. But a deploy that leaves the API version alone
+/// — a bug fix, a new edition — leaves open tabs working and quietly stale:
+/// they keep talking to the server happily and have no reason to suspect a
+/// newer bundle exists. That is how 0.4.13 shipped a new edition that
+/// already-open tabs couldn't offer.
+///
+/// Polling `/version.txt` answers "is there a newer bundle?" directly,
+/// without going through the API version at all, and without the
+/// deploy-window race `/health` would have (see `watch_for_new_bundle`).
+///
+/// **Skipped while tiles are staged.** A reload throws away an unsubmitted
+/// move, and unlike the API-skew case there is no correctness argument to
+/// justify that — the tab works fine. So a staged move defers the reload to
+/// the next tick, and the update lands the moment the board is clear.
+#[cfg(target_arch = "wasm32")]
+fn watch_for_updates_while_idle(staged_placements: Signal<Vec<StagedPlacementView>>) {
+    spawn(async move {
+        let running = crate::app_version();
+        loop {
+            sleep_ms(UPDATE_CHECK_MS).await;
+            let served = fetch_served_bundle_version().await;
+            let Some(served) = served else {
+                // Unreadable — the web container may be mid-restart. Ask
+                // again on the next tick rather than guessing.
+                continue;
+            };
+            // Peek rather than read: this runs in a detached task, not a
+            // reactive scope, so subscribing to the signal would be
+            // meaningless.
+            let staged = staged_placements.peek().len();
+            if !should_reload_onto(&running, Some(served.as_str()), staged) {
+                continue;
+            }
+            if let Some(window) = web_sys::window() {
+                let _ = window.location().reload();
+            }
+            return;
+        }
+    });
 }
 
 /// Reload the page as soon — and only as soon — as doing so would actually
@@ -3799,6 +3885,42 @@ fn shuffle_order(order: &mut [usize]) {
     for i in (1..order.len()).rev() {
         let j = random_index_below(i + 1);
         order.swap(i, j);
+    }
+}
+
+#[cfg(test)]
+mod update_check_tests {
+    use super::should_reload_onto;
+
+    const RUNNING: &str = "0.4.13+fb36f50";
+
+    #[test]
+    fn reloads_when_a_different_bundle_is_served_and_nothing_is_staged() {
+        assert!(should_reload_onto(RUNNING, Some("0.4.14+abc1234"), 0));
+    }
+
+    /// The case that motivated this: a deploy that leaves the API version
+    /// alone leaves the tab working, so nothing else would ever notice.
+    #[test]
+    fn a_staged_move_defers_the_reload_rather_than_losing_it() {
+        assert!(!should_reload_onto(RUNNING, Some("0.4.14+abc1234"), 1));
+        assert!(!should_reload_onto(RUNNING, Some("0.4.14+abc1234"), 7));
+    }
+
+    /// What stops a reload loop: after reloading, the running build is the
+    /// served one, so the next tick decides against reloading again.
+    #[test]
+    fn an_unchanged_bundle_is_never_a_reason_to_reload() {
+        assert!(!should_reload_onto(RUNNING, Some(RUNNING), 0));
+    }
+
+    /// A missing `/version.txt` is what a mid-restart web container looks
+    /// like, and in dev there is no such file at all — neither is evidence
+    /// that a newer bundle exists.
+    #[test]
+    fn an_unreadable_version_file_is_not_evidence_of_an_update() {
+        assert!(!should_reload_onto(RUNNING, None, 0));
+        assert!(!should_reload_onto(RUNNING, None, 3));
     }
 }
 

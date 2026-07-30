@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use crate::model::{Alphabet, Letter, LetterMask, VariantRules, mask_insert};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::tiered::TieredDictionary;
 
 /// Embedded at compile time for every non-wasm target (the server, and the
