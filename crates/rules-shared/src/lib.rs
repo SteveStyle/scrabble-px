@@ -5,6 +5,7 @@ pub mod format;
 pub mod generate;
 pub mod model;
 pub mod score;
+pub mod tiered;
 pub mod validate;
 
 pub use board::{BoardCell, BoardState, EmptyCell, FilledCell};
@@ -24,4 +25,5 @@ pub use model::{
     MoveCandidate, MoveError, MovePreview, MoveScore, Position, Premium, Rack, Score, Tile,
     TilePlacement, ValidatedMove, VariantRules,
 };
+pub use tiered::{Child, ChildKind, Cursor, Step};
 pub use validate::{GameState, MoveValidator, RulesEngine, RulesPosition};
