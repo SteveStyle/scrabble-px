@@ -315,6 +315,23 @@ pub type Score = i16;
 /// checked/pruned anyway.
 pub const MAX_ALPHABET_SIZE: usize = 64;
 
+/// The tie to `LetterMask`'s width above is load-bearing, not decorative.
+/// `mask_insert` shifts by the letter index, and a shift past the type's
+/// width is only a panic in debug — in release the shift amount is masked,
+/// so letter 74 would silently become bit 10 and alias letter 10 in every
+/// cross-check. Raising `MAX_ALPHABET_SIZE` therefore has to widen
+/// `LetterMask` in the same commit, and this fails the build otherwise.
+///
+/// Raising it is otherwise safe: `deserialize_letter_array` rejects arrays
+/// *longer* than the constant, so persisted 64-entry racks keep loading.
+/// The real cost is that `RuleCache` holds two letter-indexed score arrays
+/// per cell — 225 cells, ~61 KB today — so doubling the constant nearly
+/// doubles the hottest structure move generation reads.
+const _: () = assert!(
+    MAX_ALPHABET_SIZE <= LetterMask::BITS as usize,
+    "MAX_ALPHABET_SIZE must fit LetterMask, or mask_insert aliases letters in release"
+);
+
 pub const FULL_LETTER_MASK: LetterMask = LetterMask::MAX;
 
 pub const fn mask_contains(mask: LetterMask, letter: Letter) -> bool {
