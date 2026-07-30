@@ -26,9 +26,15 @@ use rules_shared::{
 
 const REPS: usize = 5;
 
-/// A plausible mid-game board: real words crossing each other, leaving most
-/// squares empty but many of them constrained.
-fn mid_game_board(rules: &VariantRules) -> BoardState {
+/// Boards of increasing fullness, built by applying the first `rows` of a
+/// fixed list of real words.
+///
+/// Not legal positions — the vertical cross-words are nonsense — but the
+/// quantities that drive the two phases are realistic: how many squares
+/// are empty, how many are anchors, and how constrained they are. A
+/// legal near-endgame board is fiddly to hand-build and would not change
+/// the shape of the answer.
+fn board_with_rows(rules: &VariantRules, rows: usize) -> BoardState {
     let mut board = BoardState::new(rules);
     let placements: &[(&str, u8, u8, Direction)] = &[
         ("TAZOS", 5, 4, Direction::Horizontal),
@@ -41,8 +47,16 @@ fn mid_game_board(rules: &VariantRules) -> BoardState {
         ("IRE", 3, 11, Direction::Horizontal),
         ("KEF", 2, 12, Direction::Horizontal),
         ("ODE", 2, 13, Direction::Horizontal),
+        ("BRAVADO", 0, 0, Direction::Horizontal),
+        ("CLIMATES", 0, 1, Direction::Horizontal),
+        ("DUNGEONS", 0, 2, Direction::Horizontal),
+        ("FRIGHTEN", 0, 3, Direction::Horizontal),
+        ("GAZETTED", 4, 14, Direction::Horizontal),
+        ("HOSPICE", 8, 9, Direction::Horizontal),
+        ("JUNKYARD", 6, 10, Direction::Horizontal),
+        ("KNOWABLE", 6, 11, Direction::Horizontal),
     ];
-    for (word, x, y, direction) in placements {
+    for (word, x, y, direction) in placements.iter().take(rows) {
         for (offset, ch) in word.chars().enumerate() {
             let offset = offset as u8;
             let letter = Letter::from(ch);
@@ -77,13 +91,30 @@ fn main() {
         rules: &rules,
         dictionary: &dictionary,
     };
-    let board = mid_game_board(&rules);
-
     let mut rack = Rack::default();
     for ch in ['E', 'A', 'R', 'T', 'S', 'N', 'I'] {
         rack.add_letter(Letter::from(ch));
     }
 
+    println!("median of {REPS} runs, per board fullness\n");
+    println!(
+        "  {:>5} {:>7} {:>8} {:>10} {:>10} {:>9}",
+        "words", "empty", "moves", "sweep ms", "gen ms", "sweep %"
+    );
+    for rows in [3usize, 6, 10, 14, 18] {
+        let board = board_with_rows(&rules, rows);
+        phase_split(&engine, &rules, &dictionary, board, &rack, rows);
+    }
+}
+
+fn phase_split(
+    engine: &RulesEngine<'_, WordListDictionary>,
+    rules: &VariantRules,
+    dictionary: &WordListDictionary,
+    board: BoardState,
+    rack: &Rack,
+    rows: usize,
+) {
     let empty = (0..rules.height)
         .flat_map(|y| (0..rules.width).map(move |x| Position::new(x, y)))
         .filter(|pos| matches!(board.get(*pos), Some(BoardCell::Empty(_))))
@@ -95,7 +126,7 @@ fn main() {
             .map(|_| {
                 let mut cache = RuleCache::default();
                 let start = Instant::now();
-                cache.recompute_all(&board, &rules, &dictionary);
+                cache.recompute_all(&board, rules, dictionary);
                 std::hint::black_box(&cache);
                 start.elapsed().as_secs_f64() * 1000.0
             })
@@ -104,7 +135,7 @@ fn main() {
 
     // Phase 2: generation over the same position.
     let mut cache = RuleCache::default();
-    cache.recompute_all(&board, &rules, &dictionary);
+    cache.recompute_all(&board, rules, dictionary);
     let state = rules_shared::GameState { board, cache };
 
     let mut move_count = 0usize;
@@ -112,7 +143,7 @@ fn main() {
         (0..REPS)
             .map(|_| {
                 let start = Instant::now();
-                let moves = engine.enumerate_legal_multi_tile_moves(&state, &rack);
+                let moves = engine.enumerate_legal_multi_tile_moves(&state, rack);
                 move_count = moves.len();
                 std::hint::black_box(moves.len());
                 start.elapsed().as_secs_f64() * 1000.0
@@ -121,23 +152,8 @@ fn main() {
     );
 
     let total = cross_ms + gen_ms;
-    println!("mid-game board: {empty} empty squares, {move_count} legal moves found");
-    println!("median of {REPS} runs:");
     println!(
-        "  cross-check sweep   {cross_ms:>8.2} ms   {:>5.1}% of the two",
+        "  {rows:>5} {empty:>7} {move_count:>8} {cross_ms:>10.3} {gen_ms:>10.3} {:>8.1}%",
         100.0 * cross_ms / total
-    );
-    println!(
-        "  move generation     {gen_ms:>8.2} ms   {:>5.1}%",
-        100.0 * gen_ms / total
-    );
-    println!();
-    println!(
-        "A 2x faster cross-check would save {:.2} ms of {total:.2} ms",
-        cross_ms / 2.0
-    );
-    println!(
-        "A 5x faster cursor would save        {:.2} ms of {total:.2} ms",
-        gen_ms * 0.8
     );
 }
