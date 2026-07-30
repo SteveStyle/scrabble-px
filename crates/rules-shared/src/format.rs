@@ -11,6 +11,7 @@ pub fn format_move_error(error: &MoveError) -> String {
             let verb = if words.len() == 1 { "is" } else { "are" };
             format!("{} {verb} not in the dictionary.", format_word_list(words))
         }
+        MoveError::OpeningMoveTooShort => "The first word must use at least two tiles.".to_string(),
         MoveError::InvalidMove
         | MoveError::InvalidPosition
         | MoveError::InvalidDirection
@@ -61,6 +62,17 @@ mod tests {
                 "JJ".to_string()
             ])),
             "QX, ZY and JJ are not in the dictionary."
+        );
+    }
+
+    /// Kept distinct from the generic placement message: the player has
+    /// placed a tile somewhere entirely legal and needs to be told the rule
+    /// they've hit, not that their placement is wrong.
+    #[test]
+    fn opening_move_too_short_names_the_two_tile_rule() {
+        assert_eq!(
+            format_move_error(&MoveError::OpeningMoveTooShort),
+            "The first word must use at least two tiles."
         );
     }
 

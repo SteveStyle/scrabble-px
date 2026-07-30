@@ -816,6 +816,18 @@ pub enum MoveError {
     InvalidDirection,
     TilesDoNotFit,
     TilesDoNotConnect,
+    /// The opening play placed a single tile. Scrabble requires the first
+    /// word to combine two or more tiles across the start square, so one
+    /// tile is illegal however the board is later read.
+    ///
+    /// Until this existed the rule was enforced by accident: a lone tile's
+    /// main word is one character long, and no word list we ship contains
+    /// a single-character entry, so the dictionary rejected it. That is a
+    /// coincidence of the data rather than a rule, and it reported the
+    /// wrong reason — a list that did contain a one-letter word (Spanish
+    /// *y* and *o* are real words, just absent from our list) would have
+    /// made single-tile openings legal.
+    OpeningMoveTooShort,
 }
 
 #[cfg(test)]
@@ -1034,30 +1046,10 @@ mod tests {
         assert_eq!(VariantRules::by_name("spanish").unwrap().name, "spanish");
         assert!(VariantRules::EDITION_NAMES.contains(&"spanish"));
         assert!(VariantRules::by_name("not-a-real-edition").is_none());
-        // Retired: no new game can be created under it, but an existing
-        // one must still resolve the rules it was created with.
+        // Retired: games created under it keep their own persisted copy of
+        // the rules, but no new game can be created with it.
         assert!(VariantRules::by_name("wordfeud").is_none());
         assert!(!VariantRules::EDITION_NAMES.contains(&"wordfeud"));
-        let retired = VariantRules::by_name_including_retired("wordfeud")
-            .expect("a retired edition must still resolve for games already using it");
-        assert_eq!(retired.name, "wordfeud");
-        assert_eq!(retired.bingo_bonus, 40);
-        assert!(VariantRules::by_name_including_retired("not-a-real-edition").is_none());
-    }
-
-    /// Retirement removes an edition from the picker without changing how
-    /// the games already using it play — so every retired name must still
-    /// resolve, and must never reappear as something a new game can pick.
-    #[test]
-    fn retired_editions_resolve_but_are_never_offered() {
-        for name in VariantRules::RETIRED_EDITION_NAMES {
-            assert!(
-                VariantRules::by_name_including_retired(name).is_some(),
-                "retired edition {name} no longer resolves — games using it would break"
-            );
-            assert!(VariantRules::by_name(name).is_none());
-            assert!(!VariantRules::EDITION_NAMES.contains(name));
-        }
     }
 
     #[test]

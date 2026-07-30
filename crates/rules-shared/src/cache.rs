@@ -221,7 +221,7 @@ fn find_extent(board: &BoardState, pos: Position, direction: Direction, backward
     }
 }
 
-fn board_has_any_tiles(board: &BoardState, rules: &VariantRules) -> bool {
+pub(crate) fn board_has_any_tiles(board: &BoardState, rules: &VariantRules) -> bool {
     for y in 0..rules.height {
         for x in 0..rules.width {
             if matches!(board.get(Position::new(x, y)), Some(BoardCell::Filled(_))) {

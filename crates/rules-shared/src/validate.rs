@@ -156,6 +156,15 @@ impl<D: Dictionary> RulesEngine<'_, D> {
             return Err(MoveError::TilesDoNotConnect);
         }
 
+        // Checked before any word is built, so the opening two-tile rule
+        // reports itself rather than surfacing as "X is not in the
+        // dictionary" — which is what a lone opening tile used to produce,
+        // since its main word is a single character.
+        if placed_positions.len() < 2 && !crate::cache::board_has_any_tiles(state.board, self.rules)
+        {
+            return Err(MoveError::OpeningMoveTooShort);
+        }
+
         validate_main_word_span(state.board, candidate, &placements, span, self.rules)?;
 
         let word_start = extend_start(state.board, placed_positions[0], candidate.direction);
@@ -534,6 +543,83 @@ mod tests {
 
     fn sample_rules() -> VariantRules {
         VariantRules::official()
+    }
+
+    /// Scrabble's opening play must combine two or more tiles. A single
+    /// tile on the start square used to be rejected only because its main
+    /// word — one character — is in no word list, which reported the wrong
+    /// reason and would have stopped working on any list containing a
+    /// one-letter word.
+    #[test]
+    fn opening_play_of_one_tile_is_rejected_by_rule_not_by_the_dictionary() {
+        let rules = sample_rules();
+        let dictionary = WordListDictionary::new();
+        let engine = RulesEngine {
+            rules: &rules,
+            dictionary: &dictionary,
+        };
+        let board = BoardState::default();
+        let mut cache = RuleCache::default();
+        cache.recompute_anchor_flags(&board, &rules);
+
+        let state = RulesPosition {
+            board: &board,
+            cache: &cache,
+            rack: None,
+        };
+        let candidate = MoveCandidate {
+            start: Position::new(7, 7),
+            direction: Direction::Horizontal,
+            tiles: vec![TilePlacement {
+                offset: 0,
+                tile: Tile::Letter(Letter::from('I')),
+            }],
+        };
+
+        assert_eq!(
+            engine.validate_move(&state, &candidate).unwrap_err(),
+            MoveError::OpeningMoveTooShort
+        );
+    }
+
+    /// The two-tile rule is the *opening* rule only. Once the board has
+    /// tiles, a single placement is ordinary — it just has to form a word
+    /// on the axis where it has neighbours.
+    #[test]
+    fn single_tile_play_is_allowed_once_the_board_has_tiles() {
+        let rules = sample_rules();
+        let dictionary = WordListDictionary::new();
+        let engine = RulesEngine {
+            rules: &rules,
+            dictionary: &dictionary,
+        };
+        let mut board = BoardState::default();
+        board.set(
+            Position::new(7, 7),
+            BoardCell::Filled(FilledCell {
+                letter: Letter::from('A'),
+                is_blank: false,
+            }),
+        );
+        let mut cache = RuleCache::default();
+        cache.recompute_anchor_flags(&board, &rules);
+
+        let state = RulesPosition {
+            board: &board,
+            cache: &cache,
+            rack: None,
+        };
+        // AT, read along the direction the tile actually extends.
+        let candidate = MoveCandidate {
+            start: Position::new(8, 7),
+            direction: Direction::Horizontal,
+            tiles: vec![TilePlacement {
+                offset: 0,
+                tile: Tile::Letter(Letter::from('T')),
+            }],
+        };
+
+        assert!(engine.validate_move(&state, &candidate).is_ok());
     }
 
     #[test]

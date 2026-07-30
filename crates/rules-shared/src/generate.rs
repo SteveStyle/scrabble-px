@@ -335,9 +335,25 @@ fn move_candidate_key(candidate: &MoveCandidate) -> String {
 #[cfg(test)]
 mod tests {
     use super::MoveGenerator;
+    use crate::board::{BoardCell, BoardState, FilledCell};
     use crate::dictionary::Dictionary;
-    use crate::model::{Direction, Letter, Rack, Tile};
+    use crate::model::{Direction, Letter, Position, Rack, Tile};
     use crate::validate::{GameState, RulesEngine};
+
+    /// A board with a single `A` on the start square, so that single-tile
+    /// plays are legal at all — the opening play must use two or more
+    /// tiles, so nothing one tile long is legal on an empty board.
+    fn board_with_opening_a(rules: &crate::model::VariantRules) -> BoardState {
+        let mut board = BoardState::new(rules);
+        board.set(
+            Position::new(7, 7),
+            BoardCell::Filled(FilledCell {
+                letter: Letter::from('A'),
+                is_blank: false,
+            }),
+        );
+        board
+    }
 
     struct TinyDictionary {
         words: std::collections::HashSet<&'static str>,
@@ -366,17 +382,17 @@ mod tests {
     }
 
     #[test]
-    fn generator_emits_valid_single_tile_opening_moves() {
+    fn generator_emits_valid_single_tile_moves() {
         let rules = sample_rules();
-        let dictionary = TinyDictionary::new(["A"]);
+        let dictionary = TinyDictionary::new(["AT", "TA"]);
         let engine = RulesEngine {
             rules: &rules,
             dictionary: &dictionary,
         };
 
-        let state = GameState::new(&rules, &dictionary);
+        let state = GameState::from_board(board_with_opening_a(&rules), &rules, &dictionary);
         let mut rack = Rack::default();
-        rack.add_letter(Letter::from('A'));
+        rack.add_letter(Letter::from('T'));
 
         let moves: Vec<_> = engine.enumerate_legal_moves(&state, &rack).collect();
         assert!(!moves.is_empty());
@@ -390,16 +406,46 @@ mod tests {
         }
     }
 
+    /// The opening play must combine two or more tiles, so generation must
+    /// not offer a one-tile opening even when the dictionary would accept
+    /// the letter as a word — otherwise the bot proposes moves its own
+    /// validator rejects. `TinyDictionary` can contain a one-letter word
+    /// here precisely because no real word list does.
     #[test]
-    fn generator_uses_blank_tiles_when_present() {
+    fn generator_offers_no_single_tile_opening_on_an_empty_board() {
         let rules = sample_rules();
-        let dictionary = TinyDictionary::new(["A"]);
+        let dictionary = TinyDictionary::new(["A", "AA"]);
         let engine = RulesEngine {
             rules: &rules,
             dictionary: &dictionary,
         };
 
         let state = GameState::new(&rules, &dictionary);
+        let mut rack = Rack::default();
+        rack.add_letter(Letter::from('A'));
+
+        assert!(
+            engine
+                .enumerate_legal_single_tile_moves(&state, &rack)
+                .is_empty()
+        );
+
+        // Two tiles from the same rack and dictionary are fine, so the
+        // emptiness above is the opening rule and not a dead fixture.
+        rack.add_letter(Letter::from('A'));
+        assert!(engine.enumerate_legal_moves(&state, &rack).next().is_some());
+    }
+
+    #[test]
+    fn generator_uses_blank_tiles_when_present() {
+        let rules = sample_rules();
+        let dictionary = TinyDictionary::new(["AA"]);
+        let engine = RulesEngine {
+            rules: &rules,
+            dictionary: &dictionary,
+        };
+
+        let state = GameState::from_board(board_with_opening_a(&rules), &rules, &dictionary);
         let rack = Rack {
             counts: [0; crate::model::MAX_ALPHABET_SIZE],
             blanks: 1,
