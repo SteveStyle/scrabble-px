@@ -304,6 +304,7 @@ impl<D: Dictionary> RulesEngine<'_, D> {
         let placements =
             candidate_placements(&validated.candidate, &offset_placements, self.rules)?;
 
+        let mut placed_positions = Vec::with_capacity(placements.len());
         for (pos, placement) in placements {
             let letter = placement.tile.letter().ok_or(MoveError::InvalidMove)?;
             board.set(
@@ -313,32 +314,19 @@ impl<D: Dictionary> RulesEngine<'_, D> {
                     is_blank: matches!(placement.tile, Tile::Blank { .. }),
                 }),
             );
+            placed_positions.push(pos);
         }
 
+        // Extents and anchor flags stay full-board sweeps: they are pure
+        // board walks with no dictionary work, and the first move flips
+        // every cell's anchor flag at once anyway (empty board: only the
+        // start square is an anchor; after that, anything touching a tile
+        // is). The cross-checks are the expensive part — one dictionary
+        // question per letter of the alphabet, per constrained cell — and
+        // those are now bounded by tiles placed.
         cache.recompute_extents(board, self.rules);
         cache.recompute_anchor_flags(board, self.rules);
-
-        for y in 0..self.rules.height {
-            for x in 0..self.rules.width {
-                let pos = Position::new(x, y);
-                if matches!(board.get(pos), Some(BoardCell::Empty(_))) {
-                    cache.recompute_cross_check(
-                        board,
-                        pos,
-                        Direction::Horizontal,
-                        self.rules,
-                        self.dictionary,
-                    );
-                    cache.recompute_cross_check(
-                        board,
-                        pos,
-                        Direction::Vertical,
-                        self.rules,
-                        self.dictionary,
-                    );
-                }
-            }
-        }
+        cache.recompute_cross_checks_near(board, &placed_positions, self.rules, self.dictionary);
 
         Ok(())
     }
@@ -543,6 +531,119 @@ mod tests {
 
     fn sample_rules() -> VariantRules {
         VariantRules::official()
+    }
+
+    /// The guarantee the incremental cross-check update rests on: after
+    /// applying a move, the cache must be **identical** to what a full
+    /// board sweep would have produced.
+    ///
+    /// Plays real games with the move generator rather than hand-built
+    /// positions, because the cases most likely to break the affected-set
+    /// reasoning are the awkward ones — a move that closes a gap between
+    /// two existing runs, a run that reaches the board edge, a tile placed
+    /// against a wall — and those arise naturally in play but are easy to
+    /// forget to write down.
+    ///
+    /// Compares against a sweep of a *clone* of the same cache, not a fresh
+    /// one: both paths deliberately leave stale values on cells the move
+    /// just filled (nothing reads them, and the sweep skips non-empty
+    /// cells), so the shared starting point is what makes them comparable.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn incremental_cross_checks_match_a_full_sweep_through_whole_games() {
+        let rules = sample_rules();
+        let dictionary = WordListDictionary::new();
+        let engine = RulesEngine {
+            rules: &rules,
+            dictionary: &dictionary,
+        };
+
+        let mut checked = 0usize;
+        for seed in 0..6u64 {
+            let mut board = BoardState::new(&rules);
+            let mut cache = RuleCache::default();
+            cache.recompute_all(&board, &rules, &dictionary);
+
+            // A deterministic pseudo-random rack per turn, so the games
+            // differ from each other but reproduce exactly on failure.
+            let mut state = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let mut next = || {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                (state >> 33) as usize
+            };
+
+            for _turn in 0..24 {
+                let mut rack = Rack::default();
+                for _ in 0..rules.rack_size {
+                    rack.add_letter(Letter((next() % rules.alphabet.len()) as u8));
+                }
+
+                let position = GameState { board, cache };
+                let moves = engine.enumerate_legal_multi_tile_moves(&position, &rack);
+                board = position.board;
+                cache = position.cache;
+                if moves.is_empty() {
+                    continue;
+                }
+                let candidate = &moves[next() % moves.len()];
+
+                let state_view = RulesPosition {
+                    board: &board,
+                    cache: &cache,
+                    rack: None,
+                };
+                let Ok(validated) = engine.validate_move(&state_view, candidate) else {
+                    continue;
+                };
+
+                let mut swept = cache;
+                engine
+                    .apply_move(&mut board, &mut cache, &validated)
+                    .expect("a validated move should apply");
+
+                // The old behaviour, on a clone of the same starting cache.
+                swept.recompute_extents(&board, &rules);
+                swept.recompute_anchor_flags(&board, &rules);
+                for y in 0..rules.height {
+                    for x in 0..rules.width {
+                        let pos = Position::new(x, y);
+                        if matches!(board.get(pos), Some(BoardCell::Empty(_))) {
+                            swept.recompute_cross_check(
+                                &board,
+                                pos,
+                                Direction::Horizontal,
+                                &rules,
+                                &dictionary,
+                            );
+                            swept.recompute_cross_check(
+                                &board,
+                                pos,
+                                Direction::Vertical,
+                                &rules,
+                                &dictionary,
+                            );
+                        }
+                    }
+                }
+
+                for y in 0..rules.height {
+                    for x in 0..rules.width {
+                        let index = Position::new(x, y).to_index(BoardState::WIDTH);
+                        assert_eq!(
+                            cache.cells[index], swept.cells[index],
+                            "seed {seed}: cell ({x},{y}) diverged after applying {candidate:?}"
+                        );
+                    }
+                }
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 40,
+            "expected plenty of applied moves, got {checked}"
+        );
     }
 
     /// Scrabble's opening play must combine two or more tiles. A single

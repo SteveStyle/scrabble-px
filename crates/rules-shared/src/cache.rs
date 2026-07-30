@@ -146,6 +146,58 @@ impl RuleCache {
         }
     }
 
+    /// Recomputes only the cross-checks an applied move can have changed.
+    ///
+    /// A cell's cross-check depends on the contiguous run of tiles running
+    /// *perpendicular* to the direction it is consulted for — see
+    /// `compute_cross_check`, which walks `-placement_direction`. So a
+    /// placed tile can only affect a cell that shares a row or column with
+    /// it *and* has every cell between them occupied.
+    ///
+    /// Within a run every cell is occupied, so the only **empty** cells
+    /// meeting that condition are the first empty cell at each **end** of
+    /// the run. That is what makes this bounded by tiles placed rather than
+    /// by board size: walk to the end of the run, take the next cell.
+    ///
+    /// And only *one* of a cell's two cross-checks is ever affected, never
+    /// both — the run along an axis feeds the cross-check consulted for the
+    /// other direction. For a move of *n* tiles that is at most `2 + 2n`
+    /// recomputes, so 16 at a full rack, against 356 for a full sweep of a
+    /// mid-game board (178 empty squares x 2 directions).
+    ///
+    /// `placed` are the positions just filled, and `board` must already
+    /// hold them: the "every cell between is occupied" test is about the
+    /// post-move board, since another tile from the same move may be what
+    /// closed the gap.
+    ///
+    /// Cells the move just filled are left alone. They are no longer empty,
+    /// so nothing reads their cross-checks — and a full sweep skips them
+    /// too, so both paths agree by doing nothing.
+    pub fn recompute_cross_checks_near<D: Dictionary>(
+        &mut self,
+        board: &BoardState,
+        placed: &[Position],
+        rules: &VariantRules,
+        dictionary: &D,
+    ) {
+        // At most 2 + 2n entries, so a linear scan beats hashing.
+        let mut done: Vec<(Position, Direction)> = Vec::with_capacity(16);
+
+        for &pos in placed {
+            for axis in [Direction::Horizontal, Direction::Vertical] {
+                // The run along `axis` feeds the cross-check consulted for
+                // the perpendicular direction.
+                let affected = -axis;
+                for end in run_end_neighbours(board, pos, axis, rules) {
+                    if !done.contains(&(end, affected)) {
+                        done.push((end, affected));
+                        self.recompute_cross_check(board, end, affected, rules, dictionary);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn recompute_extents(&mut self, board: &BoardState, rules: &VariantRules) {
         for y in 0..rules.height {
             for x in 0..rules.width {
@@ -192,6 +244,44 @@ impl RuleCache {
             }
         }
     }
+}
+
+/// The empty cells immediately beyond each end of the contiguous filled run
+/// through `pos` along `direction` — at most two, fewer when a run reaches
+/// the board edge.
+///
+/// These are exactly the cells whose run along `direction` the placement
+/// changed: every cell *inside* the run is occupied and so has no
+/// cross-check to update.
+fn run_end_neighbours(
+    board: &BoardState,
+    pos: Position,
+    direction: Direction,
+    rules: &VariantRules,
+) -> impl Iterator<Item = Position> {
+    let mut ends = [None, None];
+
+    for (slot, backward) in [(0usize, true), (1usize, false)] {
+        let mut current = pos;
+        loop {
+            let next = if backward {
+                current.try_step_backward(direction)
+            } else {
+                current.try_step_forward(direction, rules.width, rules.height)
+            };
+            let Some(next) = next else { break };
+            match board.get(next) {
+                Some(BoardCell::Filled(_)) => current = next,
+                Some(BoardCell::Empty(_)) => {
+                    ends[slot] = Some(next);
+                    break;
+                }
+                None => break,
+            }
+        }
+    }
+
+    ends.into_iter().flatten()
 }
 
 fn find_extent(board: &BoardState, pos: Position, direction: Direction, backward: bool) -> u8 {
