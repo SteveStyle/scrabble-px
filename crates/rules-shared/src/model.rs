@@ -625,7 +625,8 @@ impl VariantRules {
 
     /// Every edition name the UI's picker can enumerate without duplicating
     /// the list `by_name` matches against.
-    pub const EDITION_NAMES: &[&str] = &["official", "north_american", "german", "spanish"];
+    pub const EDITION_NAMES: &[&str] =
+        &["official", "north_american", "german", "spanish", "spicy"];
 
     /// Editions that were once offered and no longer are. New games can't be
     /// created under these, but games that already were keep playing under
@@ -643,6 +644,7 @@ impl VariantRules {
             "north_american" => Some(Self::north_american()),
             "german" => Some(Self::german()),
             "spanish" => Some(Self::spanish()),
+            "spicy" => Some(Self::spicy()),
             _ => None,
         }
     }
@@ -659,6 +661,25 @@ impl VariantRules {
         match name {
             "wordfeud" => Some(Self::retired_wordfeud()),
             _ => Self::by_name(name),
+        }
+    }
+
+    /// A higher-jeopardy English edition: same words, same tiles, same
+    /// economy as `official()` — only the board differs. Deliberately its
+    /// own edition rather than a board option, because the layout is
+    /// bundled into the edition (a game persists its whole ruleset, and
+    /// ratings key on the edition name, so this gets its own ladder for
+    /// free).
+    ///
+    /// Everything that makes it spicy is in `spicy_premiums()`. Sharing
+    /// `official()`'s tile economy is the point: the two are directly
+    /// comparable, and any difference in how games play is attributable to
+    /// the board alone.
+    fn spicy() -> Self {
+        Self {
+            name: "spicy".to_string(),
+            premiums: spicy_premiums(),
+            ..Self::official()
         }
     }
 
@@ -757,6 +778,52 @@ fn house_premiums() -> [Premium; 225] {
         (4, 6, Premium::DoubleLetter),
         (5, 5, Premium::TripleLetter),
         (6, 6, Premium::DoubleLetter),
+        (7, 7, Premium::DoubleWord),
+    ])
+}
+
+/// The high-jeopardy layout. Same construction as `house_premiums`: a
+/// top-left quadrant seed, mirrored on both axes, with each `(x, y)` also
+/// named as `(y, x)` so the board keeps every symmetry of the square.
+///
+/// Three deliberate differences from the house board, all of them about
+/// *risk* rather than raw scoring:
+///
+/// 1. **The triple-words sit four apart on their shared line**, at `(5, 2)`
+///    and its mirror `(9, 2)`. House keeps its pair eight apart precisely
+///    so no single play can ever multiply both; giving that up is the whole
+///    point. One five-tile word takes both, at nine times the word score.
+/// 2. **A triple-word, double-word and triple-letter sit adjacent** on row
+///    5. Three tiles there is a six-times word with a tripled letter —
+///    around 138 points for placing three tiles.
+/// 3. **The corners are cooled to double-letter.** Pulling heat inboard has
+///    to be paid for somewhere, and the rim is where a game spends least of
+///    its time.
+///
+/// What is *not* changed: an opening bingo still tops out at two times,
+/// same as house, because every inboard hot spot is off row 7 and column 7.
+/// A board that let the first rack score 200 would be swingy in the wrong
+/// way — rewarding the luck of a draw rather than the risk of a decision.
+///
+/// Neither trap is reachable early. Both come alive once play climbs away
+/// from the centre, so the danger is what an opponent opens for you.
+fn spicy_premiums() -> [Premium; 225] {
+    mirrored_premiums(&[
+        (0, 0, Premium::DoubleLetter),
+        (4, 0, Premium::DoubleLetter),
+        (0, 4, Premium::DoubleLetter),
+        (7, 0, Premium::DoubleWord),
+        (0, 7, Premium::DoubleWord),
+        (2, 2, Premium::TripleLetter),
+        (5, 2, Premium::TripleWord),
+        (2, 5, Premium::TripleWord),
+        (5, 3, Premium::DoubleWord),
+        (3, 5, Premium::DoubleWord),
+        (5, 4, Premium::TripleLetter),
+        (4, 5, Premium::TripleLetter),
+        (6, 1, Premium::DoubleLetter),
+        (1, 6, Premium::DoubleLetter),
+        (6, 6, Premium::TripleLetter),
         (7, 7, Premium::DoubleWord),
     ])
 }
@@ -866,6 +933,66 @@ mod tests {
 
     fn premium_at(rules: &VariantRules, x: usize, y: usize) -> Premium {
         rules.premiums[y * 15 + x]
+    }
+
+    /// The spicy board's whole reason to exist is a raised ceiling, so the
+    /// properties that make it spicy are worth pinning: a later tidy-up
+    /// that "fixed" the close-together triple-words would silently turn it
+    /// back into the house board with extra steps.
+    #[test]
+    fn spicy_board_keeps_its_jeopardy_and_its_flat_opening() {
+        let spicy = VariantRules::by_name("spicy").expect("spicy is in the registry");
+        let house = VariantRules::official();
+
+        let multiplier = |rules: &VariantRules, span: usize, row: Option<usize>| {
+            let mut best = 1u32;
+            let rows: Vec<usize> = match row {
+                Some(y) => vec![y],
+                None => (0..15).collect(),
+            };
+            for y in rows {
+                for x in 0..=(15 - span) {
+                    let product: u32 = (0..span)
+                        .map(|i| match rules.premiums[y * 15 + x + i] {
+                            Premium::DoubleWord => 2,
+                            Premium::TripleWord => 3,
+                            _ => 1,
+                        })
+                        .product();
+                    best = best.max(product);
+                }
+            }
+            best
+        };
+
+        // The trap: two triple-words within a five-tile reach of each other.
+        assert_eq!(
+            multiplier(&spicy, 5, None),
+            9,
+            "spicy should allow a 9x five-tile line"
+        );
+        assert_eq!(
+            multiplier(&house, 5, None),
+            3,
+            "house deliberately does not"
+        );
+
+        // But the opening is held flat: every inboard hot spot is off the
+        // centre lines, so the first rack cannot cash in on luck alone.
+        assert_eq!(
+            multiplier(&spicy, 7, Some(7)),
+            2,
+            "opening row must stay 2x"
+        );
+        assert_eq!(multiplier(&house, 7, Some(7)), 2);
+
+        // Same words, same tiles — only the board differs, so the two
+        // editions stay directly comparable.
+        assert_eq!(spicy.language, house.language);
+        assert_eq!(spicy.letter_values, house.letter_values);
+        assert_eq!(spicy.tile_distribution, house.tile_distribution);
+        assert_eq!(spicy.bingo_bonus, house.bingo_bonus);
+        assert_ne!(spicy.premiums, house.premiums);
     }
 
     /// Rule 1 of `house_premiums`. `mirrored_premiums` only reflects on the

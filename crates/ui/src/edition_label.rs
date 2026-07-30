@@ -11,6 +11,7 @@ pub fn edition_label(name: &str) -> &'static str {
         "north_american" => "English (Americas)",
         "german" => "German",
         "spanish" => "Spanish (Castilian)",
+        "spicy" => "English (Spicy)",
         // Retired editions — no longer in the registry, still on old games.
         "wordfeud" => "English (retired variant)",
         _ => "Unknown edition",
