@@ -363,6 +363,32 @@ pub fn dictionary_by_name(name: &str) -> Option<&'static TieredDictionary> {
     }
 }
 
+/// Builds every dictionary, so the first request that needs one doesn't.
+///
+/// `dictionary_by_name` derefs a `LazyLock`, and `GameSession::new` calls it
+/// while creating a game — so without this, the first game of an edition
+/// after a server start builds the whole structure inside that request. On
+/// the production VM that is 310ms for sowpods and 937ms for german, which
+/// the player sees as the New Game button hanging. It is also invisible to
+/// the bot-move timing, which spans only `engine.choose_action` in a later
+/// request.
+///
+/// Deliberately only *builds* — no attempt to warm CPU caches by walking.
+/// That warmth wouldn't survive a quiet period between games anyway, and
+/// normal play restores it for free; construction is the part that is
+/// permanent once paid.
+///
+/// Call it off the request path — it is hundreds of milliseconds of pure
+/// CPU, so on an async runtime it belongs in `spawn_blocking`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn build_all_dictionaries() {
+    for name in ["sowpods", "enable2k", "german", "spanish"] {
+        if let Some(dictionary) = dictionary_by_name(name) {
+            std::hint::black_box(dictionary.word_count());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

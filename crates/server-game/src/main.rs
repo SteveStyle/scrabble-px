@@ -47,6 +47,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "server-game starting"
     );
 
+    // Build the dictionaries off the request path. Without this the first
+    // game created for an edition pays the construction inside its own
+    // request — measured at 310ms (sowpods) to 937ms (german) on the
+    // production VM, seen by the player as New Game hanging. Detached and
+    // blocking-pooled: it is pure CPU, it must not delay the listener, and
+    // nothing needs to await it — any request that arrives first simply
+    // builds what it needs itself, exactly as before.
+    tokio::task::spawn_blocking(|| {
+        let started = std::time::Instant::now();
+        rules_shared::build_all_dictionaries();
+        tracing::info!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "dictionaries built"
+        );
+    });
+
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),

@@ -12,6 +12,8 @@ pub use board::{BoardCell, BoardState, EmptyCell, FilledCell};
 pub use cache::{
     AnchorFlags, CachedCell, ConstrainedCrossCheck, CrossCheck, LineExtents, RuleCache,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use dictionary::build_all_dictionaries;
 pub use dictionary::{Dictionary, WordListDictionary, alphabet_by_name};
 #[cfg(not(target_arch = "wasm32"))]
 pub use dictionary::{
