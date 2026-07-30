@@ -60,7 +60,7 @@ jobs:
       - name: Clippy (deny warnings)
         run: >
           cargo clippy
-          --workspace --exclude first-try --exclude second-try
+          --workspace --exclude first-try
           --all-targets
           -- -D warnings
 

@@ -134,7 +134,7 @@ The project has successfully implemented the core MVP architecture: a server-aut
   - server-game: 109 integration tests against the real Axum router
   - tile-lite-elite-ui: 93 unit tests
   - engine-core: 2 tests
-  - **248 tests total** (excluding `old-crates/{first-try,second-try}`, two early prototypes kept for design-precedent reference but not counted here), all passing as of the last full run (2026-07-18) — re-run `cargo test --workspace` rather than trusting this number for long, it's climbed steadily every session
+  - **248 tests total** (excluding `old-crates/first-try`, the early prototype kept for design-precedent reference but not counted here), all passing as of the last full run (2026-07-18) — re-run `cargo test --workspace` rather than trusting this number for long, it's climbed steadily every session
 
 - [x] Move-composer UX (beyond drag-and-drop)
   - Click a board cell to select it, then click a rack tile or type its letter to place it — auto-advances to the next open cell in the direction the staged word is reading
