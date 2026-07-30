@@ -2295,6 +2295,9 @@ fn parse_served_version(body: &str) -> Option<String> {
 /// Split out from the polling loop so the rules are testable on the host —
 /// the timer, the fetch and the reload call are wasm-only plumbing, and
 /// this is the part that decides anything.
+/// Exists where it is used: the caller is wasm-only, and the tests below
+/// are the reason it is worth having on the host at all.
+#[cfg(any(target_arch = "wasm32", test))]
 fn should_reload_onto(running: &str, served: Option<&str>, staged_tiles: usize) -> bool {
     match served {
         // Unreadable: the web container may be mid-restart, and a missing
