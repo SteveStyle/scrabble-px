@@ -16,7 +16,7 @@
 use rules_shared::{Alphabet, VariantRules, sowpods_word_list};
 use std::collections::HashMap;
 
-const T1: usize = 64;
+use rules_shared::tiered::MAX_LEAF_WORDS;
 
 fn grapheme_of(alphabet: &Alphabet, letter: u8) -> String {
     alphabet
@@ -99,7 +99,7 @@ fn main() {
     slots.sort_unstable();
     for slot in &slots {
         let range = dense[slot];
-        if range.1 - range.0 > T1 {
+        if range.1 - range.0 > MAX_LEAF_WORDS {
             queue.push((range, 2));
         }
     }
@@ -114,7 +114,7 @@ fn main() {
         node_start.insert(range, next_edge);
         next_edge += kids.len();
         for (_letter, lo, hi) in kids {
-            if hi - lo > T1 {
+            if hi - lo > MAX_LEAF_WORDS {
                 queue.push(((lo, hi), depth + 1));
             }
         }
@@ -138,7 +138,7 @@ fn main() {
         range.1,
         range.1 - range.0,
         is_word_at(&words, range, 2),
-        if range.1 - range.0 > T1 {
+        if range.1 - range.0 > MAX_LEAF_WORDS {
             "-> Index"
         } else {
             "-> Leaf"
@@ -146,7 +146,7 @@ fn main() {
     );
 
     let mut depth = 2;
-    while range.1 - range.0 > T1 && depth < encoded.len() {
+    while range.1 - range.0 > MAX_LEAF_WORDS && depth < encoded.len() {
         let kids = children(&words, range, depth);
         let start = node_start[&range];
         let pos = kids.iter().position(|k| k.0 == encoded[depth]).unwrap();
@@ -164,7 +164,11 @@ fn main() {
             target.chars().nth(depth).unwrap(),
             start + pos,
             hi - lo,
-            if hi - lo > T1 { "Index" } else { "Leaf" }
+            if hi - lo > MAX_LEAF_WORDS {
+                "Index"
+            } else {
+                "Leaf"
+            }
         );
         range = (lo, hi);
         depth += 1;
@@ -199,7 +203,7 @@ fn main() {
     // figure can pick cells that genuinely differ rather than inventing
     // flags: most CA? trigrams are words, which is easy to get wrong.
     let root = dense[&slot];
-    if root.1 - root.0 > T1 {
+    if root.1 - root.0 > MAX_LEAF_WORDS {
         let kids = children(&words, root, 2);
         let start = node_start[&root];
         println!(
@@ -208,7 +212,7 @@ fn main() {
         );
         println!("  edge  +pos  letter  is_word  size  kind");
         for (pos, (letter, lo, hi)) in kids.iter().enumerate() {
-            let indexed = hi - lo > T1;
+            let indexed = hi - lo > MAX_LEAF_WORDS;
             println!(
                 "  {:>4}  {:>4}  {:>6}  {:>7}  {:>4}  {}",
                 start + pos,

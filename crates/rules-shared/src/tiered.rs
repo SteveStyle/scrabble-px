@@ -17,30 +17,45 @@
 //!   illegal (Scrabble's opening play needs two tiles, and no list we
 //!   ship contains a single-character entry).
 //! - **a sparse index** below it, holding only prefixes that exist, and
-//!   only while a group is bigger than `T1` words. Below that the group
+//!   only while a group is bigger than `MAX_LEAF_WORDS`. Below that it
 //!   is a leaf and the arena is searched directly.
 //!
 //! The measurements behind the field widths are in
 //! `examples/sparse_budget.rs`.
 
-/// Above this many words a group keeps a child index; at or below it the
-/// group becomes a leaf and the arena is searched directly.
+/// The largest group left unindexed: above this many words a group keeps a
+/// child index, at or below it the group becomes a leaf and the arena is
+/// searched directly. So it is also the most words a single leaf can
+/// cover, which is what ties it to [`Child::MAX_LEAF_LEN`].
 ///
-/// Bounded by [`Child`]'s 7-bit length field, so this is a structural
-/// limit rather than a free tuning knob — see [`Child`].
-pub const T1: usize = 64;
+/// A **memory** budget: every index entry has to earn its 5 bytes, and
+/// pruning here is what stops the deep tail of tiny nodes that makes a
+/// full trie expensive. Lowering it costs Spanish 4x the edges for one
+/// halving of the range; 64 is the knee. Measured by
+/// `examples/sparse_budget.rs`.
+pub const MAX_LEAF_WORDS: usize = 64;
 
 /// At or below this many words, scan the arena forward instead of
-/// bisecting it. Sequential reads prefetch where a bisect jumps.
+/// bisecting it: consecutive words are adjacent, so a short scan is
+/// sequential and prefetchable where a bisect jumps.
 ///
-/// Deliberately separate from [`T1`] even though both are "small enough":
-/// `T1` is a memory budget (an index entry must earn its 5 bytes) and
-/// `T2` is cache behaviour. They answer different questions and are set
-/// by different measurements.
-pub const T2: usize = 32;
+/// A **cache** budget, and deliberately a separate constant from
+/// [`MAX_LEAF_WORDS`] even though both are "small enough". That one
+/// decides what gets *stored*, this one decides how what is stored gets
+/// *searched*; they are set by different measurements and there is no
+/// reason they should coincide. Note the bisect path only exists while
+/// this is strictly below `MAX_LEAF_WORDS` — setting them equal means
+/// every leaf is scanned and nothing is ever bisected.
+pub const MAX_SCAN_WORDS: usize = 32;
 
-const _: () = assert!(T1 <= Child::MAX_LEAF_LEN, "T1 must fit Child's len field");
-const _: () = assert!(T2 <= T1, "the bisect band is empty unless T2 <= T1");
+const _: () = assert!(
+    MAX_LEAF_WORDS <= Child::MAX_LEAF_LEN,
+    "MAX_LEAF_WORDS must fit Child's len field"
+);
+const _: () = assert!(
+    MAX_SCAN_WORDS <= MAX_LEAF_WORDS,
+    "a scan cutoff above the leaf cutoff would never be reached"
+);
 
 /// Every shipped list has to fit [`Child`]'s fields, and the widths were
 /// chosen against the counts in `examples/sparse_budget.rs` rather than
@@ -51,7 +66,7 @@ const _: () = assert!(T2 <= T1, "the bisect band is empty unless T2 <= T1");
 const _: () = {
     assert!(
         151_804 * 3 < Child::MAX_EDGES,
-        "spanish @ T1=32, worst edges"
+        "spanish at the tightest cutoff, worst edges"
     );
     assert!(635_090 * 3 < Child::MAX_WORDS, "spanish, worst word count");
     assert!(28 <= Child::MAX_FANOUT, "german, widest node");
@@ -63,7 +78,7 @@ const _: () = {
 /// Both non-empty variants are a *(length, start)* pair — the tag only
 /// says which array `start` indexes. That is what lets a leaf's word
 /// range live in the pointer rather than in an array of its own: a leaf
-/// holds at most [`T1`] words *by construction*, and a node's fan-out is
+/// holds at most [`MAX_LEAF_WORDS`] *by construction*, and a node's fan-out is
 /// at most the alphabet, so neither length has to be general.
 ///
 /// ```text
@@ -92,6 +107,7 @@ const _: () = {
 /// The sparse arrays never contain `Empty` — there, absence is the letter
 /// simply not appearing in the node's letter run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(transparent)]
 pub struct Child(u32);
 
 /// The decoded form of a [`Child`], for matching on.
@@ -102,7 +118,7 @@ pub enum ChildKind {
     /// The group is indexed: `fanout` edges start at `start` in the
     /// sparse arrays.
     Index { start: u32, fanout: u8 },
-    /// The group was at or below [`T1`] at construction: `len` words
+    /// The group was at or below [`MAX_LEAF_WORDS`] at construction: `len` words
     /// start at word index `from` in the arena.
     Leaf { from: u32, len: u8 },
 }
@@ -116,17 +132,19 @@ impl Child {
     // Index: 7 bits of fan-out (bounded by MAX_ALPHABET_SIZE), 23 of start.
     const INDEX_LEN_BITS: u32 = 7;
     const INDEX_START_BITS: u32 = 23;
-    // Leaf: 8 bits of length (bounded by T1), 22 of first word index.
+    // Leaf: 8 bits of length (bounded by MAX_LEAF_WORDS), 22 of word index.
     const LEAF_LEN_BITS: u32 = 8;
     const LEAF_START_BITS: u32 = 22;
 
     /// Largest fan-out a node may have. Bounded by `MAX_ALPHABET_SIZE`
     /// rather than by the field; the widest node measured is 28.
     pub const MAX_FANOUT: usize = (1 << Self::INDEX_LEN_BITS) - 1;
-    /// Largest word range a leaf may cover, which is what bounds [`T1`].
+    /// Field capacity for a leaf's length, which is what bounds
+    /// [`MAX_LEAF_WORDS`]. The *chosen* cutoff is that constant; this is
+    /// only how much the bits allow.
     pub const MAX_LEAF_LEN: usize = (1 << Self::LEAF_LEN_BITS) - 1;
     /// Largest addressable sparse-edge array. Worst measured is 151,804
-    /// (Spanish at T1=32).
+    /// (Spanish at the tightest cutoff swept).
     pub const MAX_EDGES: usize = 1 << Self::INDEX_START_BITS;
     /// Largest addressable word list. Worst measured is 635,090 (Spanish).
     pub const MAX_WORDS: usize = 1 << Self::LEAF_START_BITS;
@@ -195,12 +213,14 @@ impl Child {
     /// load that fetches the pointer answers this at the same time.
     /// Meaningless for [`Child::EMPTY`], which is never reached with a
     /// question to ask.
+    #[inline]
     pub fn is_word(self) -> bool {
         self.0 & (1 << Self::IS_WORD_SHIFT) != 0
     }
 
     /// Empty is tested first and by value, because a zero length can only
     /// mean empty — the kind bit is meaningless until that is ruled out.
+    #[inline]
     pub fn kind(self) -> ChildKind {
         if self.is_empty() {
             ChildKind::Empty
@@ -218,6 +238,7 @@ impl Child {
         }
     }
 
+    #[inline]
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -243,7 +264,8 @@ pub enum Cursor {
     First(u8),
     /// Inside the sparse index: `fanout` edges from `start`.
     Node { start: u32, fanout: u8, depth: u8 },
-    /// A word range in the arena: bisect it above [`T2`], scan it below.
+    /// A word range in the arena: bisect it above [`MAX_SCAN_WORDS`],
+    /// scan it below.
     Range { from: u32, len: u8, depth: u8 },
 }
 
@@ -373,6 +395,18 @@ mod tests {
     #[should_panic(expected = "overflows Child")]
     fn an_edge_index_past_the_field_panics_rather_than_truncating() {
         Child::index(Child::MAX_EDGES as u32, 1, false);
+    }
+
+    /// `Child` is the *storage* type, so its size is the whole point: the
+    /// sparse index is one byte of letter plus one of these per edge. A
+    /// `ChildKind` is 8 bytes, so storing the decoded form instead would
+    /// take SOWPODS' index from 104 KB to 188 KB and lose the packing
+    /// argument entirely. `repr(transparent)` pins the representation.
+    #[test]
+    fn child_is_exactly_one_word_of_storage() {
+        assert_eq!(std::mem::size_of::<Child>(), 4);
+        assert_eq!(std::mem::align_of::<Child>(), 4);
+        assert!(std::mem::size_of::<ChildKind>() > std::mem::size_of::<Child>());
     }
 
     /// Small and `Copy`, because move generation passes it by value at
