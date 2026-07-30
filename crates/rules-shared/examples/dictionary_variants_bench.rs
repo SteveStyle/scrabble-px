@@ -471,6 +471,284 @@ impl Candidate for Sparse {
     }
 }
 
+/// `sparse`, plus the `HashSet` the current implementation keeps for
+/// whole-word membership.
+///
+/// Exists to answer one question the standalone footprints can't: the hash
+/// is faster at membership but costs ~5.2MB on sowpods, and this workload
+/// is memory-bound. So does carrying it *slow down the walk*? Both
+/// variants are built, measured and dropped separately, so the only
+/// difference during a walk measurement is whether the table is resident.
+struct SparseHashed {
+    dict: rules_shared::tiered::TieredDictionary,
+    words: HashSet<&'static str>,
+}
+
+impl Candidate for SparseHashed {
+    const NAME: &'static str = "sparse+hash";
+
+    fn build(text: &'static str, alphabet: &Alphabet) -> Self {
+        Self {
+            dict: rules_shared::tiered::TieredDictionary::from_word_list(text, alphabet),
+            words: text.split_whitespace().collect(),
+        }
+    }
+
+    fn resident_bytes(&self) -> usize {
+        // Same hashbrown estimate the baseline uses, so the two are
+        // comparable.
+        self.dict.resident_bytes() + (self.words.len() * 17 * 8) / 7
+    }
+
+    fn walk(&self, letters: &[Letter], _alphabet: &Alphabet) -> usize {
+        let mut cursor = self.dict.root();
+        let mut depth = 0;
+        for letter in letters {
+            match self.dict.advance(cursor, letter.0) {
+                Some(step) => {
+                    cursor = step.cursor;
+                    depth += 1;
+                }
+                None => break,
+            }
+        }
+        depth
+    }
+}
+
+/// The three configurations the ship/don't-ship decision rests on,
+/// measured so that the *memory* cost and the *lookup* cost are separable:
+///
+/// 1. **hash resident, hash lookup** — what the current implementation
+///    does for membership, on top of the new structure.
+/// 2. **hash resident, structure lookup** — same footprint as 1, different
+///    membership path. Differs from 1 only in how `is_word` is answered.
+/// 3. **no hash, structure lookup** — same membership path as 2, ~5.2MB
+///    less resident. Differs from 2 only in what is held.
+///
+/// So 1 vs 2 isolates the lookup, and 2 vs 3 isolates the memory. That
+/// second comparison is the interesting one on a memory-constrained host:
+/// if carrying an unused table slows the *walk*, it shows up there.
+///
+/// Each configuration is built, measured and dropped before the next, and
+/// the reps alternate, so neither gets a systematic advantage from page
+/// cache state.
+fn three_options(name: &str, text: &'static str, alphabet: &Alphabet, encoded: &[Vec<Letter>]) {
+    const REPS: usize = 3;
+    let as_bytes: Vec<Vec<u8>> = encoded
+        .iter()
+        .map(|w| w.iter().map(|l| l.0).collect())
+        .collect();
+    let as_strings: Vec<String> = encoded
+        .iter()
+        .map(|w| {
+            w.iter()
+                .filter_map(|l| alphabet.to_grapheme(*l))
+                .flat_map(|g| g.chars().collect::<Vec<_>>())
+                .collect()
+        })
+        .collect();
+
+    let mut walk_hash_resident = Vec::new();
+    let mut walk_no_hash = Vec::new();
+    let mut member_hash = Vec::new();
+    let mut member_struct_resident = Vec::new();
+    let mut member_struct_alone = Vec::new();
+    let (mut resident_with, mut resident_without) = (0.0, 0.0);
+
+    for _ in 0..REPS {
+        {
+            let built = SparseHashed::build(text, alphabet);
+            resident_with = built.resident_bytes() as f64 / (1024.0 * 1024.0);
+
+            let start = Instant::now();
+            let mut steps = 0usize;
+            for letters in encoded {
+                steps += built.walk(letters, alphabet);
+            }
+            walk_hash_resident.push(start.elapsed().as_secs_f64() * 1e9 / steps.max(1) as f64);
+
+            // 1. hash lookup
+            let start = Instant::now();
+            let mut found = 0usize;
+            for word in &as_strings {
+                if built.words.contains(word.as_str()) {
+                    found += 1;
+                }
+            }
+            member_hash.push(start.elapsed().as_secs_f64() * 1e9 / as_strings.len() as f64);
+            assert_eq!(found, as_strings.len(), "{name}: hash missed a real word");
+
+            // 2. structure lookup, hash still resident
+            let start = Instant::now();
+            let mut found = 0usize;
+            for word in &as_bytes {
+                if built.dict.contains(word) {
+                    found += 1;
+                }
+            }
+            member_struct_resident
+                .push(start.elapsed().as_secs_f64() * 1e9 / as_bytes.len() as f64);
+            assert_eq!(
+                found,
+                as_bytes.len(),
+                "{name}: structure missed a real word"
+            );
+        }
+        {
+            // 3. no hash at all
+            let built = Sparse::build(text, alphabet);
+            resident_without = built.resident_bytes() as f64 / (1024.0 * 1024.0);
+
+            let start = Instant::now();
+            let mut steps = 0usize;
+            for letters in encoded {
+                steps += built.walk(letters, alphabet);
+            }
+            walk_no_hash.push(start.elapsed().as_secs_f64() * 1e9 / steps.max(1) as f64);
+
+            let start = Instant::now();
+            let mut found = 0usize;
+            for word in &as_bytes {
+                if built.0.contains(word) {
+                    found += 1;
+                }
+            }
+            member_struct_alone.push(start.elapsed().as_secs_f64() * 1e9 / as_bytes.len() as f64);
+            assert_eq!(
+                found,
+                as_bytes.len(),
+                "{name}: structure missed a real word"
+            );
+        }
+    }
+
+    println!("  three options (median of {REPS}, alternating)");
+    println!(
+        "    {:<34} {:>9} {:>10} {:>12}",
+        "", "resident", "walk", "is_word"
+    );
+    println!(
+        "    {:<34} {resident_with:>6.1} MB {:>7.0} ns {:>9.0} ns",
+        "1. hash resident, hash lookup",
+        median(walk_hash_resident.clone()),
+        median(member_hash)
+    );
+    println!(
+        "    {:<34} {resident_with:>6.1} MB {:>7.0} ns {:>9.0} ns",
+        "2. hash resident, structure lookup",
+        median(walk_hash_resident),
+        median(member_struct_resident)
+    );
+    println!(
+        "    {:<34} {resident_without:>6.1} MB {:>7.0} ns {:>9.0} ns",
+        "3. no hash, structure lookup",
+        median(walk_no_hash),
+        median(member_struct_alone)
+    );
+}
+
+/// Option 4: the mixed method, measured the way the call site actually
+/// works rather than one word at a time.
+///
+/// `recompute_cross_check` in `cache.rs` asks "which letters fit this
+/// square" by looping over the whole alphabet, and for *each* letter it
+/// builds a fresh `String` of before + letter + after and hashes it. So
+/// the shared prefix is re-serialised 26 times and 26 allocations happen
+/// per constrained cell.
+///
+/// A prefix structure can hoist that: walk `before` once, then per letter
+/// take one `advance` and walk `after` from there. No allocation at all,
+/// and the prefix is paid for once. That is a capability the hash simply
+/// does not have — which is why measuring single-word membership
+/// understates the structure at the place it is really called.
+fn cross_check_block(name: &str, text: &'static str, alphabet: &Alphabet, encoded: &[Vec<Letter>]) {
+    // Contexts modelling a square with tiles on both sides.
+    let contexts: Vec<(Vec<u8>, Vec<u8>)> = encoded
+        .iter()
+        .filter(|w| w.len() >= 4)
+        .take(2000)
+        .map(|w| {
+            let bytes: Vec<u8> = w.iter().map(|l| l.0).collect();
+            (bytes[..2].to_vec(), bytes[3..].to_vec())
+        })
+        .collect();
+    if contexts.is_empty() {
+        return;
+    }
+    let n = alphabet.len();
+
+    let built = SparseHashed::build(text, alphabet);
+
+    // Hash, exactly as cache.rs does it: a String per letter per cell.
+    let start = Instant::now();
+    let mut hash_hits = 0usize;
+    for (before, after) in &contexts {
+        for index in 0..n as u8 {
+            let mut word = String::with_capacity(before.len() + 1 + after.len());
+            for letter in before.iter().chain(&[index]).chain(after.iter()) {
+                if let Some(g) = alphabet.to_grapheme(Letter(*letter)) {
+                    word.extend(g.chars());
+                }
+            }
+            if built.words.contains(word.as_str()) {
+                hash_hits += 1;
+            }
+        }
+    }
+    let hash_ns = start.elapsed().as_secs_f64() * 1e9 / contexts.len() as f64;
+
+    // Structure, hoisting the shared prefix out of the letter loop.
+    let start = Instant::now();
+    let mut walk_hits = 0usize;
+    for (before, after) in &contexts {
+        let mut prefix = Some(built.dict.root());
+        for letter in before {
+            prefix = prefix.and_then(|c| built.dict.advance(c, *letter).map(|s| s.cursor));
+        }
+        let Some(prefix) = prefix else { continue };
+        for index in 0..n as u8 {
+            let Some(step) = built.dict.advance(prefix, index) else {
+                continue;
+            };
+            let mut cursor = Some(step.cursor);
+            let mut is_word = step.is_word;
+            for letter in after {
+                cursor = cursor.and_then(|c| {
+                    built.dict.advance(c, *letter).map(|s| {
+                        is_word = s.is_word;
+                        s.cursor
+                    })
+                });
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            if cursor.is_some() && is_word {
+                walk_hits += 1;
+            }
+        }
+    }
+    let walk_ns = start.elapsed().as_secs_f64() * 1e9 / contexts.len() as f64;
+
+    assert_eq!(
+        hash_hits, walk_hits,
+        "{name}: the two cross-check methods should allow the same letters"
+    );
+    println!(
+        "    {:<34} {:>16} {:>7.0} ns/cell",
+        "4. cross-check block, hash", "", hash_ns
+    );
+    println!(
+        "    {:<34} {:>16} {:>7.0} ns/cell   ({} cells, {} letters each)",
+        "4. cross-check block, structure",
+        "",
+        walk_ns,
+        contexts.len(),
+        n
+    );
+}
+
 fn median(mut values: Vec<f64>) -> f64 {
     values.sort_by(|a, b| a.partial_cmp(b).expect("no NaNs"));
     values[values.len() / 2]
@@ -618,6 +896,7 @@ fn main() {
             check::<Tiered<64>>(name, text, alphabet, &encoded, &expected);
             check::<Tiered<256>>(name, text, alphabet, &encoded, &expected);
             check::<Sparse>(name, text, alphabet, &encoded, &expected);
+            check::<SparseHashed>(name, text, alphabet, &encoded, &expected);
         }
 
         println!("{name} ({} words, {} walks)", all.len(), encoded.len());
@@ -633,6 +912,11 @@ fn main() {
         measure_labelled::<Tiered<256>>("tiered/scan256", text, alphabet, &encoded);
         // The real thing, with the sparse index below the dense table.
         measure::<Sparse>(text, alphabet, &encoded);
+        // The same walk, with the HashSet resident alongside it. If the
+        // walk is slower here, the hash is not free even when unused.
+        measure::<SparseHashed>(text, alphabet, &encoded);
+        three_options(name, text, alphabet, &encoded);
+        cross_check_block(name, text, alphabet, &encoded);
 
         // Does the tier make the HashSet redundant? Earlier this lost
         // badly, but that measured binary search over the *whole* list;
