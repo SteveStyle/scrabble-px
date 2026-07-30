@@ -12,7 +12,7 @@ pub use board::{BoardCell, BoardState, EmptyCell, FilledCell};
 pub use cache::{
     AnchorFlags, CachedCell, ConstrainedCrossCheck, CrossCheck, LineExtents, RuleCache,
 };
-pub use dictionary::{Dictionary, WordListDictionary};
+pub use dictionary::{Dictionary, WordListDictionary, alphabet_by_name};
 #[cfg(not(target_arch = "wasm32"))]
 pub use dictionary::{
     ENABLE2K, GERMAN, SOWPODS, SPANISH, dictionary_by_name, enable2k_word_list, german_word_list,
@@ -25,5 +25,5 @@ pub use model::{
     MoveCandidate, MoveError, MovePreview, MoveScore, Position, Premium, Rack, Score, Tile,
     TilePlacement, ValidatedMove, VariantRules,
 };
-pub use tiered::{Child, Cursor, PackedChild, Step};
+pub use tiered::{Child, Cursor, PackedChild, Step, TieredCursor, TieredDictionary};
 pub use validate::{GameState, MoveValidator, RulesEngine, RulesPosition};

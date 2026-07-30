@@ -2,7 +2,8 @@ use std::collections::HashSet;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::LazyLock;
 
-use crate::model::{Alphabet, Letter};
+use crate::model::{Alphabet, Letter, VariantRules};
+use crate::tiered::TieredDictionary;
 
 /// Embedded at compile time for every non-wasm target (the server, and the
 /// desktop client) — for those, this is free: no network cost, and disk
@@ -115,25 +116,15 @@ pub struct WordListDictionary {
     sorted_words: Vec<Vec<char>>,
 }
 
+/// The reference implementation, kept after `TieredDictionary` took over
+/// production: it is the oracle the differential test in `tiered.rs` checks
+/// against, and it is far simpler to reason about when a disagreement needs
+/// explaining. Its per-edition constructors are gone — nothing but tests
+/// builds one now, and they build from text.
 impl WordListDictionary {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Self {
         Self::from_static_word_list(SOWPODS_WORD_FILE)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn new_enable2k() -> Self {
-        Self::from_static_word_list(ENABLE2K_WORD_FILE)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn new_german() -> Self {
-        Self::from_static_word_list(GERMAN_WORD_FILE)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn new_spanish() -> Self {
-        Self::from_static_word_list(SPANISH_WORD_FILE)
     }
 
     /// Builds a dictionary from word-list text fetched at runtime (one
@@ -261,21 +252,59 @@ impl<'a> PrefixCursor for SortedPrefixCursor<'a> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub static SOWPODS: LazyLock<WordListDictionary> = LazyLock::new(WordListDictionary::new);
+// The dictionaries production actually uses. `TieredDictionary` replaced
+// `WordListDictionary` here on 2026-07-30: same answers (a differential
+// test in `tiered.rs` checks every word at every depth on all four lists),
+// ~5x faster per cursor advance and ~6x smaller. `WordListDictionary`
+// stays in the tree as that test's oracle and as the simpler reference
+// implementation.
+//
+// Each needs its edition's alphabet, because the arena is ordered by
+// letter index rather than by code point — Spanish files Ñ between N and O.
 
 #[cfg(not(target_arch = "wasm32"))]
-pub static ENABLE2K: LazyLock<WordListDictionary> = LazyLock::new(WordListDictionary::new_enable2k);
+fn build(text: &'static str, rules: VariantRules) -> TieredDictionary {
+    TieredDictionary::from_word_list(text, &rules.alphabet)
+}
 
 #[cfg(not(target_arch = "wasm32"))]
-pub static GERMAN: LazyLock<WordListDictionary> = LazyLock::new(WordListDictionary::new_german);
+pub static SOWPODS: LazyLock<TieredDictionary> =
+    LazyLock::new(|| build(SOWPODS_WORD_FILE, VariantRules::official()));
 
 #[cfg(not(target_arch = "wasm32"))]
-pub static SPANISH: LazyLock<WordListDictionary> = LazyLock::new(WordListDictionary::new_spanish);
+pub static ENABLE2K: LazyLock<TieredDictionary> =
+    LazyLock::new(|| build(ENABLE2K_WORD_FILE, VariantRules::north_american()));
+
+#[cfg(not(target_arch = "wasm32"))]
+pub static GERMAN: LazyLock<TieredDictionary> =
+    LazyLock::new(|| build(GERMAN_WORD_FILE, VariantRules::german()));
+
+#[cfg(not(target_arch = "wasm32"))]
+pub static SPANISH: LazyLock<TieredDictionary> =
+    LazyLock::new(|| build(SPANISH_WORD_FILE, VariantRules::spanish()));
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn is_word(word: &str) -> bool {
     SOWPODS.is_word(word)
+}
+
+/// The alphabet a `VariantRules.language` value implies, without needing
+/// the word list.
+///
+/// The wasm client fetches its dictionary text at runtime and so has to
+/// build the structure itself — and the structure is ordered by letter
+/// index, not code point, so it cannot be built without knowing the
+/// edition's alphabet. Available on wasm too, unlike the dictionaries
+/// themselves.
+pub fn alphabet_by_name(language: &str) -> Option<Alphabet> {
+    let rules = match language {
+        "sowpods" => VariantRules::official(),
+        "enable2k" => VariantRules::north_american(),
+        "german" => VariantRules::german(),
+        "spanish" => VariantRules::spanish(),
+        _ => return None,
+    };
+    Some(rules.alphabet)
 }
 
 /// Resolves a `VariantRules.language` value to its backing dictionary — the
@@ -284,7 +313,7 @@ pub fn is_word(word: &str) -> bool {
 /// dictionary happened to be wired in first) decides what it's validated
 /// against.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn dictionary_by_name(name: &str) -> Option<&'static WordListDictionary> {
+pub fn dictionary_by_name(name: &str) -> Option<&'static TieredDictionary> {
     match name {
         "sowpods" => Some(&*SOWPODS),
         "enable2k" => Some(&*ENABLE2K),
@@ -355,10 +384,7 @@ mod tests {
         }
     }
 
-    fn advance_all<'a>(
-        mut cursor: SortedPrefixCursor<'a>,
-        word: &str,
-    ) -> Option<SortedPrefixCursor<'a>> {
+    fn advance_all<C: PrefixCursor>(mut cursor: C, word: &str) -> Option<C> {
         let alphabet = Alphabet::latin26();
         for ch in word.chars() {
             cursor = cursor.advance(Letter::from(ch), &alphabet)?;
@@ -402,7 +428,7 @@ mod tests {
     #[test]
     fn german_prefix_cursor_finds_a_word_with_an_umlaut_letter() {
         let rules = VariantRules::german();
-        let cursor = advance_all_with(GERMAN.prefix_cursor(), "ÖL", &rules.alphabet)
+        let cursor = advance_all_with(GERMAN.root_cursor(), "ÖL", &rules.alphabet)
             .expect("ÖL should be reachable through the real German dictionary");
         assert!(cursor.is_word());
     }
@@ -426,14 +452,14 @@ mod tests {
         let r = rules.alphabet.to_letter("R").expect("R is a real tile");
 
         let via_digraph_tile = advance_letters(
-            SPANISH.prefix_cursor(),
+            SPANISH.root_cursor(),
             &[c(&rules, 'C'), c(&rules, 'A'), rr, c(&rules, 'O')],
         )
         .expect("CARRO should be reachable via the RR tile");
         assert!(via_digraph_tile.is_word());
 
         let via_two_ordinary_tiles = advance_letters(
-            SPANISH.prefix_cursor(),
+            SPANISH.root_cursor(),
             &[c(&rules, 'C'), c(&rules, 'A'), r, r, c(&rules, 'O')],
         )
         .expect("CARRO should also be reachable via two separate R tiles");
@@ -447,10 +473,11 @@ mod tests {
             .expect("single ASCII letter should be a real tile")
     }
 
-    fn advance_letters<'a>(
-        mut cursor: SortedPrefixCursor<'a>,
-        letters: &[Letter],
-    ) -> Option<SortedPrefixCursor<'a>> {
+    /// Generic over the cursor so the same assertions cover both
+    /// implementations — the statics are the tiered one now, while the
+    /// locally-built `WordListDictionary` cases still exercise the
+    /// reference one.
+    fn advance_letters<C: PrefixCursor>(mut cursor: C, letters: &[Letter]) -> Option<C> {
         let alphabet = &VariantRules::spanish().alphabet;
         for &letter in letters {
             cursor = cursor.advance(letter, alphabet)?;
@@ -461,7 +488,7 @@ mod tests {
     #[test]
     fn prefix_cursor_finds_real_words_letter_by_letter() {
         let cursor =
-            advance_all(SOWPODS.prefix_cursor(), "LEXICON").expect("LEXICON should be reachable");
+            advance_all(SOWPODS.root_cursor(), "LEXICON").expect("LEXICON should be reachable");
         assert!(cursor.is_word());
     }
 
@@ -471,18 +498,18 @@ mod tests {
         // (LEXICA, LEXICON, ...) — the cursor should still exist, just
         // not report is_word.
         let cursor =
-            advance_all(SOWPODS.prefix_cursor(), "LEXIC").expect("LEXIC should be a live prefix");
+            advance_all(SOWPODS.root_cursor(), "LEXIC").expect("LEXIC should be a live prefix");
         assert!(!cursor.is_word());
     }
 
     #[test]
     fn prefix_cursor_prunes_a_dead_end() {
-        assert!(advance_all(SOWPODS.prefix_cursor(), "ZZZZZ").is_none());
+        assert!(advance_all(SOWPODS.root_cursor(), "ZZZZZ").is_none());
     }
 
     #[test]
     fn prefix_cursor_finds_short_words() {
-        let cursor = advance_all(SOWPODS.prefix_cursor(), "ZA").expect("ZA should be reachable");
+        let cursor = advance_all(SOWPODS.root_cursor(), "ZA").expect("ZA should be reachable");
         assert!(cursor.is_word());
     }
 
@@ -544,11 +571,11 @@ mod tests {
         assert!(advance_all_with(root, "ÑOPE", &alphabet).is_none());
     }
 
-    fn advance_all_with<'a>(
-        mut cursor: SortedPrefixCursor<'a>,
+    fn advance_all_with<C: PrefixCursor>(
+        mut cursor: C,
         word: &str,
         alphabet: &Alphabet,
-    ) -> Option<SortedPrefixCursor<'a>> {
+    ) -> Option<C> {
         for ch in word.chars() {
             let letter = alphabet.to_letter(&ch.to_string())?;
             cursor = cursor.advance(letter, alphabet)?;

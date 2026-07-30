@@ -133,9 +133,8 @@ pub fn RootApp() -> Element {
     // instant (every dictionary is compiled in), on wasm it's a real async
     // fetch (see `load_client_dictionary`), so the preview just shows
     // nothing for that brief window rather than blocking on it.
-    let mut client_dictionaries: Signal<
-        HashMap<String, &'static rules_shared::WordListDictionary>,
-    > = use_signal(HashMap::new);
+    let mut client_dictionaries: Signal<HashMap<String, &'static rules_shared::TieredDictionary>> =
+        use_signal(HashMap::new);
     // Which languages a fetch has already been dispatched for — set
     // synchronously (not inside the spawned future) so a re-render while
     // the first fetch is still in flight doesn't dispatch a second,
@@ -2848,7 +2847,7 @@ async fn load_client_dictionary(
     _server_url: &str,
     language: &str,
     _token: Option<String>,
-) -> Option<&'static rules_shared::WordListDictionary> {
+) -> Option<&'static rules_shared::TieredDictionary> {
     rules_shared::dictionary_by_name(language)
 }
 
@@ -2857,15 +2856,19 @@ async fn load_client_dictionary(
     server_url: &str,
     language: &str,
     token: Option<String>,
-) -> Option<&'static rules_shared::WordListDictionary> {
+) -> Option<&'static rules_shared::TieredDictionary> {
     let text = get_text(
         &format!("{server_url}/dictionaries/{language}"),
         token.as_deref(),
     )
     .await
     .ok()?;
+    // The fetched text is dropped once the structure is built — it copies
+    // what it needs into its own arena. The previous implementation leaked
+    // the whole ~2.7MB string as well, which mattered on a page load.
+    let alphabet = rules_shared::alphabet_by_name(language)?;
     Some(Box::leak(Box::new(
-        rules_shared::WordListDictionary::from_word_list(text),
+        rules_shared::TieredDictionary::from_word_list(&text, &alphabet),
     )))
 }
 
@@ -3279,7 +3282,7 @@ fn compute_client_preview(
     game: &GameStateDto,
     staged: &[StagedPlacementView],
     direction_hint: DirectionDto,
-    dictionary: &rules_shared::WordListDictionary,
+    dictionary: &rules_shared::TieredDictionary,
 ) -> Option<MovePreviewView> {
     let request = match build_manual_move_request(game, staged, direction_hint) {
         Ok(r) => r,

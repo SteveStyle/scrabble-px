@@ -337,6 +337,78 @@ pub struct Step {
 // The dictionary
 // ---------------------------------------------------------------------------
 
+/// A [`TieredDictionary`] walk, as the `Dictionary` trait wants it: a
+/// self-contained cursor that can advance without being handed the
+/// dictionary again.
+///
+/// `Copy` and 16 bytes — the [`Cursor`] plus one reference — because move
+/// generation stores and passes one per candidate branch.
+#[derive(Debug, Clone, Copy)]
+pub struct TieredCursor<'a> {
+    dictionary: &'a TieredDictionary,
+    cursor: Cursor,
+    is_word: bool,
+}
+
+impl<'a> TieredCursor<'a> {
+    /// True if the prefix spelled so far is itself a word.
+    ///
+    /// Tracked on the cursor rather than recomputed, because the packed
+    /// child that `advance` already read carries the answer — see
+    /// [`Child`]. Move generation does not currently ask, but the
+    /// cross-check path does.
+    pub fn is_word(&self) -> bool {
+        self.is_word
+    }
+}
+
+impl crate::dictionary::PrefixCursor for TieredCursor<'_> {
+    fn advance(&self, letter: crate::model::Letter, _alphabet: &Alphabet) -> Option<Self> {
+        // `_alphabet` is unused on purpose: the grapheme expansion is baked
+        // into the dictionary at construction, so a digraph resolves
+        // without the caller's alphabet and without `to_letter`'s linear
+        // scan on the hot path.
+        let step = self.dictionary.advance(self.cursor, letter.0)?;
+        Some(Self {
+            dictionary: self.dictionary,
+            cursor: step.cursor,
+            is_word: step.is_word,
+        })
+    }
+}
+
+impl crate::dictionary::Dictionary for TieredDictionary {
+    fn is_word(&self, word: &str) -> bool {
+        let mut buffer = [0u8; 4];
+        let mut letters = [0u8; 64];
+        let mut count = 0usize;
+        for ch in word.chars() {
+            let Some(letter) = self.alphabet.to_letter(ch.encode_utf8(&mut buffer)) else {
+                return false;
+            };
+            if count == letters.len() {
+                return false;
+            }
+            letters[count] = letter.0;
+            count += 1;
+        }
+        self.contains(&letters[..count])
+    }
+
+    type Cursor<'a>
+        = TieredCursor<'a>
+    where
+        Self: 'a;
+
+    fn root_cursor(&self) -> Self::Cursor<'_> {
+        TieredCursor {
+            dictionary: self,
+            cursor: self.root(),
+            is_word: false,
+        }
+    }
+}
+
 /// The tiered arena dictionary: a sorted word arena, a dense table over the
 /// first two characters, and a size-pruned sparse index below it.
 ///
@@ -344,6 +416,7 @@ pub struct Step {
 /// order is its own, and Spanish files Ñ between N and O where its code
 /// point would sort after Z. Every comparison here is on `Letter` bytes, so
 /// that ordering is inherent rather than something to remember.
+#[derive(Debug)]
 pub struct TieredDictionary {
     /// Every word's letters end to end. Word *i* is
     /// `letters[offsets[i]..offsets[i + 1]]`.
@@ -357,6 +430,11 @@ pub struct TieredDictionary {
     edge_letters: Box<[u8]>,
     edge_children: Box<[PackedChild]>,
     alphabet_len: usize,
+    /// Kept so `is_word(&str)` can map characters to letters. `Letter`'s
+    /// `From<char>` cannot be used for that: it is `ch as u8 - b'A'`, which
+    /// is only correct for an alphabet whose order happens to be ASCII —
+    /// silently wrong for Spanish, where Ñ is index 13, and for German.
+    alphabet: Alphabet,
     /// How each tile's `Letter` expands into the single-character letters
     /// the arena is built from. Baked in at construction so `advance` never
     /// needs the alphabet, and never pays `to_letter`'s linear scan on the
@@ -565,6 +643,7 @@ impl TieredDictionary {
             edge_letters: edge_letters.into_boxed_slice(),
             edge_children: edge_children.into_boxed_slice(),
             alphabet_len,
+            alphabet: alphabet.clone(),
             expansion: expansion.into_boxed_slice(),
         }
     }
