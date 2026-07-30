@@ -25,5 +25,5 @@ pub use model::{
     MoveCandidate, MoveError, MovePreview, MoveScore, Position, Premium, Rack, Score, Tile,
     TilePlacement, ValidatedMove, VariantRules,
 };
-pub use tiered::{Child, ChildKind, Cursor, Step};
+pub use tiered::{Child, Cursor, PackedChild, Step};
 pub use validate::{GameState, MoveValidator, RulesEngine, RulesPosition};

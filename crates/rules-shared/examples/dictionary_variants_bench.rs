@@ -28,6 +28,10 @@
 //!   depth like the baseline, at a quarter of its bytes.
 //! - **tiered** — `arena` plus a dense first-two-letters index, replacing
 //!   the widest binary-search probes with array lookups.
+//! - **sparse** — the real `TieredDictionary` from `tiered.rs`: the same
+//!   dense two-character table, but with a size-pruned sparse index below
+//!   it instead of bisecting whatever the dense table hands back. This is
+//!   the one that ships; the rest are the candidates it beat.
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -432,6 +436,41 @@ impl<const CUTOFF: usize> Candidate for Tiered<CUTOFF> {
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// sparse — the real implementation
+// ---------------------------------------------------------------------------
+
+struct Sparse(rules_shared::tiered::TieredDictionary);
+
+impl Candidate for Sparse {
+    const NAME: &'static str = "sparse";
+
+    fn build(text: &'static str, alphabet: &Alphabet) -> Self {
+        Self(rules_shared::tiered::TieredDictionary::from_word_list(
+            text, alphabet,
+        ))
+    }
+
+    fn resident_bytes(&self) -> usize {
+        self.0.resident_bytes()
+    }
+
+    fn walk(&self, letters: &[Letter], _alphabet: &Alphabet) -> usize {
+        let mut cursor = self.0.root();
+        let mut depth = 0;
+        for letter in letters {
+            match self.0.advance(cursor, letter.0) {
+                Some(step) => {
+                    cursor = step.cursor;
+                    depth += 1;
+                }
+                None => break,
+            }
+        }
+        depth
+    }
+}
+
 fn median(mut values: Vec<f64>) -> f64 {
     values.sort_by(|a, b| a.partial_cmp(b).expect("no NaNs"));
     values[values.len() / 2]
@@ -578,6 +617,7 @@ fn main() {
             check::<Tiered<16>>(name, text, alphabet, &encoded, &expected);
             check::<Tiered<64>>(name, text, alphabet, &encoded, &expected);
             check::<Tiered<256>>(name, text, alphabet, &encoded, &expected);
+            check::<Sparse>(name, text, alphabet, &encoded, &expected);
         }
 
         println!("{name} ({} words, {} walks)", all.len(), encoded.len());
@@ -591,6 +631,8 @@ fn main() {
         measure_labelled::<Tiered<16>>("tiered/scan16", text, alphabet, &encoded);
         measure_labelled::<Tiered<64>>("tiered/scan64", text, alphabet, &encoded);
         measure_labelled::<Tiered<256>>("tiered/scan256", text, alphabet, &encoded);
+        // The real thing, with the sparse index below the dense table.
+        measure::<Sparse>(text, alphabet, &encoded);
 
         // Does the tier make the HashSet redundant? Earlier this lost
         // badly, but that measured binary search over the *whole* list;
@@ -616,6 +658,25 @@ fn main() {
                 "{name}: tiered membership should find every real word"
             );
             println!("  is_word    tiered {tier_ns:>6.0} ns  (vs hash/bsearch below)");
+
+            // The same question for the real structure. This decides
+            // whether the HashSet can go: it is 5.2MB on sowpods, which is
+            // larger than everything else `sparse` holds put together.
+            let sparse = Sparse::build(text, alphabet);
+            let start = Instant::now();
+            let mut found = 0usize;
+            for word in &encoded_sample {
+                if sparse.0.contains(word) {
+                    found += 1;
+                }
+            }
+            let sparse_ns = start.elapsed().as_secs_f64() * 1e9 / encoded_sample.len() as f64;
+            assert_eq!(
+                found,
+                encoded_sample.len(),
+                "{name}: sparse membership should find every real word"
+            );
+            println!("  is_word    sparse {sparse_ns:>6.0} ns");
         }
 
         // Settles the open question of whether the HashSet can simply be
