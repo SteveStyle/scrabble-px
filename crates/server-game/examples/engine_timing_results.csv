@@ -9,3 +9,4 @@ timestamp_unix_seconds,git_commit,host,edition,num_games,games_completed,samples
 1785409605,242b7d2-dirty,stephen-len,official,30,30,1218,0.10,0.25,0.34,0.56,0.50,1.32,4.97,16.51,0.54,1.85,16.51
 1785409606,242b7d2-dirty,stephen-len,official,30,30,1218,0.09,0.25,0.34,0.56,0.50,1.32,5.32,16.61,0.51,1.90,16.61
 1785409607,242b7d2-dirty,stephen-len,official,30,30,1218,0.09,0.27,0.37,0.63,0.55,1.51,6.39,17.66,0.55,2.04,17.66
+1785433486,636794a,prod-epyc7551-2core,official,10,10,411,0.08,0.40,0.50,2.13,0.75,3.05,60.57,80.61,0.54,8.55,80.61
