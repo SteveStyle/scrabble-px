@@ -2,7 +2,6 @@ use crate::board::{BoardCell, BoardState};
 use crate::dictionary::Dictionary;
 use crate::model::{
     Direction, Letter, LetterMask, MAX_ALPHABET_SIZE, Position, Score, VariantRules, mask_contains,
-    mask_insert,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,21 +297,20 @@ pub fn compute_cross_check<D: Dictionary>(
         return CrossCheck::Unconstrained;
     }
 
-    let mut allowed_mask = 0;
+    // `before` was collected walking backwards from the square, so flip it
+    // into reading order — the candidate cross word is before + letter +
+    // after.
+    before.reverse();
+
+    // One batch question rather than one per letter. Every candidate shares
+    // this prefix and this suffix, so a dictionary with a prefix structure
+    // walks the shared part once; the trait's default still builds a word
+    // per letter, which is what this used to do inline.
+    let allowed_mask = dictionary.allowed_letters(&before, &after, &rules.alphabet);
+
     let mut score_by_letter = [0; MAX_ALPHABET_SIZE];
-
     for letter in rules.letters() {
-        let mut word = String::with_capacity(before.len() + 1 + after.len());
-        for existing in before.iter().rev() {
-            word.extend(rules.letter_grapheme(*existing).chars());
-        }
-        word.extend(rules.letter_grapheme(letter).chars());
-        for existing in &after {
-            word.extend(rules.letter_grapheme(*existing).chars());
-        }
-
-        if dictionary.is_word(&word) {
-            mask_insert(&mut allowed_mask, letter);
+        if mask_contains(allowed_mask, letter) {
             let central_score = (rules.letter_values[letter.as_usize()] as Score)
                 * empty_cell.premium.letter_multiplier() as Score;
             score_by_letter[letter.as_usize()] =

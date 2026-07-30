@@ -2,7 +2,7 @@ use std::collections::HashSet;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::LazyLock;
 
-use crate::model::{Alphabet, Letter, VariantRules};
+use crate::model::{Alphabet, Letter, LetterMask, VariantRules, mask_insert};
 use crate::tiered::TieredDictionary;
 
 /// Embedded at compile time for every non-wasm target (the server, and the
@@ -80,6 +80,46 @@ pub trait Dictionary {
         Self: 'a;
 
     fn root_cursor(&self) -> Self::Cursor<'_>;
+
+    /// Which letters could legally occupy one square, given the letters
+    /// already fixed before and after it along the crossing direction —
+    /// the cross-check `cache.rs` stores per cell. `before` is in reading
+    /// order, so the candidate word is `before` + letter + `after`.
+    ///
+    /// A *batch* question rather than N independent ones, and that is the
+    /// point: every candidate shares the same prefix and the same suffix.
+    /// A prefix structure can walk `before` once and then spend one step
+    /// per letter, where asking `is_word` a letter at a time forces it to
+    /// re-derive the shared part every time.
+    ///
+    /// This default cannot exploit that — it builds each candidate word and
+    /// asks `is_word`, which is what the engine did throughout — so it is
+    /// correct for every implementation, including one whose cursor is the
+    /// never-pruning `()`. Implementations with a real cursor should
+    /// override it; see `TieredDictionary`.
+    fn allowed_letters(
+        &self,
+        before: &[Letter],
+        after: &[Letter],
+        alphabet: &Alphabet,
+    ) -> LetterMask {
+        let mut mask = 0;
+        let mut word = String::with_capacity(before.len() + 1 + after.len());
+        for index in 0..alphabet.len() {
+            let letter = Letter(index as u8);
+            word.clear();
+            for existing in before.iter().chain(&[letter]).chain(after.iter()) {
+                match alphabet.to_grapheme(*existing) {
+                    Some(grapheme) => word.extend(grapheme.chars()),
+                    None => return mask,
+                }
+            }
+            if self.is_word(&word) {
+                mask_insert(&mut mask, letter);
+            }
+        }
+        mask
+    }
 }
 
 /// An incremental, letter-at-a-time search position into some backing

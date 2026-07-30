@@ -16,6 +16,17 @@
 //!
 //! A 2x improvement to cross-checks is worth little if they are 2% of the
 //! turn, so this reports the ratio rather than either number alone.
+//!
+//! **Read the `constr` column before trusting the ratio.** The sweep only
+//! costs anything at squares that are *constrained* — one with no
+//! perpendicular neighbour returns immediately. These synthetic boards lay
+//! words in separate rows with gaps, which leaves only 24-71 constrained
+//! cross-checks out of 232-410 possible, so they under-represent a real
+//! interlocking board badly. This example first reported the sweep as ~2%
+//! of a turn on that basis; replacing the per-letter `String` building it
+//! measured went on to cut the *median* bot move from 0.59ms to 0.35ms,
+//! which is nearer 40%. Use `engine_timing_bench` for absolute weight and
+//! this only for the shape of the trend.
 
 use std::time::Instant;
 
@@ -98,8 +109,8 @@ fn main() {
 
     println!("median of {REPS} runs, per board fullness\n");
     println!(
-        "  {:>5} {:>7} {:>8} {:>10} {:>10} {:>9}",
-        "words", "empty", "moves", "sweep ms", "gen ms", "sweep %"
+        "  {:>5} {:>7} {:>7} {:>8} {:>10} {:>10} {:>9}",
+        "words", "empty", "constr", "moves", "sweep ms", "gen ms", "sweep %"
     );
     for rows in [3usize, 6, 10, 14, 18] {
         let board = board_with_rows(&rules, rows);
@@ -119,6 +130,24 @@ fn phase_split(
         .flat_map(|y| (0..rules.width).map(move |x| Position::new(x, y)))
         .filter(|pos| matches!(board.get(*pos), Some(BoardCell::Empty(_))))
         .count();
+
+    // How many of those squares are actually *constrained* — the ones whose
+    // cross-check runs the per-letter loop. An unconstrained square returns
+    // early and costs nothing, so this, not `empty`, is what drives the
+    // sweep's cost. Reported because it is the number that decides whether
+    // a synthetic board resembles a real one: words laid in separate rows
+    // with gaps leave most squares with no perpendicular neighbour at all,
+    // which makes the sweep look far cheaper than it is in a real game.
+    let mut probe = RuleCache::default();
+    probe.recompute_all(&board, rules, dictionary);
+    let constrained = (0..rules.height)
+        .flat_map(|y| (0..rules.width).map(move |x| Position::new(x, y)))
+        .map(|pos| {
+            let cell = probe.cells[pos.to_index(BoardState::WIDTH)];
+            usize::from(cell.horizontal.forms_cross_word())
+                + usize::from(cell.vertical.forms_cross_word())
+        })
+        .sum::<usize>();
 
     // Phase 1: the full-board cross-check sweep `apply_move` performs.
     let cross_ms = median(
@@ -153,7 +182,7 @@ fn phase_split(
 
     let total = cross_ms + gen_ms;
     println!(
-        "  {rows:>5} {empty:>7} {move_count:>8} {cross_ms:>10.3} {gen_ms:>10.3} {:>8.1}%",
+        "  {rows:>5} {empty:>7} {constrained:>7} {move_count:>8} {cross_ms:>10.3} {gen_ms:>10.3} {:>8.1}%",
         100.0 * cross_ms / total
     );
 }
