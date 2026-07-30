@@ -34,7 +34,15 @@ use serde::{Deserialize, Serialize};
 // lose only its client-side move preview, which already degrades to
 // absent whenever the fetch fails. Major would banner desktop users about
 // an endpoint their build never calls.
-pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 5 };
+// 2.6: the `spicy` edition joins the registry, so `variant` accepts a value
+// a 2.5 client doesn't know. Additive and non-breaking, hence minor — but
+// worth spelling out, because 0.4.13 shipped this edition *without* the
+// bump and that is precisely what went wrong: no skew meant open tabs never
+// reloaded, so they kept working while being unable to offer the edition
+// they'd never heard of. The rule to apply is "can a client observe
+// something new?", not "did a type change" — a new value for an existing
+// field is new functionality.
+pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 6 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApiVersion {
