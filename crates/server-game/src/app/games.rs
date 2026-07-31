@@ -834,9 +834,43 @@ pub(crate) async fn run_engine_turns(state: &AppState, game_id: &str) -> Result<
                 (dto, finished)
             })
         };
-        let Some((dto, finished)) = outcome else {
+        let Some((mut dto, finished)) = outcome else {
             break;
         };
+
+        // Persist *before* announcing the finish, so the event carries the
+        // rating change. `settle_ratings` runs inside `save_game` (gated on
+        // `stats_settled_at`, so it fires exactly once), and
+        // `attach_rating_deltas` reads what it wrote — announcing first
+        // meant broadcasting a finished game whose deltas were still None.
+        //
+        // The caller saves and broadcasts again straight after this loop,
+        // but that second event carries the *same* `version`, and the
+        // client applies an update only on a strictly greater one
+        // (`should_apply_update`). So the delta-less event was the one that
+        // stuck: the end-of-game panel showed the result with no rating
+        // change until you navigated away and back, which refetched via
+        // `get_game`. Only games whose final move was an engine's were
+        // affected — a human's last move is broadcast by `submit_action`,
+        // which already attaches deltas.
+        //
+        // A brief read lock rather than saving inside the write lock above:
+        // this is one save on the finishing turn, not per turn, and the
+        // loop's whole design is about not holding that lock across awaits.
+        if finished {
+            {
+                let games = state.games.read().await;
+                if let Some(game) = games.get(game_id) {
+                    persistence::save_game(&state.db, game)
+                        .await
+                        .map_err(ApiProblem::from_sqlx)?;
+                }
+            }
+            stats::attach_rating_deltas(&state.db, &mut dto)
+                .await
+                .map_err(ApiProblem::from_sqlx)?;
+        }
+
         let event = if finished {
             GameEventDto::GameFinished { game: dto }
         } else {

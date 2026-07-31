@@ -415,6 +415,97 @@ async fn games_created_without_a_seed_get_different_racks() {
     );
 }
 
+/// The `GameFinished` event must carry the rating change, because that is
+/// the one the client keeps.
+///
+/// When an engine plays the finishing move, `run_engine_turns` broadcasts
+/// the finish itself; the calling handler then saves, attaches deltas and
+/// broadcasts again — but with the *same* `version`, which the client drops
+/// (`should_apply_update` needs strictly greater). So the delta-less event
+/// was the one that stuck, and the end-of-game panel showed the result with
+/// no rating change until you navigated away and back.
+///
+/// An engine-vs-engine game exercises exactly that path: `/start` runs it to
+/// completion inside `run_engine_turns`, so every event including the finish
+/// comes from the loop.
+#[tokio::test]
+async fn the_finished_event_from_an_engine_turn_carries_the_rating_change() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    // Subscribe before anything is triggered — the events are broadcast, so
+    // a later subscriber would miss them entirely.
+    let mut events = state.events.subscribe();
+    let app = build_router(state.clone());
+
+    let alice = register_player(app.clone(), "Alice").await;
+    let created: GameStateDto = read_json(
+        send_json_auth(
+            app.clone(),
+            Method::POST,
+            "/games",
+            Some(&alice.session_token),
+            &CreateGameRequest {
+                seats: vec![
+                    CreateSeatRequest {
+                        kind: SeatKind::Engine,
+                        display_name: "Greedy One".to_string(),
+                        engine_id: Some("greedy-v1".to_string()),
+                        // No `claim`: an engine seat carrying a `player_id`
+                        // too is skipped entirely by `settle_ratings`
+                        // (its match arms take one or the other, never
+                        // both), which would leave one rankable seat and no
+                        // pairwise comparison — so nothing to rate.
+                        claim: None,
+                    },
+                    CreateSeatRequest {
+                        kind: SeatKind::Engine,
+                        display_name: "Greedy Two".to_string(),
+                        engine_id: Some("greedy-v1".to_string()),
+                        claim: None,
+                    },
+                ],
+                seed: Some(77),
+                variant: None,
+                language: None,
+                board_layout: None,
+                move_time_limit_seconds: None,
+            },
+        )
+        .await,
+    )
+    .await;
+
+    let response = send_json_auth(
+        app.clone(),
+        Method::POST,
+        &format!("/games/{}/start", created.id),
+        Some(&alice.session_token),
+        &StartGameRequest::default(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mut finished: Option<GameStateDto> = None;
+    while let Ok(event) = events.try_recv() {
+        if let GameEventDto::GameFinished { game } = event {
+            finished = Some(game);
+        }
+    }
+
+    let finished = finished.expect("an engine-vs-engine game should broadcast GameFinished");
+    assert_eq!(finished.status, api::GameStatus::Finished);
+    for participant in &finished.participants {
+        assert!(
+            participant.rating_before.is_some() && participant.rating_after.is_some(),
+            "seat {} ({}) has no rating change on the GameFinished event — the broadcast \
+             went out before save_game settled ratings. This is the event the client keeps, \
+             because the handler's later re-broadcast carries the same version and is dropped.",
+            participant.seat_number,
+            participant.display_name,
+        );
+    }
+}
+
 #[tokio::test]
 async fn human_move_endpoint_advances_state_and_triggers_engine_reply() {
     let database_url = test_database_url();
