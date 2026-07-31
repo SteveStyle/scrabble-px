@@ -12,12 +12,23 @@ set -euo pipefail
 # "Container Deployment" section for the full story, including the Oracle
 # Cloud networking setup this assumes is already in place.
 #
-# Refuses to run unless: the working tree is clean, HEAD has been pushed
-# to its upstream, and local staging is currently running that exact
-# commit. See the checks below for why each one exists.
+# What gets built is a *fresh checkout of a commit*, never the working
+# tree. The build happens in a throwaway `git worktree`, so nothing on
+# your disk — the branch you have checked out, staged changes, a
+# half-finished edit — can reach production. Two things follow from that:
+# deploying an older release is an ordinary operation rather than a
+# manoeuvre (pass its ref), and "what is running in production" is always
+# answerable from source control alone.
+#
+# Refuses to run unless: the commit is on origin/main, CI passed for it,
+# and local staging is currently running it. See the checks below for why
+# each one exists.
 #
 # Usage:
-#   ./scripts/deploy.sh
+#   ./scripts/deploy.sh                # deploy HEAD
+#   ./scripts/deploy.sh <commit-ish>   # deploy a specific commit/tag/branch,
+#                                      # e.g. `./scripts/deploy.sh prod-0.4.12`
+#                                      # to roll back to a previous release
 #
 # Configure via environment variables (defaults match the current VM):
 #   DEPLOY_HOST      Public IP or hostname of the VM (default: 129.151.69.246)
@@ -37,39 +48,44 @@ REMOTE="$DEPLOY_USER@$DEPLOY_HOST"
 
 cd "$REPO_DIR"
 
-# Production only ever deploys a real commit, never whatever happens to be
-# sitting in the working tree — otherwise the build-ID label baked into the
-# image (below) would describe an older commit than what's actually running,
-# exactly the mismatch that motivated adding it in the first place. Commit
-# first (or stash) rather than deploying uncommitted changes.
-if [[ -n "$(git status --porcelain)" ]]; then
-  echo "error: working tree has uncommitted changes — deploy.sh only builds from a committed HEAD. Commit or stash first:" >&2
-  git status --short >&2
+# Fail fast with a clear message rather than a confusing worktree error
+# further down if the ref doesn't exist locally.
+DEPLOY_REF="${1:-HEAD}"
+if ! TARGET_FULL_SHA="$(git rev-parse --verify "${DEPLOY_REF}^{commit}" 2>/dev/null)"; then
+  echo "error: '$DEPLOY_REF' is not a valid local git ref (fetch it first if it's remote-only)" >&2
   exit 1
 fi
-
-HEAD_SHA="$(git rev-parse --short HEAD)"
 # `gh run list --commit` matches on the full hash only — a short one silently
 # returns no runs, which would make the CI gate below fail every deploy.
-HEAD_FULL_SHA="$(git rev-parse HEAD)"
+TARGET_SHA="$(git rev-parse --short "$TARGET_FULL_SHA")"
+
+# The working tree has no say in what ships, so a dirty one isn't an error
+# here — it simply isn't part of the deploy. Say so rather than staying
+# quiet: the previous behaviour (refusing to run until the tree was clean)
+# taught the opposite expectation, that deploy.sh builds what you can see.
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "==> Note: your working tree has uncommitted changes. They are NOT part of"
+  echo "    this deploy — $TARGET_SHA is built from a clean checkout of that commit."
+fi
 
 # Refuses to ship a commit that only exists on this machine — if this
 # machine were lost before anyone/anything else had a copy, "what's
 # actually running in production" would stop being reproducible from
 # source control at all. Fetches first so a stale local view of the
 # remote can't produce a false pass.
-CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-UPSTREAM="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
-if [[ -z "$UPSTREAM" ]]; then
-  echo "error: '$CURRENT_BRANCH' has no upstream tracking branch — push it first: git push -u origin $CURRENT_BRANCH" >&2
+#
+# Asks that question directly rather than through the current branch's
+# upstream. The property that matters is "this commit is on the remote";
+# a branch's tracking config is only ever a proxy for it, and the proxy
+# rejected the case this script now exists to support — a commit reached
+# by tag or SHA has no `@{u}` at all, so a rollback failed a gate it
+# actually passed.
+git fetch --quiet origin
+if ! git merge-base --is-ancestor "$TARGET_FULL_SHA" origin/main; then
+  echo "error: $TARGET_SHA ($DEPLOY_REF) is not on origin/main — push it first: git push origin main" >&2
   exit 1
 fi
-git fetch --quiet "${UPSTREAM%%/*}"
-if ! git merge-base --is-ancestor HEAD "$UPSTREAM"; then
-  echo "error: HEAD ($HEAD_SHA) hasn't been pushed to $UPSTREAM — push first: git push" >&2
-  exit 1
-fi
-echo "==> HEAD ($HEAD_SHA) confirmed pushed to $UPSTREAM"
+echo "==> $TARGET_SHA confirmed present on origin/main"
 
 # Refuses to ship a commit CI hasn't passed. Until this existed, CI was
 # only a signal running alongside the release rather than a gate on it: a
@@ -80,7 +96,7 @@ echo "==> HEAD ($HEAD_SHA) confirmed pushed to $UPSTREAM"
 # the one enforced here are the same code, and cannot answer differently.
 if [[ "${DEPLOY_SKIP_CI:-}" == "1" ]]; then
   echo "==> WARNING: skipping the CI gate (DEPLOY_SKIP_CI=1)"
-elif ! "$REPO_DIR/scripts/ci-status.sh" "$HEAD_FULL_SHA"; then
+elif ! "$REPO_DIR/scripts/ci-status.sh" "$TARGET_FULL_SHA"; then
   echo "error: refusing to deploy — see above. Fix CI rather than deploying past it," >&2
   echo "       or set DEPLOY_SKIP_CI=1 if GitHub itself is the problem." >&2
   exit 1
@@ -93,37 +109,69 @@ fi
 # fix" B before deploying would silently ship B untested — easy to do
 # without noticing, since deploy.sh has no other way to know staging
 # wasn't re-run. See docs/3.3-testing-ci-and-release.md.
+if [[ "$DEPLOY_REF" == "HEAD" ]]; then
+  STAGING_CMD="./scripts/deploy-staging.sh"
+else
+  STAGING_CMD="./scripts/deploy-staging.sh at $DEPLOY_REF"
+fi
 STAGING_HEALTH="$(curl -sf --max-time 5 "$STAGING_URL/health" 2>/dev/null || true)"
 STAGING_VERSION="$(printf '%s' "$STAGING_HEALTH" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4)"
 STAGING_SHA="${STAGING_VERSION#*+}"
 if [[ -z "$STAGING_VERSION" ]]; then
-  echo "error: local staging ($STAGING_URL) isn't reachable — test this commit there first: ./scripts/deploy-staging.sh" >&2
+  echo "error: local staging ($STAGING_URL) isn't reachable — test this commit there first: $STAGING_CMD" >&2
   exit 1
 elif [[ "$STAGING_SHA" == "$STAGING_VERSION" ]]; then
   echo "error: staging is running $STAGING_VERSION, which has no commit id — was it deployed via deploy-staging.sh?" >&2
   exit 1
-elif [[ "$STAGING_SHA" != "$HEAD_SHA" ]]; then
-  echo "error: staging is running commit $STAGING_SHA, not HEAD ($HEAD_SHA) — test HEAD in staging first: ./scripts/deploy-staging.sh" >&2
+elif [[ "$STAGING_SHA" != "$TARGET_SHA" ]]; then
+  echo "error: staging is running commit $STAGING_SHA, not $TARGET_SHA ($DEPLOY_REF) — test it in staging first: $STAGING_CMD" >&2
   exit 1
 fi
-echo "==> Staging confirmed running this commit ($HEAD_SHA) — proceeding"
+echo "==> Staging confirmed running this commit ($TARGET_SHA) — proceeding"
+
+# The fresh checkout. A throwaway `git worktree` rather than checking $REF
+# out here: it leaves the real working copy (branch, staged and unstaged
+# changes) completely untouched, which is what makes it safe to deploy an
+# older commit in the middle of unrelated work.
+#
+# The compose file comes from the worktree too, so the runtime
+# configuration shipped to the VM is the one that belongs to the code
+# being shipped — on a rollback, that matters as much as the images do.
+WORKTREE_DIR="$(mktemp -d /tmp/tile-lite-elite-deploy-worktree-XXXXXX)"
+TMP_TAR=""
+cleanup() {
+  # `if` rather than `[[ ... ]] &&`: an empty TMP_TAR would make the last
+  # command in an EXIT trap return non-zero under `set -e`.
+  if [[ -n "$TMP_TAR" ]]; then
+    rm -f "$TMP_TAR"
+  fi
+  git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
+}
+trap cleanup EXIT
+# rmdir first: `git worktree add` refuses to target a directory mktemp
+# already created, even an empty one.
+rmdir "$WORKTREE_DIR"
+git worktree add --detach "$WORKTREE_DIR" "$TARGET_FULL_SHA" >/dev/null
 
 # Baked into both binaries as SemVer build metadata (e.g. `0.2.0+a1c9f02`) —
 # see docs/4.1-configuration.md's "Versioning" section.
-export TILE_LITE_ELITE_BUILD_ID="$HEAD_SHA"
+export TILE_LITE_ELITE_BUILD_ID="$TARGET_SHA"
 
-echo "==> Building images locally (this is the slow step, ~2-3 min) [build $TILE_LITE_ELITE_BUILD_ID]"
-docker compose build
+# `-f <worktree>/docker-compose.yml` also sets the project directory to the
+# worktree, so each service's `context: .` resolves to the checkout rather
+# than to this repo. The image tags are unaffected: they derive from the
+# `name:` pinned inside the compose file, not from the directory.
+echo "==> Building images from a clean checkout of $TARGET_SHA (the slow step, ~2-3 min)"
+docker compose -f "$WORKTREE_DIR/docker-compose.yml" build
 
 echo "==> Exporting images"
 TMP_TAR="$(mktemp /tmp/tile-lite-elite-images-XXXXXX.tar.gz)"
-trap 'rm -f "$TMP_TAR"' EXIT
 docker save tile-lite-elite-server:latest tile-lite-elite-web:latest | gzip > "$TMP_TAR"
 echo "    $(du -h "$TMP_TAR" | cut -f1) compressed"
 
 echo "==> Transferring to $DEPLOY_HOST"
 ssh "${SSH_OPTS[@]}" "$REMOTE" "mkdir -p $DEPLOY_REMOTE_DIR"
-scp "${SSH_OPTS[@]}" "$TMP_TAR" docker-compose.yml "$REMOTE:$DEPLOY_REMOTE_DIR/"
+scp "${SSH_OPTS[@]}" "$TMP_TAR" "$WORKTREE_DIR/docker-compose.yml" "$REMOTE:$DEPLOY_REMOTE_DIR/"
 
 echo "==> Loading images and restarting the stack"
 REMOTE_TAR_NAME="$(basename "$TMP_TAR")"
@@ -149,6 +197,11 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "
         || echo \"    (warning: could not set up the 'sa' alias for tile-lite-elite-admin)\"
 "
 
+# Read from the deployed commit's own tree, not the working tree's
+# Cargo.toml — on a rollback those are different numbers, and the tag has
+# to name the version that actually shipped.
+DEPLOYED_VERSION="$(git show "$TARGET_FULL_SHA:Cargo.toml" | grep -m1 '^version' | cut -d'"' -f2)"
+
 # Stamp the deployed commit in git history. A tag rather than a commit: it
 # points at the *thing that shipped*, not at the bump that follows it, and
 # it costs no history. `git tag --list 'prod-*'` is then the deployment log,
@@ -158,16 +211,17 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "
 # Annotated (-a), so it records who deployed and when as a real object
 # rather than a bare pointer. Named explicitly against the deployed SHA, so
 # it lands correctly regardless of the bump below.
-DEPLOY_TAG="prod-$(grep -m1 '^version' "$REPO_DIR/Cargo.toml" | cut -d'"' -f2)"
+DEPLOY_TAG="prod-$DEPLOYED_VERSION"
 if git -C "$REPO_DIR" rev-parse -q --verify "refs/tags/$DEPLOY_TAG" > /dev/null; then
-  # Same version deployed twice — a redeploy, or a bump that didn't happen.
-  # Keep both rather than moving the tag: a force-moved tag loses the record
-  # of the earlier deploy, which is the one thing this exists to keep.
-  DEPLOY_TAG="$DEPLOY_TAG-$HEAD_SHA"
+  # Same version deployed twice — a redeploy, a rollback to a release that
+  # already carries its tag, or a bump that didn't happen. Keep both rather
+  # than moving the tag: a force-moved tag loses the record of the earlier
+  # deploy, which is the one thing this exists to keep.
+  DEPLOY_TAG="$DEPLOY_TAG-$(date -u +%Y%m%dT%H%M%SZ)"
   echo "==> Tag exists already; using $DEPLOY_TAG"
 fi
-git -C "$REPO_DIR" tag -a "$DEPLOY_TAG" "$HEAD_FULL_SHA" \
-  -m "Deployed to production $(date -u +%Y-%m-%dT%H:%MZ) from $HEAD_SHA"
+git -C "$REPO_DIR" tag -a "$DEPLOY_TAG" "$TARGET_FULL_SHA" \
+  -m "Deployed to production $(date -u +%Y-%m-%dT%H:%MZ) from $TARGET_SHA"
 git -C "$REPO_DIR" push --quiet origin "$DEPLOY_TAG"
 echo "==> Tagged $DEPLOY_TAG"
 
@@ -176,21 +230,43 @@ echo "==> Tagged $DEPLOY_TAG"
 # used to be a step you had to remember (docs/3.3, an explicit final step) — but it is
 # only ever correct immediately after a successful deploy, which is exactly
 # here, and nowhere else.
-DEPLOYED_VERSION="$(grep -m1 '^version' "$REPO_DIR/Cargo.toml" | cut -d'"' -f2)"
+#
+# Only when rolling *forward*, though. After a rollback the branch tip is
+# already ahead of what's now in production, and bumping it again would
+# claim a release that never happened — the version to move on from is the
+# newest one, not the one just redeployed.
+CURRENT_BRANCH="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD)"
+BRANCH_TIP="$(git -C "$REPO_DIR" rev-parse HEAD)"
 NEXT_VERSION="$(printf '%s' "$DEPLOYED_VERSION" | awk -F. '{printf "%s.%s.%d", $1, $2, $3 + 1}')"
 
 if [[ "${DEPLOY_SKIP_BUMP:-}" == "1" ]]; then
   echo "==> Skipping the version bump (DEPLOY_SKIP_BUMP=1) — production is on $DEPLOYED_VERSION"
+elif [[ "$BRANCH_TIP" != "$TARGET_FULL_SHA" ]]; then
+  echo "==> Deployed $DEPLOYED_VERSION from an earlier commit, so leaving the version alone."
+  echo "    Your branch ($CURRENT_BRANCH) is already ahead of what's now in production."
+elif [[ "$CURRENT_BRANCH" == "HEAD" ]]; then
+  echo "==> Detached HEAD, so leaving the version alone — nothing to bump onto."
+elif ! git -C "$REPO_DIR" diff --quiet -- Cargo.toml Cargo.lock; then
+  echo "==> Cargo.toml/Cargo.lock have uncommitted edits, so leaving the version alone." >&2
+  echo "    Bump to $NEXT_VERSION by hand once they're committed." >&2
 else
   echo "==> Bumping the working tree to $NEXT_VERSION (production now holds $DEPLOYED_VERSION)"
   sed -i "0,/^version = \"$DEPLOYED_VERSION\"/s//version = \"$NEXT_VERSION\"/" "$REPO_DIR/Cargo.toml"
   # Refreshes Cargo.lock's workspace versions so the bump commit is complete.
   ( cd "$REPO_DIR" && cargo check --workspace --quiet > /dev/null 2>&1 || true )
   git -C "$REPO_DIR" add Cargo.toml Cargo.lock
+  # Read API_VERSION from the commit, not the working tree. This commit
+  # carries only Cargo.toml/Cargo.lock, so its api/src/lib.rs is HEAD's —
+  # and check-commit-stamp.sh validates the stamp against the commit's own
+  # tree. An uncommitted edit to API_VERSION would otherwise produce a
+  # stamp that fails its own check.
+  BUMP_API="$(git -C "$REPO_DIR" show HEAD:crates/api/src/lib.rs \
+    | grep -m1 'API_VERSION: ApiVersion' \
+    | grep -o 'major: [0-9]*, minor: [0-9]*' | sed 's/major: //; s/, minor: /./')"
   git -C "$REPO_DIR" commit --quiet \
-    -m "app $NEXT_VERSION api $(grep -m1 'API_VERSION: ApiVersion' "$REPO_DIR/crates/api/src/lib.rs" | grep -o 'major: [0-9]*, minor: [0-9]*' | sed 's/major: //; s/, minor: /./'): bump dev version following production release" \
-    -m "Production now runs $DEPLOYED_VERSION+$HEAD_SHA."
-  git -C "$REPO_DIR" push --quiet origin HEAD
+    -m "app $NEXT_VERSION api $BUMP_API: bump dev version following production release" \
+    -m "Production now runs $DEPLOYED_VERSION+$TARGET_SHA."
+  git -C "$REPO_DIR" push --quiet origin "$CURRENT_BRANCH"
   echo "    committed and pushed"
 fi
 

@@ -6,8 +6,11 @@ set -euo pipefail
 # just without the ssh/scp hop to the real VM. See docs/3.3-testing-ci-and-release.md's
 # "Staging Environment" section for why this exists and how to use it.
 #
-# Every mode builds from a committed HEAD, never a dirty working tree — see
-# the "no uncommitted changes" check near the bottom. Commit first (a WIP
+# Every mode builds a *fresh checkout of a commit* in a throwaway
+# `git worktree`, never the working tree — same principle as deploy.sh, and
+# the reason "staging is running X" is something `at prod`/`verify` can
+# trust rather than a coincidence of what was on disk at build time.
+# Uncommitted changes are therefore not tested here: commit first (a WIP
 # commit is fine, nothing here gets pushed).
 #
 # Usage:
@@ -118,73 +121,76 @@ if [[ "$MODE" == "verify" ]]; then
   fi
 fi
 
-if [[ "$MODE" == "at" ]]; then
-  # Fail fast with a clear message rather than a confusing worktree error
-  # if the ref doesn't exist locally.
-  if ! COMMIT="$(git rev-parse --verify "${REF}^{commit}" 2>/dev/null)"; then
-    echo "error: '$REF' is not a valid local git ref (fetch it first if it's remote-only)" >&2
-    exit 1
-  fi
-  SHORT_SHA="$(git rev-parse --short "$COMMIT")"
-
-  echo "==> Wiping staging (about to redeploy at $REF ($SHORT_SHA) from scratch)"
-  "${COMPOSE[@]}" down -v
-
-  # A throwaway `git worktree` rather than checking out $REF in this working
-  # copy — leaves the actual repo (branch, staged/uncommitted changes)
-  # completely untouched. `docker build`'s context is a plain directory, so
-  # this doesn't need docker-compose.yml/docker-compose.staging.yml to have
-  # existed at that ref, only the Dockerfile and source under crates/.
-  WORKTREE_DIR="$(mktemp -d /tmp/tile-lite-elite-staging-worktree-XXXXXX)"
-  cleanup() {
-    git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
-  }
-  trap cleanup EXIT
-  # rmdir first: `git worktree add` refuses to target a directory mktemp
-  # already created, even an empty one.
-  rmdir "$WORKTREE_DIR"
-  git worktree add --detach "$WORKTREE_DIR" "$COMMIT" >/dev/null
-
-  echo "==> Building staging images from $REF ($SHORT_SHA)"
-  docker build --target runtime-server \
-    --build-arg TILE_LITE_ELITE_BUILD_ID="$SHORT_SHA" \
-    -t tile-lite-elite-staging-server:latest "$WORKTREE_DIR"
-  docker build --target runtime-web \
-    --build-arg TILE_LITE_ELITE_BUILD_ID="$SHORT_SHA" \
-    -t tile-lite-elite-staging-web:latest "$WORKTREE_DIR"
-
-  echo "==> Starting staging stack"
-  "${COMPOSE[@]}" up -d --no-build
-
-  echo "==> Staging is up at http://localhost:8081, running $REF ($SHORT_SHA) against a fresh database"
-  echo "    Back to the current working tree: ./scripts/deploy-staging.sh"
-  echo "    Verify it matches production:     ./scripts/deploy-staging.sh verify"
-  exit 0
+# Both remaining modes — plain `up` and `at <ref>` — build the same way: a
+# fresh checkout of a commit, never the working tree. They differ only in
+# which commit (HEAD vs the given ref) and in whether the staging database
+# is wiped first.
+#
+# `up` used to build the working tree via `compose build`, which made
+# "staging is running X" true only by coincidence — whatever happened to be
+# on disk when the build ran. Refusing to run on a dirty tree patched over
+# that, at the cost of forcing a WIP commit before every staging test.
+# Building the commit directly makes the claim true by construction, so the
+# dirty tree stops mattering either way.
+if [[ "$MODE" == "up" ]]; then
+  REF="HEAD"
 fi
 
-# Staging only ever deploys a real commit too, same reasoning as deploy.sh
-# — otherwise "staging is running X" is only true by coincidence (whatever
-# was on disk at build time), not something `at <ref>`/`verify` can actually
-# trust later. Commit first (a WIP commit is fine — this is local, nothing
-# is pushed) rather than testing uncommitted changes here.
-if [[ -n "$(git status --porcelain)" ]]; then
-  echo "error: working tree has uncommitted changes — deploy-staging.sh only builds from a committed HEAD. Commit (even a WIP one) or stash first:" >&2
-  git status --short >&2
+# Fail fast with a clear message rather than a confusing worktree error
+# if the ref doesn't exist locally.
+if ! COMMIT="$(git rev-parse --verify "${REF}^{commit}" 2>/dev/null)"; then
+  echo "error: '$REF' is not a valid local git ref (fetch it first if it's remote-only)" >&2
   exit 1
 fi
+SHORT_SHA="$(git rev-parse --short "$COMMIT")"
 
-# Same build-metadata wiring as scripts/deploy.sh — see
-# docs/4.1-configuration.md's "Versioning" section.
-export TILE_LITE_ELITE_BUILD_ID="$(git rev-parse --short HEAD)"
+if [[ "$MODE" == "up" && -n "$(git status --porcelain)" ]]; then
+  echo "==> Note: your working tree has uncommitted changes. They are NOT part of this"
+  echo "    build — staging runs a clean checkout of HEAD ($SHORT_SHA). Commit to test them."
+fi
 
-echo "==> Building staging images (build $TILE_LITE_ELITE_BUILD_ID)"
-"${COMPOSE[@]}" build
+if [[ "$MODE" == "at" ]]; then
+  echo "==> Wiping staging (about to redeploy at $REF ($SHORT_SHA) from scratch)"
+  "${COMPOSE[@]}" down -v
+fi
+
+# A throwaway `git worktree` rather than checking the commit out in this
+# working copy — leaves the actual repo (branch, staged/uncommitted
+# changes) completely untouched. `docker build`'s context is a plain
+# directory, so this doesn't need docker-compose.staging.yml to have
+# existed at that ref, only the Dockerfile and source under crates/.
+WORKTREE_DIR="$(mktemp -d /tmp/tile-lite-elite-staging-worktree-XXXXXX)"
+cleanup() {
+  git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
+}
+trap cleanup EXIT
+# rmdir first: `git worktree add` refuses to target a directory mktemp
+# already created, even an empty one.
+rmdir "$WORKTREE_DIR"
+git worktree add --detach "$WORKTREE_DIR" "$COMMIT" >/dev/null
+
+# Build metadata baked into both binaries, and what `at prod`/`verify` read
+# back out of /health later — see docs/4.1-configuration.md's "Versioning"
+# section.
+echo "==> Building staging images from $REF ($SHORT_SHA)"
+docker build --target runtime-server \
+  --build-arg TILE_LITE_ELITE_BUILD_ID="$SHORT_SHA" \
+  -t tile-lite-elite-staging-server:latest "$WORKTREE_DIR"
+docker build --target runtime-web \
+  --build-arg TILE_LITE_ELITE_BUILD_ID="$SHORT_SHA" \
+  -t tile-lite-elite-staging-web:latest "$WORKTREE_DIR"
 
 echo "==> Starting staging stack"
-"${COMPOSE[@]}" up -d
+"${COMPOSE[@]}" up -d --no-build
 
-echo "==> Staging is up at http://localhost:8081"
-echo "    Logs:    docker compose -f docker-compose.staging.yml logs -f server"
-echo "    Down:    ./scripts/deploy-staging.sh down     (keeps data)"
-echo "    Reset:   ./scripts/deploy-staging.sh reset    (wipes staging DB)"
-echo "    Deploy a specific version: ./scripts/deploy-staging.sh at <git-ref>|prod"
+if [[ "$MODE" == "at" ]]; then
+  echo "==> Staging is up at http://localhost:8081, running $REF ($SHORT_SHA) against a fresh database"
+  echo "    Back to the current HEAD: ./scripts/deploy-staging.sh"
+  echo "    Verify it matches production:     ./scripts/deploy-staging.sh verify"
+else
+  echo "==> Staging is up at http://localhost:8081, running HEAD ($SHORT_SHA)"
+  echo "    Logs:    docker compose -f docker-compose.staging.yml logs -f server"
+  echo "    Down:    ./scripts/deploy-staging.sh down     (keeps data)"
+  echo "    Reset:   ./scripts/deploy-staging.sh reset    (wipes staging DB)"
+  echo "    Deploy a specific version: ./scripts/deploy-staging.sh at <git-ref>|prod"
+fi

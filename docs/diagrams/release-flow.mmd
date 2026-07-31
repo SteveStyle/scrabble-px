@@ -29,6 +29,11 @@ flowchart TB
     %% .
     %% No linkStyle anywhere: the shapes carry the meaning. Edge indices
     %% silently pointed at the wrong arrows four times when they did.
+    %% .
+    %% Steps 3 and 6.a start at local git rather than Dev on purpose, and
+    %% this is literally true of the scripts: both check the commit out into
+    %% a throwaway git worktree and build that, so the working tree cannot
+    %% reach either environment. Do not "correct" these to start at DEV.
     DEV["Dev<br/>working tree<br/>:3000 server · :8080 web"]
     STG["Staging<br/>:8081 · docker"]
     PROD["Production<br/>tileliteelite.com"]

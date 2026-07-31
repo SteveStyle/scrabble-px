@@ -48,13 +48,32 @@ MAX_ATTEMPTS=120   # 20 minutes
 attempt=0
 while true; do
   attempt=$((attempt + 1))
-  JSON="$(gh run list --commit "$FULL_SHA" --workflow CI --limit 1 \
-    --json status,conclusion,url 2>/dev/null || true)"
-  STATUS="$(printf '%s' "$JSON" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)"
-  CONCLUSION="$(printf '%s' "$JSON" | grep -o '"conclusion":"[^"]*"' | cut -d'"' -f4)"
-  URL="$(printf '%s' "$JSON" | grep -o '"url":"[^"]*"' | cut -d'"' -f4)"
 
-  if [[ "$STATUS" == "completed" ]]; then
+  # Every run for this commit, newest first — not just the newest one. A
+  # commit can have several: CI's `cancel-in-progress` concurrency rule
+  # cancels a run when a newer push supersedes it, and a cancelled run can
+  # be re-run later. What the gate needs to know is whether this commit has
+  # *ever* passed, so one success anywhere in the list is a pass regardless
+  # of what came after it. Reading only the newest run made that depend on
+  # ordering, which matters most when rolling back to an older release —
+  # exactly when re-running a superseded build is the natural fix.
+  RUNS="$(gh run list --commit "$FULL_SHA" --workflow CI --limit 20 \
+    --json status,conclusion,url --jq '.[] | [.status, .conclusion, .url] | @tsv' 2>/dev/null || true)"
+
+  # The newest run, for reporting: it's what a human would look at first.
+  STATUS="$(printf '%s' "$RUNS" | head -1 | cut -f1)"
+  CONCLUSION="$(printf '%s' "$RUNS" | head -1 | cut -f2)"
+  URL="$(printf '%s' "$RUNS" | head -1 | cut -f3)"
+
+  if printf '%s' "$RUNS" | cut -f2 | grep -qx 'success'; then
+    CONCLUSION="success"
+    URL="$(printf '%s' "$RUNS" | awk -F'\t' '$2 == "success" {print $3; exit}')"
+    break
+  fi
+
+  # No success yet. If nothing is still running, there is nothing to wait
+  # for — report the newest run's verdict below.
+  if [[ -n "$RUNS" ]] && ! printf '%s' "$RUNS" | cut -f1 | grep -qvx 'completed'; then
     break
   fi
 
@@ -86,6 +105,20 @@ if [[ "$CONCLUSION" == "success" ]]; then
 fi
 
 echo "CI: $SHORT_SHA concluded '$CONCLUSION', not success." >&2
-[[ -n "$URL" ]] && echo "    $URL" >&2
-echo "    Fix it and commit again — the release gate will refuse this commit." >&2
+if [[ -n "$URL" ]]; then
+  echo "    $URL" >&2
+fi
+if [[ "$CONCLUSION" == "cancelled" ]]; then
+  # Not a failure: almost always CI's `cancel-in-progress` rule stopping a
+  # run because a newer push superseded it. The commit was never judged, so
+  # the gate can't pass it — but re-running is the fix, not a new commit.
+  # This is the one that bites when rolling back, since the release you want
+  # may sit behind commits that superseded its run.
+  echo "    A cancelled run usually means a newer push superseded it, not that" >&2
+  echo "    anything broke. Judge this commit on its own by re-running CI for it:" >&2
+  echo "      gh run rerun \$(gh run list --commit $FULL_SHA --workflow CI --limit 1 --json databaseId --jq '.[0].databaseId')" >&2
+  echo "    then re-run this check." >&2
+else
+  echo "    Fix it and commit again — the release gate will refuse this commit." >&2
+fi
 exit 1
