@@ -134,7 +134,12 @@ else
   STAGING_CMD="./scripts/deploy-staging.sh at $DEPLOY_REF"
 fi
 STAGING_HEALTH="$(curl -sf --max-time 5 "$STAGING_URL/health" 2>/dev/null || true)"
-STAGING_VERSION="$(printf '%s' "$STAGING_HEALTH" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4)"
+# `|| true` on every one of these: `grep` exits 1 when it matches nothing,
+# and under `set -o pipefail` that kills the assignment outright — so the
+# "is it empty" branch written to handle exactly that case never runs, and
+# the script dies with no message at all. This is not hypothetical; it
+# aborted a production deploy silently.
+STAGING_VERSION="$(printf '%s' "$STAGING_HEALTH" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || true)"
 STAGING_SHA="${STAGING_VERSION#*+}"
 if [[ -z "$STAGING_VERSION" ]]; then
   echo "error: local staging ($STAGING_URL) isn't reachable — test this commit there first: $STAGING_CMD" >&2
@@ -163,7 +168,7 @@ echo "==> Staging confirmed running this commit ($TARGET_SHA) — proceeding"
 TARGET_SCHEMA="$(git ls-tree --name-only "$TARGET_FULL_SHA" crates/server-game/migrations/ \
   | grep '\.sql$' | sed 's#.*/##' | grep -oE '^[0-9]+' | sort -n | tail -1 | sed 's/^0*//')"
 PROD_HEALTH="$(curl -sf --max-time 8 "$PROD_URL/health" 2>/dev/null || true)"
-LIVE_SCHEMA="$(printf '%s' "$PROD_HEALTH" | grep -o '"schema_version":[0-9]*' | cut -d: -f2)"
+LIVE_SCHEMA="$(printf '%s' "$PROD_HEALTH" | grep -o '"schema_version":[0-9]*' | cut -d: -f2 || true)"
 
 if [[ -z "$PROD_HEALTH" ]]; then
   echo "==> Note: couldn't reach $PROD_URL/health, so the schema check was skipped."
@@ -188,7 +193,11 @@ fi
 # Read from the deployed commit's own tree, not the working tree's
 # Cargo.toml — on a rollback those are different numbers, and the tag has
 # to name the version that actually shipped.
-DEPLOYED_VERSION="$(git show "$TARGET_FULL_SHA:Cargo.toml" | grep -m1 '^version' | cut -d'"' -f2)"
+DEPLOYED_VERSION="$(git show "$TARGET_FULL_SHA:Cargo.toml" | grep -m1 '^version' | cut -d'"' -f2 || true)"
+if [[ -z "$DEPLOYED_VERSION" ]]; then
+  echo "error: couldn't read a version from $TARGET_SHA's Cargo.toml." >&2
+  exit 1
+fi
 
 # The fresh checkout. A throwaway `git worktree` rather than checking $REF
 # out here: it leaves the real working copy (branch, staged and unstaged
@@ -347,7 +356,9 @@ echo "==> Smoke testing $PROD_URL (expecting $EXPECTED_VERSION)"
 SMOKE_OK=0
 for _ in $(seq 1 30); do
   LIVE_HEALTH="$(curl -sf --max-time 5 "$PROD_URL/health" 2>/dev/null || true)"
-  LIVE_APP="$(printf '%s' "$LIVE_HEALTH" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4)"
+  # Unreachable /health is the normal state for the first few seconds here,
+  # so this must survive matching nothing rather than abort the retry loop.
+  LIVE_APP="$(printf '%s' "$LIVE_HEALTH" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || true)"
   if [[ "$LIVE_APP" == "$EXPECTED_VERSION" ]]; then
     SMOKE_OK=1
     echo "    $LIVE_HEALTH"

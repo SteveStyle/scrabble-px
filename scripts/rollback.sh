@@ -64,7 +64,7 @@ done
 if [[ -z "$SNAPSHOT" ]]; then
   echo "==> Production ($DEPLOY_HOST)"
   CURRENT="$(curl -sf --max-time 8 "$PROD_URL/health" 2>/dev/null || true)"
-  echo "    live now:  $(printf '%s' "$CURRENT" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || true)"
+  echo "    live now:  $(printf '%s' "$CURRENT" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || echo unknown)"
   ssh "${SSH_OPTS[@]}" "$REMOTE" "
       cd $DEPLOY_REMOTE_DIR 2>/dev/null || { echo '    (no deploy directory)'; exit 0; }
       if docker image inspect tile-lite-elite-server:previous > /dev/null 2>&1; then

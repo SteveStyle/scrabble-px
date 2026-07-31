@@ -58,7 +58,9 @@ fetch_app_version() {
     echo "error: couldn't reach $url/health" >&2
     return 1
   fi
-  version="$(printf '%s' "$json" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4)"
+  # `|| true` so a response without the field reaches the check below
+  # rather than killing the script via pipefail — see deploy.sh's note.
+  version="$(printf '%s' "$json" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || true)"
   if [[ -z "$version" ]]; then
     echo "error: $url/health responded but had no app_version field — is it running code from before that field existed?" >&2
     return 1
