@@ -192,6 +192,12 @@ pub fn RootApp() -> Element {
         bootstrapped.set(true);
         let server_url = server_url.clone();
         spawn(async move {
+            // Record which bundle we loaded with before anything can decide
+            // to reload — the watcher has nothing to compare against until
+            // this has run.
+            #[cfg(target_arch = "wasm32")]
+            record_loaded_bundle().await;
+
             if !apply_version_check(
                 check_api_version(&server_url).await,
                 info_message,
@@ -306,6 +312,16 @@ pub fn RootApp() -> Element {
                     info_message,
                     error_message,
                 );
+                // A reconnect almost always means a deploy just happened, so
+                // this is where a new client build shows up. Checked on its
+                // own rather than only when the api version moved: the api
+                // version describes the wire contract, and a client can
+                // change without it — a bug fix in `crates/ui` has no
+                // business touching it, and used to reach nobody who already
+                // had the app open. `version.txt` is a hash of the bundle, so
+                // this reloads exactly when there is different code to run.
+                #[cfg(target_arch = "wasm32")]
+                watch_for_new_bundle(info_message, None);
                 is_reconnecting.set(false);
             });
         });
@@ -2234,7 +2250,7 @@ async fn fetch_served_bundle_version() -> Option<String> {
     parse_served_version(&response.text().await.ok()?)
 }
 
-/// Validates that a `/version.txt` body really is a version string before
+/// Validates that a `/version.txt` body really is a bundle id before
 /// anything compares it against ours.
 ///
 /// A 200 response is not enough on its own. Caddy's SPA fallback
@@ -2242,24 +2258,20 @@ async fn fetch_served_bundle_version() -> Option<String> {
 /// any path that isn't a real file, so an origin without a `/version.txt` —
 /// a `dx serve` dev build, a hand-built image — answers this probe with a
 /// page of HTML rather than a 404. Taken at face value that HTML would never
-/// equal our own version, so the watcher would reload, get the same fallback
-/// again, and spin: precisely the loop the version check exists to prevent.
+/// match, so the watcher would reload, get the same fallback again, and
+/// spin: precisely the loop this check exists to prevent.
 ///
-/// Anything that isn't shaped like `Major.Minor.Patch[+build]` is therefore
-/// treated as "no answer". HTML fails on the leading `<`.
+/// The id is a hex digest of the bundle's contents (see the Dockerfile), so
+/// anything that isn't plain hex of a sane length is treated as "no answer".
+/// HTML fails on the leading `<`, and also on its spaces and newlines.
 // Deliberately not `#[cfg(target_arch = "wasm32")]` like its caller: keeping
 // it target-independent is what lets the tests below run under a normal
 // `cargo test`, which is the only place this logic is actually exercised.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn parse_served_version(body: &str) -> Option<String> {
-    let version = body.trim();
-    let plausible = !version.is_empty()
-        && version.len() <= 64
-        && version.starts_with(|c: char| c.is_ascii_digit())
-        && version
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '+' | '-' | '_'));
-    plausible.then(|| version.to_string())
+    let id = body.trim();
+    let plausible = (8..=64).contains(&id.len()) && id.chars().all(|c| c.is_ascii_hexdigit());
+    plausible.then(|| id.to_string())
 }
 
 /// Reload the page as soon — and only as soon — as doing so would actually
@@ -2278,10 +2290,36 @@ fn parse_served_version(body: &str) -> Option<String> {
 /// naturally handles skew that a reload can't fix at all — a fresh load
 /// already has the current bundle, so if the versions match we poll, give up,
 /// and fall back to telling the user, which is all that was ever possible.
+/// The bundle id this tab loaded with.
+///
+/// Recorded on first read rather than compiled in, because the id is a hash
+/// of the built bundle and nothing can contain its own hash. "What we are
+/// running" is therefore whatever `/version.txt` said when we started, and
+/// anything different later means new code is being served.
+#[cfg(target_arch = "wasm32")]
+static LOADED_BUNDLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Reads and remembers the bundle id, if it hasn't been recorded already.
+/// Called once at startup so the watcher has a baseline to compare against.
+#[cfg(target_arch = "wasm32")]
+pub async fn record_loaded_bundle() {
+    if let Some(served) = fetch_served_bundle_version().await {
+        let _ = LOADED_BUNDLE.set(served);
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 fn watch_for_new_bundle(mut info_message: Signal<Option<String>>, give_up_message: Option<String>) {
     spawn(async move {
-        let running = crate::app_version();
+        // No baseline (the startup read failed, e.g. the origin has no
+        // version.txt) means we cannot tell new code from old, so decline to
+        // reload rather than guess — the same call the unreadable case makes.
+        let Some(running) = LOADED_BUNDLE.get().cloned() else {
+            if let Some(message) = give_up_message {
+                info_message.set(Some(message));
+            }
+            return;
+        };
         for _ in 0..BUNDLE_POLL_ATTEMPTS {
             if let Some(served) = fetch_served_bundle_version().await
                 && served != running
@@ -3836,6 +3874,7 @@ fn shuffle_order(order: &mut [usize]) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     /// A tab left open across a deploy used to stick on `HTTP 502` and never
     /// retry. `web` (Caddy) and `server` are separate containers, so while
@@ -3865,7 +3904,6 @@ mod tests {
             );
         }
     }
-    use super::*;
 
     fn sample_tile(id: usize, letter: char) -> RackTileView {
         RackTileView {
@@ -3879,16 +3917,29 @@ mod tests {
     }
 
     #[test]
-    fn served_version_accepts_a_plain_release_version() {
-        assert_eq!(parse_served_version("0.4.10"), Some("0.4.10".to_string()));
+    fn served_version_accepts_a_bundle_hash() {
+        assert_eq!(
+            parse_served_version("a1b2c3d4e5f60789"),
+            Some("a1b2c3d4e5f60789".to_string())
+        );
     }
 
     #[test]
-    fn served_version_accepts_a_build_suffix_and_trims_whitespace() {
+    fn served_version_trims_whitespace() {
         assert_eq!(
-            parse_served_version("  0.4.10+a1c9f02\n"),
-            Some("0.4.10+a1c9f02".to_string())
+            parse_served_version("  a1b2c3d4e5f60789\n"),
+            Some("a1b2c3d4e5f60789".to_string())
         );
+    }
+
+    /// The id identifies the bundle by content, so a release version is no
+    /// longer what lives here — and must not be accepted, or a tab that
+    /// somehow met an old-format file would treat it as a real id and
+    /// reload against unchanged code.
+    #[test]
+    fn served_version_rejects_the_old_release_version_format() {
+        assert_eq!(parse_served_version("0.4.10"), None);
+        assert_eq!(parse_served_version("0.4.10+a1c9f02"), None);
     }
 
     /// The one that matters: Caddy's SPA fallback answers a missing
@@ -3909,14 +3960,25 @@ mod tests {
     }
 
     #[test]
-    fn served_version_rejects_anything_not_starting_with_a_digit() {
+    fn served_version_rejects_anything_that_is_not_plain_hex() {
         assert_eq!(parse_served_version("v0.4.10"), None);
         assert_eq!(parse_served_version("not a version"), None);
+        // Hex-ish but with separators, which the hash never has.
+        assert_eq!(parse_served_version("a1b2-c3d4-e5f6"), None);
     }
 
     #[test]
-    fn served_version_rejects_an_implausibly_long_body() {
-        assert_eq!(parse_served_version(&"1".repeat(65)), None);
+    fn served_version_rejects_implausible_lengths() {
+        assert_eq!(parse_served_version(&"a".repeat(65)), None);
+        // Too short to be a digest — likelier a truncated read than an id.
+        assert_eq!(parse_served_version("abc"), None);
+    }
+
+    /// The length actually produced by the Dockerfile, so the two cannot
+    /// drift into disagreeing about what a valid id looks like.
+    #[test]
+    fn served_version_accepts_the_length_the_build_writes() {
+        assert!(parse_served_version("0123456789abcdef").is_some());
     }
 
     #[test]

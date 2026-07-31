@@ -62,23 +62,33 @@ RUN cargo build --release -p server-game -p admin-cli
 # actual IP or domain, with no rebuild needed if that changes.
 RUN cd crates/ui && CARGO_INCREMENTAL=0 TILE_LITE_ELITE_API_BASE_URL="" dx build --platform web --release
 
-# Records which build produced the bundle that ends up in /srv, in exactly
-# the `Major.Minor.Patch[+build]` form the client compiles into itself via
-# `app_version()`. An already-running tab fetches this to decide whether
-# reloading would actually land it on newer code — see `watch_for_new_bundle`
-# in crates/ui/src/app.rs. It has to come from the *web* container rather
-# than /health, because the one moment it matters is the deploy window where
-# the new server is already up and this container is still serving the old
-# bundle; /health would report the new version and send the tab into a
-# reload loop against unchanged code.
+# Identifies the bundle in /srv by its *contents* — a hash of every file dx
+# produced. An already-running tab fetches this to decide whether reloading
+# would land it on different code; see `watch_for_new_bundle` in
+# crates/ui/src/app.rs.
 #
-# Read from `cargo pkgid` rather than hardcoded, so it can't drift from
-# [workspace.package]'s version on the next bump. The `if` mirrors
-# `format_app_version`: an unset *or empty* build id means no `+suffix`,
-# which is what a plain `docker compose build` produces.
-RUN VERSION="$(cargo pkgid -p tile-lite-elite-ui | sed 's/.*[#@]//')" \
-    && if [ -n "$TILE_LITE_ELITE_BUILD_ID" ]; then VERSION="$VERSION+$TILE_LITE_ELITE_BUILD_ID"; fi \
-    && printf '%s' "$VERSION" > target/dx/tile-lite-elite-ui/release/web/public/version.txt
+# Contents rather than a version number, so it changes when the client
+# changes and not otherwise. The workspace version moves on every deploy
+# (deploy.sh bumps the patch), so using it here would reload every open tab
+# after a server-only release — 0.4.16 changed `games.rs` alone and left
+# `crates/ui` untouched, and nobody needed to reload for it. This also keeps
+# the signal off `API_VERSION`, which is a statement about the wire contract
+# and has no business moving because a button was fixed.
+#
+# It has to come from the *web* container rather than /health, because the
+# one moment it matters is the deploy window where the new server is already
+# up and this container still serves the old bundle; /health would report the
+# new version and send the tab into a reload loop against unchanged code.
+#
+# `version.txt` is excluded from its own hash — the shell creates it before
+# `find` runs, so it would otherwise hash an empty file and change the answer.
+# `sort` makes the result independent of directory order.
+RUN BUNDLE_DIR=target/dx/tile-lite-elite-ui/release/web/public \
+    && HASH="$(cd "$BUNDLE_DIR" \
+        && find . -type f ! -name version.txt -exec sha256sum {} + \
+        | sort | sha256sum | cut -c1-16)" \
+    && printf '%s' "$HASH" > "$BUNDLE_DIR/version.txt" \
+    && echo "bundle id: $HASH"
 
 # ---------------------------------------------------------------------------
 

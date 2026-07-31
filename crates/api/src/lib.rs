@@ -55,12 +55,14 @@ use serde::{Deserialize, Serialize};
 // the same release fixes the session being lost on reload, and that fix is
 // *client* code, so open tabs only receive it when something makes them
 // reload.
-// 2.9: the client stops treating a proxy 502/503/504 as "the server is up".
-// Minor: there is a new client build and the old one still runs, so it is
-// an optional update on desktop and an automatic reload on web. Pointedly
-// so — the bug is a tab getting stuck across a deploy, so without the bump
-// the fix could not reach the tabs it was written for. No server change in
-// this one at all.
+// 2.9: no wire change at all — this one is here to *deliver* two client
+// changes to tabs that are already open, because api skew was still the
+// only reload trigger when they were written. The last bump that will ever
+// need to do that: the same release moves client-update delivery onto a
+// hash of the bundle (`/version.txt`), so from here a client-only change
+// moves nothing here and this number goes back to meaning the contract.
+// Carries the 502 fix (a proxy 502 no longer counts as "the server is up")
+// and the switch itself.
 // Despite the name this is a *client* version: it tells a client whether a
 // new build exists and whether the one it is running may carry on. It was
 // named for an assumption that a client update implied an API behaviour
