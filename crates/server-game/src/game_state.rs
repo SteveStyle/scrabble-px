@@ -972,11 +972,18 @@ impl GameSession {
     /// display concern (see `ParticipantState::removed_by_player`), not a
     /// deletion: the game keeps playing for/existing to everyone else, and
     /// still expires normally via the existing 7-day auto-delete regardless
-    /// of who's removed it. Only offered for finished games, matching the
-    /// UI's "Remove" button, which only appears once a game is over.
+    /// of who's removed it. Only offered for games that are over, matching
+    /// the UI's "Remove" button.
+    ///
+    /// "Over" means `Finished` **or** `Aborted`. This used to accept only
+    /// `Finished`, while the games panel offered the button for both — so
+    /// Remove on an aborted game failed with a message contradicting the
+    /// button that had just been clicked. An aborted game is exactly the
+    /// kind you most want out of your list: it has no result and will never
+    /// gain one.
     pub fn remove_for_player(&mut self, player_id: &str) -> Result<(), String> {
-        if self.status != GameStatus::Finished {
-            return Err("Only finished games can be removed".to_string());
+        if !matches!(self.status, GameStatus::Finished | GameStatus::Aborted) {
+            return Err("Only games that are over can be removed".to_string());
         }
         // A seated caller (including a creator who also claimed a seat,
         // e.g. the "vs Engine"/"Play Friend" presets) has their own seat to
@@ -1673,10 +1680,31 @@ mod tests {
     }
 
     #[test]
-    fn remove_for_player_rejects_a_game_that_is_not_finished() {
+    fn remove_for_player_rejects_a_game_that_is_not_over() {
         let mut game = two_human_game(Some("alice"));
         let result = game.remove_for_player("alice");
         assert!(result.is_err());
+    }
+
+    /// The games panel offers "Remove" for aborted games as well as
+    /// finished ones, and this used to reject them — the button was there
+    /// and did nothing but produce an error.
+    #[test]
+    fn remove_for_player_accepts_an_aborted_game() {
+        let mut game = two_human_game(Some("alice"));
+        game.start();
+        game.abort().expect("the creator should be able to abort");
+        assert_eq!(game.status, GameStatus::Aborted);
+
+        game.remove_for_player("alice")
+            .expect("an aborted game should be removable");
+        assert!(
+            game.participants
+                .iter()
+                .find(|p| p.player_id.as_deref() == Some("alice"))
+                .expect("alice is seated")
+                .removed_by_player
+        );
     }
 
     #[test]

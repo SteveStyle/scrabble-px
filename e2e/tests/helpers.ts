@@ -61,3 +61,8 @@ export async function expectSignedIn(page: Page) {
   await expect(page.getByRole('button', { name: 'Log out' })).toBeVisible();
   await expect(page.locator('.auth-panel')).toHaveCount(0);
 }
+
+// The blocking auth modal is what a signed-out visitor gets.
+export async function expectSignedOut(page: Page) {
+  await expect(page.locator('.auth-panel')).toBeVisible();
+}

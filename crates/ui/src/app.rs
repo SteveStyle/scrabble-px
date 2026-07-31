@@ -200,9 +200,8 @@ pub fn RootApp() -> Element {
                 return;
             }
 
-            let stored = crate::local_storage::load();
             let mut auth_token: Option<String> = None;
-            if let Some(token) = stored.session_token.clone() {
+            if let Some(token) = crate::local_storage::load_token() {
                 match validate_session(&server_url, &token).await {
                     Ok(player) => {
                         session.set(Some(api::PlayerSessionDto {
@@ -214,12 +213,9 @@ pub fn RootApp() -> Element {
                         auth_token = Some(token);
                     }
                     Err(_) => {
-                        // Stored token is no longer valid — drop it, but
-                        // keep any remembered display name.
-                        crate::local_storage::save(&crate::local_storage::StoredAuth {
-                            remembered_name: stored.remembered_name.clone(),
-                            session_token: None,
-                        });
+                        // Stored token is no longer valid — drop it from
+                        // both stores, but keep any remembered display name.
+                        crate::local_storage::clear_tokens();
                     }
                 }
             }
@@ -361,11 +357,7 @@ pub fn RootApp() -> Element {
                         // The session died server-side (idle or absolute
                         // expiry) — drop to the login modal cleanly instead
                         // of failing the poll silently forever.
-                        let stored = crate::local_storage::load();
-                        crate::local_storage::save(&crate::local_storage::StoredAuth {
-                            remembered_name: stored.remembered_name,
-                            session_token: None,
-                        });
+                        crate::local_storage::clear_tokens();
                         session.set(None);
                     }
                     Err(_) => {}
@@ -556,19 +548,15 @@ pub fn RootApp() -> Element {
                     session: session().clone(),
                     invite_inviter_name: invite_preview().map(|preview| preview.inviting_player_display_name),
                     on_authenticated: move |(new_session, remember, stay): (api::PlayerSessionDto, bool, bool)| {
-                        let stored = crate::local_storage::StoredAuth {
-                            remembered_name: if remember {
+                        crate::local_storage::save_authenticated(
+                            if remember {
                                 Some(new_session.display_name.clone())
                             } else {
                                 None
                             },
-                            session_token: if stay {
-                                Some(new_session.session_token.clone())
-                            } else {
-                                None
-                            },
-                        };
-                        crate::local_storage::save(&stored);
+                            &new_session.session_token,
+                            stay,
+                        );
                         let token = new_session.session_token.clone();
                         session.set(Some(new_session));
 
@@ -607,11 +595,7 @@ pub fn RootApp() -> Element {
                                 logout(&server_url, &token).await;
                             });
                         }
-                        let stored = crate::local_storage::load();
-                        crate::local_storage::save(&crate::local_storage::StoredAuth {
-                            remembered_name: stored.remembered_name,
-                            session_token: None,
-                        });
+                        crate::local_storage::clear_tokens();
                         session.set(None);
                         // Everything behind the login modal belongs to the
                         // account that just logged out — leaving it in

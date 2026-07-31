@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { register, logIn, logOut, expectSignedIn, uniqueName } from './helpers';
+import { register, logIn, logOut, expectSignedIn, expectSignedOut, uniqueName } from './helpers';
 
 // A signed-out user is shown a blocking auth modal; everything else needs a
 // signed-in player. Each test registers its own e2e-* player so tests stay
@@ -23,6 +23,44 @@ test('"Stay logged in" survives a reload', async ({ page }) => {
   await page.reload();
   // No re-login prompt: the persisted token is re-validated on boot.
   await expectSignedIn(page);
+});
+
+// The two storage lifetimes, pinned from both sides. "Stay logged in"
+// chooses between localStorage (survives the browser closing) and
+// sessionStorage (survives a reload, dies with the tab) — so a test that
+// only checked "still signed in after reload" would pass just as well if
+// the token were wrongly made permanent. The new-tab cases are what tell
+// the two stores apart.
+test('a reload keeps you signed in even without "Stay logged in"', async ({ page }) => {
+  await register(page, uniqueName('reload'), { stayLoggedIn: false });
+  await page.reload();
+  // Regression: the token used to live only in memory when the box was
+  // unchecked, so any refresh — including the client's own auto-reload on
+  // api skew after a deploy — dropped you back to the login screen
+  // mid-game.
+  await expectSignedIn(page);
+});
+
+test('without "Stay logged in", a new tab starts signed out', async ({ context, page }) => {
+  await register(page, uniqueName('newtab'), { stayLoggedIn: false });
+  await expectSignedIn(page);
+
+  // Same browser context, so localStorage is shared but sessionStorage is
+  // not. Signed out here is what proves the token went to the per-tab
+  // store rather than the persistent one.
+  const other = await context.newPage();
+  await other.goto('/');
+  await expectSignedOut(other);
+  await other.close();
+});
+
+test('with "Stay logged in", a new tab is already signed in', async ({ context, page }) => {
+  await register(page, uniqueName('newtabstay'), { stayLoggedIn: true });
+
+  const other = await context.newPage();
+  await other.goto('/');
+  await expectSignedIn(other);
+  await other.close();
 });
 
 test('Play Greedy Bot starts a game and renders the board', async ({ page }) => {
