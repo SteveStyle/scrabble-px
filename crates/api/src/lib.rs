@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 // they'd never heard of. The rule to apply is "can a client observe
 // something new?", not "did a type change" — a new value for an existing
 // field is new functionality.
-pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 7 };
+pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 8 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApiVersion {
