@@ -42,6 +42,19 @@ use serde::{Deserialize, Serialize};
 // they'd never heard of. The rule to apply is "can a client observe
 // something new?", not "did a type change" — a new value for an existing
 // field is new functionality.
+// 2.7: `HealthDto` gains `schema_version`, the highest migration applied to
+// the server's database. Purely additive — an older client deserializing
+// this ignores the field — and it exists for `scripts/deploy.sh`, which
+// compares it against the target commit's migrations and refuses to ship an
+// image the database has already moved past.
+// 2.8: removing an *aborted* game now succeeds where it used to be
+// rejected; only `Finished` was accepted before, while the games panel
+// offered the button for both. A new accepted value rather than a new type,
+// so minor by the 2.6 test above — nothing changed shape, but a client can
+// do something it could not before. Also worth the skew on its own account:
+// the same release fixes the session being lost on reload, and that fix is
+// *client* code, so open tabs only receive it when something makes them
+// reload.
 pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 8 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
