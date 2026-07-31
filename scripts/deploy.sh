@@ -74,38 +74,16 @@ echo "==> HEAD ($HEAD_SHA) confirmed pushed to $UPSTREAM"
 # Refuses to ship a commit CI hasn't passed. Until this existed, CI was
 # only a signal running alongside the release rather than a gate on it: a
 # red run stopped nothing, and the only real check was whoever remembered
-# to run the suites by hand. Asking GitHub about *this* commit is both
-# stricter and less work — CI also runs the wasm build and the Playwright
-# e2e suite, which a local `cargo test` doesn't.
+# to run the suites by hand.
 #
-# Needs `gh` authenticated (`gh auth login`). Set DEPLOY_SKIP_CI=1 to ship
-# without it — for a genuine emergency where GitHub itself is the problem,
-# not as a way around a failing test.
+# Delegated to ci-status.sh so that the check made by hand at step 1.c and
+# the one enforced here are the same code, and cannot answer differently.
 if [[ "${DEPLOY_SKIP_CI:-}" == "1" ]]; then
   echo "==> WARNING: skipping the CI gate (DEPLOY_SKIP_CI=1)"
-elif ! command -v gh > /dev/null; then
-  echo "error: 'gh' is not installed, so CI status for $HEAD_SHA can't be checked. Install it, or set DEPLOY_SKIP_CI=1 to deploy without the gate." >&2
+elif ! "$REPO_DIR/scripts/ci-status.sh" "$HEAD_FULL_SHA"; then
+  echo "error: refusing to deploy — see above. Fix CI rather than deploying past it," >&2
+  echo "       or set DEPLOY_SKIP_CI=1 if GitHub itself is the problem." >&2
   exit 1
-else
-  echo "==> Checking CI for $HEAD_SHA"
-  CI_JSON="$(gh run list --commit "$HEAD_FULL_SHA" --workflow CI --limit 1 --json status,conclusion,url 2>/dev/null || true)"
-  CI_STATUS="$(printf '%s' "$CI_JSON" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)"
-  CI_CONCLUSION="$(printf '%s' "$CI_JSON" | grep -o '"conclusion":"[^"]*"' | cut -d'"' -f4)"
-  CI_URL="$(printf '%s' "$CI_JSON" | grep -o '"url":"[^"]*"' | cut -d'"' -f4)"
-
-  if [[ -z "$CI_STATUS" ]]; then
-    echo "error: no CI run found for $HEAD_SHA — has the push landed? GitHub may not have started it yet; wait a moment and retry." >&2
-    exit 1
-  elif [[ "$CI_STATUS" != "completed" ]]; then
-    echo "error: CI for $HEAD_SHA is still $CI_STATUS. Wait for it to finish: gh run watch" >&2
-    [[ -n "$CI_URL" ]] && echo "       $CI_URL" >&2
-    exit 1
-  elif [[ "$CI_CONCLUSION" != "success" ]]; then
-    echo "error: CI for $HEAD_SHA concluded '$CI_CONCLUSION', not success — fix it rather than deploying past it." >&2
-    [[ -n "$CI_URL" ]] && echo "       $CI_URL" >&2
-    exit 1
-  fi
-  echo "==> CI passed for $HEAD_SHA"
 fi
 
 # Refuses to ship a commit that was never actually exercised in staging —
