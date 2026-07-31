@@ -7068,3 +7068,119 @@ async fn a_player_can_resign_on_another_players_turn() {
     assert_eq!(updated.winner_seat, Some(0));
     assert_eq!(updated.moves.last().unwrap().move_type, "resign");
 }
+
+/// One event per state change, and every event complete.
+///
+/// Both halves matter together. `run_engine_turns` and its calling handler
+/// each used to broadcast the state after an engine turn, at the *same*
+/// `version` — and since the client applies an update only on a strictly
+/// greater version (`should_apply_update`), the second was always
+/// discarded. That was invisible while the two payloads agreed, and a
+/// silent bug the moment they didn't: the loop sent a bare `to_dto()`, so
+/// the event the client actually kept had `current_rating` unset (opponent
+/// ratings blanked out of the panel after every engine move) and, at the
+/// end of a game, no rating change either.
+///
+/// Asserting "no two events share a version" is what stops that class of
+/// bug returning, rather than fixing the fields one at a time as each is
+/// noticed.
+#[tokio::test]
+async fn no_two_events_share_a_version_and_each_carries_the_ratings() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    // Subscribed before anything is triggered: these are broadcast, so a
+    // later subscriber misses them entirely.
+    let mut events = state.events.subscribe();
+    let app = build_router(state.clone());
+
+    let alice = register_player(app.clone(), "Alice").await;
+    let created: GameStateDto = read_json(
+        send_json_auth(
+            app.clone(),
+            Method::POST,
+            "/games",
+            Some(&alice.session_token),
+            &CreateGameRequest {
+                seats: vec![
+                    CreateSeatRequest {
+                        kind: SeatKind::Human,
+                        display_name: "Alice".to_string(),
+                        engine_id: None,
+                        claim: Some(SeatClaim::Creator),
+                    },
+                    CreateSeatRequest {
+                        kind: SeatKind::Engine,
+                        display_name: "Greedy".to_string(),
+                        engine_id: Some("greedy-v1".to_string()),
+                        claim: None,
+                    },
+                ],
+                seed: Some(77),
+                variant: None,
+                language: None,
+                board_layout: None,
+                move_time_limit_seconds: None,
+            },
+        )
+        .await,
+    )
+    .await;
+
+    let _ = send_json_auth(
+        app.clone(),
+        Method::POST,
+        &format!("/games/{}/start", created.id),
+        Some(&alice.session_token),
+        &StartGameRequest::default(),
+    )
+    .await;
+    // Passing hands the turn to the engine, which is what makes the loop
+    // and the handler both want to announce the result.
+    let _ = send_json_auth(
+        app.clone(),
+        Method::POST,
+        &format!("/games/{}/actions", created.id),
+        Some(&alice.session_token),
+        &GameActionRequest {
+            seat_number: 0,
+            action: PlayerActionDto::Pass,
+        },
+    )
+    .await;
+
+    let mut versions: Vec<i64> = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        // Exhaustive on purpose, with no catch-all: a new event variant
+        // should make this fail to compile so someone decides whether it
+        // belongs under the same one-per-version rule.
+        let game = match event {
+            GameEventDto::StateUpdated { game }
+            | GameEventDto::GameStarted { game }
+            | GameEventDto::GameFinished { game } => game,
+        };
+        assert!(
+            !versions.contains(&game.version),
+            "two events broadcast version {}; the client keeps only the first, \
+             so the second is dead weight at best and a lost update at worst. \
+             Versions seen: {versions:?}",
+            game.version,
+        );
+        versions.push(game.version);
+
+        for participant in &game.participants {
+            assert!(
+                participant.current_rating.is_some(),
+                "seat {} has no current_rating on the event at version {} — a bare \
+                 to_dto() was broadcast without stats::attach_current_ratings, and \
+                 this is the event the client keeps",
+                participant.seat_number,
+                game.version,
+            );
+        }
+    }
+
+    assert!(
+        versions.len() >= 2,
+        "expected at least a start and an engine reply, saw {versions:?}"
+    );
+}

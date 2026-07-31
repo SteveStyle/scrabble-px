@@ -362,7 +362,7 @@ pub(crate) async fn start_game(
     // comment for why holding the lock across the whole multi-turn loop
     // would starve a WebSocket connection's own read lock for the entire
     // duration of an all-engine game.
-    run_engine_turns(&state, &game_id).await?;
+    let engine_turns = run_engine_turns(&state, &game_id).await?;
 
     let (mut dto, access) = {
         let mut games = state.games.write().await;
@@ -400,9 +400,16 @@ pub(crate) async fn start_game(
     // pre-redacted broadcast would mean every other connection's own
     // redaction step operates on already-stripped data (e.g. losing their
     // own rack because *this* caller's tier didn't include it).
-    let _ = state
-        .events
-        .send(GameEventDto::GameStarted { game: dto.clone() });
+    // Skipped when an engine already advanced: `run_engine_turns` has
+    // broadcast the resulting state, and this would repeat it at the same
+    // `version` only to be discarded by the client. The loop's events carry
+    // the started game just as this one would — an all-engine game simply
+    // announces itself through those instead.
+    if !engine_turns.announced {
+        let _ = state
+            .events
+            .send(GameEventDto::GameStarted { game: dto.clone() });
+    }
     Ok(Json(redact_game_state(dto, &access)))
 }
 
@@ -467,7 +474,7 @@ pub(crate) async fn submit_action(
     // Deliberately released before this — see `run_engine_turns`'s own doc
     // comment for why holding the lock across the whole multi-turn loop
     // would starve a WebSocket connection's own read lock.
-    run_engine_turns(&state, &game_id).await?;
+    let engine_turns = run_engine_turns(&state, &game_id).await?;
 
     let (mut dto, access) = {
         let mut games = state.games.write().await;
@@ -494,13 +501,18 @@ pub(crate) async fn submit_action(
 
     // Broadcast the unredacted dto — per-connection redaction happens in
     // `stream_events`, not here (see the identical note in `start_game`).
-    let event = if dto.status == api::GameStatus::Finished {
-        tracing::info!(game_id = %dto.id, winner_seat = ?dto.winner_seat, "game finished");
-        GameEventDto::GameFinished { game: dto.clone() }
-    } else {
-        GameEventDto::StateUpdated { game: dto.clone() }
-    };
-    let _ = state.events.send(event);
+    // Only when no engine advanced. Otherwise `run_engine_turns` has
+    // already announced this exact state, and repeating it at the same
+    // `version` is a message the client is guaranteed to drop.
+    if !engine_turns.announced {
+        let event = if dto.status == api::GameStatus::Finished {
+            tracing::info!(game_id = %dto.id, winner_seat = ?dto.winner_seat, "game finished");
+            GameEventDto::GameFinished { game: dto.clone() }
+        } else {
+            GameEventDto::StateUpdated { game: dto.clone() }
+        };
+        let _ = state.events.send(event);
+    }
 
     Ok(Json(redact_game_state(dto, &access)))
 }
@@ -731,7 +743,7 @@ pub(crate) async fn suggest_move(
     // Deliberately released before this — see `run_engine_turns`'s own doc
     // comment for why holding the lock across the whole multi-turn loop
     // would starve a WebSocket connection's own read lock.
-    run_engine_turns(&state, &game_id).await?;
+    let engine_turns = run_engine_turns(&state, &game_id).await?;
 
     let (mut dto, access) = {
         let mut games = state.games.write().await;
@@ -758,13 +770,18 @@ pub(crate) async fn suggest_move(
 
     // Broadcast the unredacted dto — per-connection redaction happens in
     // `stream_events`, not here (see the identical note in `start_game`).
-    let event = if dto.status == api::GameStatus::Finished {
-        tracing::info!(game_id = %dto.id, winner_seat = ?dto.winner_seat, "game finished");
-        GameEventDto::GameFinished { game: dto.clone() }
-    } else {
-        GameEventDto::StateUpdated { game: dto.clone() }
-    };
-    let _ = state.events.send(event);
+    // Only when no engine advanced. Otherwise `run_engine_turns` has
+    // already announced this exact state, and repeating it at the same
+    // `version` is a message the client is guaranteed to drop.
+    if !engine_turns.announced {
+        let event = if dto.status == api::GameStatus::Finished {
+            tracing::info!(game_id = %dto.id, winner_seat = ?dto.winner_seat, "game finished");
+            GameEventDto::GameFinished { game: dto.clone() }
+        } else {
+            GameEventDto::StateUpdated { game: dto.clone() }
+        };
+        let _ = state.events.send(event);
+    }
 
     Ok(Json(redact_game_state(dto, &access)))
 }
@@ -815,14 +832,33 @@ pub(crate) const ENGINE_TURN_BROADCAST_DELAY: Duration = Duration::from_millis(1
 /// pacing gap below, so releasing the lock between turns (before that sleep
 /// and before the broadcast send, both lock-free) still leaves plenty of
 /// room for a pending reader to get in.
-pub(crate) async fn run_engine_turns(state: &AppState, game_id: &str) -> Result<(), ApiProblem> {
+/// What `run_engine_turns` did, so its caller knows whether the current
+/// state has already been announced.
+///
+/// Without this both the loop and its caller broadcast the same state, at
+/// the same `version` — and since the client applies only a strictly
+/// greater version, the caller's event was always discarded. Harmless while
+/// the two payloads matched, and a silent bug the moment they didn't: it is
+/// how both the missing rating change and the blanked-out `current_rating`
+/// reached the UI.
+pub(crate) struct EngineTurnsOutcome {
+    /// An engine advanced, so the loop has already broadcast the resulting
+    /// state. The caller should not broadcast it again.
+    pub(crate) announced: bool,
+}
+
+pub(crate) async fn run_engine_turns(
+    state: &AppState,
+    game_id: &str,
+) -> Result<EngineTurnsOutcome, ApiProblem> {
+    let mut announced = false;
     for _ in 0..MAX_ENGINE_TURNS_PER_TRIGGER {
         let outcome = {
             let mut games = state.games.write().await;
             let Some(game) = games.get_mut(game_id) else {
                 // Game vanished from under us (e.g. deleted concurrently) —
                 // nothing left to advance.
-                return Ok(());
+                return Ok(EngineTurnsOutcome { announced });
             };
             let advanced = game
                 .maybe_run_engine_turn(&state.engines, ENGINE_TURN_TIMEOUT)
@@ -837,6 +873,18 @@ pub(crate) async fn run_engine_turns(state: &AppState, game_id: &str) -> Result<
         let Some((mut dto, finished)) = outcome else {
             break;
         };
+
+        // Every broadcast from here must be a *complete* dto, because it is
+        // the one the client keeps: the calling handler re-broadcasts the
+        // same state afterwards, but at the same `version`, and the client
+        // applies an update only on a strictly greater one
+        // (`should_apply_update`). A field left unattached here is therefore
+        // a field the client never sees. `current_rating` was exactly that
+        // — `to_dto()` leaves it `None`, so opponent ratings blanked out of
+        // the panel after every engine move.
+        stats::attach_current_ratings(&state.db, &mut dto)
+            .await
+            .map_err(ApiProblem::from_sqlx)?;
 
         // Persist *before* announcing the finish, so the event carries the
         // rating change. `settle_ratings` runs inside `save_game` (gated on
@@ -877,10 +925,11 @@ pub(crate) async fn run_engine_turns(state: &AppState, game_id: &str) -> Result<
             GameEventDto::StateUpdated { game: dto }
         };
         let _ = state.events.send(event);
+        announced = true;
         if finished {
             break;
         }
         tokio::time::sleep(ENGINE_TURN_BROADCAST_DELAY).await;
     }
-    Ok(())
+    Ok(EngineTurnsOutcome { announced })
 }
