@@ -19,10 +19,9 @@ flowchart TB
     DEV -->|"1.b · $ git commit"| LG
     LG -->|"1.c · $ git push"| REPO
     REPO -->|"1.c · CI runs (automatic)"| ACT
-    LG -->|"1.a · $ services.sh restart"| DEV
+    LG -->|"1.a · $ cargo build<br/>$ services.sh restart<br/>$ cargo test"| DEV
     LG -->|"3 · $ deploy-staging.sh"| STG
     LG -->|"6 · $ deploy.sh"| PROD
-    DEV -->|"1.a · unit test"| DEV
     STG -.->|"4 · $ curl /health"| STG
     STG -->|"5 · user test (by hand)"| STG
     PROD -->|"2 · $ deploy-staging.sh at prod"| STG
@@ -39,6 +38,6 @@ flowchart TB
     %% declaration order counting from 0, including the two invisible ~~~
     %% links — so recount these whenever an edge is added or moved, and
     %% check the render. Adding the user-test edge silently shifted them
-    %% from 11,12 to 12,13 once already.
-    linkStyle 12,13 stroke:#b06a2c,color:#8a4b18
+    %% from 11,12 to 12,13 and back again once already.
+    linkStyle 11,12 stroke:#b06a2c,color:#8a4b18
     style GH fill:#fdf9f1,stroke:#96763f,color:#3a2c12
