@@ -195,7 +195,7 @@ echo "==> Tagged $DEPLOY_TAG"
 
 # The working tree moves one patch ahead of what was just shipped, so no
 # later commit is ever built carrying a version number already live. This
-# used to be a step you had to remember (docs/3.3, step 11) — but it is
+# used to be a step you had to remember (docs/3.3, an explicit final step) — but it is
 # only ever correct immediately after a successful deploy, which is exactly
 # here, and nowhere else.
 DEPLOYED_VERSION="$(grep -m1 '^version' "$REPO_DIR/Cargo.toml" | cut -d'"' -f2)"

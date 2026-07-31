@@ -16,23 +16,29 @@ flowchart TB
 
     DEV ~~~ STG
     STG ~~~ PROD
-    DEV -->|"1 · $ git commit"| LG
-    LG -->|"1 · $ git push"| REPO
-    REPO -->|"3 · CI runs (automatic)"| ACT
-    LG -->|"2 · $ services.sh restart"| DEV
-    LG -->|"6 · $ deploy-staging.sh"| STG
-    LG -->|"8 · $ deploy.sh"| PROD
-    DEV -->|"4 · user test (by hand)"| DEV
-    STG -.->|"7 · $ curl /health"| STG
-    PROD -->|"5 · $ deploy-staging.sh at prod"| STG
-    ACT -.->|"8 · gate: CI green"| PROD
-    STG -.->|"8 · gate: same commit"| PROD
-    PROD -->|"8 · tag + version bump (automatic)"| REPO
-    PROD -.->|"9 · $ deploy-staging.sh verify"| STG
+    DEV -->|"1.b · $ git commit"| LG
+    LG -->|"1.c · $ git push"| REPO
+    REPO -->|"1.c · CI runs (automatic)"| ACT
+    LG -->|"1.a · $ services.sh restart"| DEV
+    LG -->|"3 · $ deploy-staging.sh"| STG
+    LG -->|"6 · $ deploy.sh"| PROD
+    DEV -->|"1.a · unit test"| DEV
+    STG -.->|"4 · $ curl /health"| STG
+    STG -->|"5 · user test (by hand)"| STG
+    PROD -->|"2 · $ deploy-staging.sh at prod"| STG
+    ACT -.->|"6 · gate: CI green"| PROD
+    STG -.->|"6 · gate: same commit"| PROD
+    PROD -->|"6 · tag + version bump (automatic)"| REPO
+    PROD -.->|"7 · $ deploy-staging.sh verify"| STG
 
     classDef env fill:#e4eff8,stroke:#39698c,color:#12303f
     classDef repo fill:#f7efe0,stroke:#96763f,color:#3a2c12
     class DEV,STG,PROD env
     class LG,REPO,ACT repo
-    linkStyle 11,12 stroke:#b06a2c,color:#8a4b18
+    %% Amber for the two gates. linkStyle takes edge *indices* in
+    %% declaration order counting from 0, including the two invisible ~~~
+    %% links — so recount these whenever an edge is added or moved, and
+    %% check the render. Adding the user-test edge silently shifted them
+    %% from 11,12 to 12,13 once already.
+    linkStyle 12,13 stroke:#b06a2c,color:#8a4b18
     style GH fill:#fdf9f1,stroke:#96763f,color:#3a2c12
