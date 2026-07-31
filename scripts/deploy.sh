@@ -49,6 +49,9 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 HEAD_SHA="$(git rev-parse --short HEAD)"
+# `gh run list --commit` matches on the full hash only — a short one silently
+# returns no runs, which would make the CI gate below fail every deploy.
+HEAD_FULL_SHA="$(git rev-parse HEAD)"
 
 # Refuses to ship a commit that only exists on this machine — if this
 # machine were lost before anyone/anything else had a copy, "what's
@@ -67,6 +70,43 @@ if ! git merge-base --is-ancestor HEAD "$UPSTREAM"; then
   exit 1
 fi
 echo "==> HEAD ($HEAD_SHA) confirmed pushed to $UPSTREAM"
+
+# Refuses to ship a commit CI hasn't passed. Until this existed, CI was
+# only a signal running alongside the release rather than a gate on it: a
+# red run stopped nothing, and the only real check was whoever remembered
+# to run the suites by hand. Asking GitHub about *this* commit is both
+# stricter and less work — CI also runs the wasm build and the Playwright
+# e2e suite, which a local `cargo test` doesn't.
+#
+# Needs `gh` authenticated (`gh auth login`). Set DEPLOY_SKIP_CI=1 to ship
+# without it — for a genuine emergency where GitHub itself is the problem,
+# not as a way around a failing test.
+if [[ "${DEPLOY_SKIP_CI:-}" == "1" ]]; then
+  echo "==> WARNING: skipping the CI gate (DEPLOY_SKIP_CI=1)"
+elif ! command -v gh > /dev/null; then
+  echo "error: 'gh' is not installed, so CI status for $HEAD_SHA can't be checked. Install it, or set DEPLOY_SKIP_CI=1 to deploy without the gate." >&2
+  exit 1
+else
+  echo "==> Checking CI for $HEAD_SHA"
+  CI_JSON="$(gh run list --commit "$HEAD_FULL_SHA" --workflow CI --limit 1 --json status,conclusion,url 2>/dev/null || true)"
+  CI_STATUS="$(printf '%s' "$CI_JSON" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)"
+  CI_CONCLUSION="$(printf '%s' "$CI_JSON" | grep -o '"conclusion":"[^"]*"' | cut -d'"' -f4)"
+  CI_URL="$(printf '%s' "$CI_JSON" | grep -o '"url":"[^"]*"' | cut -d'"' -f4)"
+
+  if [[ -z "$CI_STATUS" ]]; then
+    echo "error: no CI run found for $HEAD_SHA — has the push landed? GitHub may not have started it yet; wait a moment and retry." >&2
+    exit 1
+  elif [[ "$CI_STATUS" != "completed" ]]; then
+    echo "error: CI for $HEAD_SHA is still $CI_STATUS. Wait for it to finish: gh run watch" >&2
+    [[ -n "$CI_URL" ]] && echo "       $CI_URL" >&2
+    exit 1
+  elif [[ "$CI_CONCLUSION" != "success" ]]; then
+    echo "error: CI for $HEAD_SHA concluded '$CI_CONCLUSION', not success — fix it rather than deploying past it." >&2
+    [[ -n "$CI_URL" ]] && echo "       $CI_URL" >&2
+    exit 1
+  fi
+  echo "==> CI passed for $HEAD_SHA"
+fi
 
 # Refuses to ship a commit that was never actually exercised in staging —
 # a passing `cargo test` only proves the code compiles and unit-tests
@@ -130,5 +170,28 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "
     echo \"alias sa='docker compose -f ~/$DEPLOY_REMOTE_DIR/docker-compose.yml exec server tile-lite-elite-admin'\" >> ~/.bashrc \
         || echo \"    (warning: could not set up the 'sa' alias for tile-lite-elite-admin)\"
 "
+
+# The working tree moves one patch ahead of what was just shipped, so no
+# later commit is ever built carrying a version number already live. This
+# used to be a step you had to remember (docs/3.3, step 11) — but it is
+# only ever correct immediately after a successful deploy, which is exactly
+# here, and nowhere else.
+DEPLOYED_VERSION="$(grep -m1 '^version' "$REPO_DIR/Cargo.toml" | cut -d'"' -f2)"
+NEXT_VERSION="$(printf '%s' "$DEPLOYED_VERSION" | awk -F. '{printf "%s.%s.%d", $1, $2, $3 + 1}')"
+
+if [[ "${DEPLOY_SKIP_BUMP:-}" == "1" ]]; then
+  echo "==> Skipping the version bump (DEPLOY_SKIP_BUMP=1) — production is on $DEPLOYED_VERSION"
+else
+  echo "==> Bumping the working tree to $NEXT_VERSION (production now holds $DEPLOYED_VERSION)"
+  sed -i "0,/^version = \"$DEPLOYED_VERSION\"/s//version = \"$NEXT_VERSION\"/" "$REPO_DIR/Cargo.toml"
+  # Refreshes Cargo.lock's workspace versions so the bump commit is complete.
+  ( cd "$REPO_DIR" && cargo check --workspace --quiet > /dev/null 2>&1 || true )
+  git -C "$REPO_DIR" add Cargo.toml Cargo.lock
+  git -C "$REPO_DIR" commit --quiet \
+    -m "app $NEXT_VERSION api $(grep -m1 'API_VERSION: ApiVersion' "$REPO_DIR/crates/api/src/lib.rs" | grep -o 'major: [0-9]*, minor: [0-9]*' | sed 's/major: //; s/, minor: /./'): bump dev version following production release" \
+    -m "Production now runs $DEPLOYED_VERSION+$HEAD_SHA."
+  git -C "$REPO_DIR" push --quiet origin HEAD
+  echo "    committed and pushed"
+fi
 
 echo "==> Done — https://$DEPLOY_HOST.sslip.io (or your configured hostname)"
