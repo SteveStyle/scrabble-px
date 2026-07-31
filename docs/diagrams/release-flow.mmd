@@ -30,4 +30,8 @@ flowchart TB
     PROD -->|"8 · tag + version bump"| REPO
     PROD -.->|"9 · deploy-staging.sh verify"| STG
 
-    style GH fill:#f7f7ff,stroke:#9370DB
+    classDef env fill:#e4eff8,stroke:#39698c,color:#12303f
+    classDef repo fill:#f7efe0,stroke:#96763f,color:#3a2c12
+    class DEV,STG,PROD env
+    class LG,REPO,ACT repo
+    style GH fill:#fdf9f1,stroke:#96763f,color:#3a2c12

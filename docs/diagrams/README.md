@@ -8,6 +8,12 @@ npx -y @mermaid-js/mermaid-cli -i docs/diagrams/release-flow.mmd \
   -o docs/diagrams/release-flow.svg -c docs/diagrams/mermaid-config.json -b white
 ```
 
+Colour carries meaning, so keep it consistent across diagrams: **blue for
+things that run code** (environments), **sand for things that store it**
+(repositories). Both are defined as `classDef env` / `classDef repo` in the
+source rather than per-node styles, so a new box joins a category rather
+than picking its own colour.
+
 Two things about `mermaid-config.json` that are not incidental:
 
 - **`htmlLabels: false`.** Mermaid renders labels as `<foreignObject>` by
