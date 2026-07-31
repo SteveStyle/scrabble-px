@@ -2031,19 +2031,27 @@ async fn load_game_by_id(
 /// attempt.
 #[cfg(not(target_arch = "wasm32"))]
 async fn check_server_reachable(server_url: &str) -> bool {
+    // `.is_ok()` would accept a 502: the request succeeded, it just carried
+    // a failure status. That made the recovery poll declare the server back
+    // on its first proxy error, flip `IS_ONLINE` true and stop retrying —
+    // the second half of the stuck-tab bug.
     reqwest::Client::new()
         .get(format!("{server_url}/health"))
         .send()
         .await
-        .is_ok()
+        .map(|response| response.status().is_success())
+        .unwrap_or(false)
 }
 
 #[cfg(target_arch = "wasm32")]
 async fn check_server_reachable(server_url: &str) -> bool {
+    // See the native twin above: a 502 is an `Ok` response, so this has to
+    // look at the status, not merely at whether a response arrived.
     Request::get(&format!("{server_url}/health"))
         .send()
         .await
-        .is_ok()
+        .map(|response| response.ok())
+        .unwrap_or(false)
 }
 
 /// Result of comparing this client's compiled-in `api::API_VERSION`
@@ -2656,6 +2664,24 @@ const UNREACHABLE_MESSAGE: &str = "Can't reach the server.";
 /// Marks the backend unreachable. Called only at the point where a request
 /// never got a response — a genuine connection failure, not an HTTP error
 /// status. Returns `UNREACHABLE_MESSAGE` for convenience at call sites.
+/// Whether an HTTP status means the *app server* is down, as opposed to the
+/// request being wrong.
+///
+/// `web` (Caddy) and `server` are separate containers, so a deploy stops the
+/// server while Caddy carries on answering — and the client gets a real
+/// HTTP response carrying 502. Counting that as "the server is talking to
+/// us" is what left a tab open across a deploy stuck on the error forever:
+/// `IS_ONLINE` stayed true, and the reconnect loop only runs while it is
+/// false, so nothing ever retried.
+///
+/// The gateway family only — 502 Bad Gateway, 503 Service Unavailable, 504
+/// Gateway Timeout. A 500 is the server itself failing one request: it is
+/// up, and dropping the whole session into the reconnect loop over that
+/// would be worse than the bug this fixes.
+fn backend_is_unreachable(status: u16) -> bool {
+    (502..=504).contains(&status)
+}
+
 fn mark_offline() -> String {
     *IS_ONLINE.write() = false;
     UNREACHABLE_MESSAGE.to_string()
@@ -2743,6 +2769,9 @@ where
         request = request.header("Authorization", format!("Bearer {token}"));
     }
     let response = request.send().await.map_err(|_| mark_offline())?;
+    if backend_is_unreachable(response.status().as_u16()) {
+        return Err(mark_offline());
+    }
     mark_online();
     if !response.status().is_success() {
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
@@ -2776,6 +2805,9 @@ where
         builder = builder.header("Authorization", &format!("Bearer {token}"));
     }
     let response = builder.send().await.map_err(|_| mark_offline())?;
+    if backend_is_unreachable(response.status()) {
+        return Err(mark_offline());
+    }
     mark_online();
     if !response.ok() {
         if response.status() == 401 {
@@ -2808,6 +2840,9 @@ async fn get_text(url: &str, token: Option<&str>) -> Result<String, String> {
         request = request.header("Authorization", &format!("Bearer {token}"));
     }
     let response = request.send().await.map_err(|_| mark_offline())?;
+    if backend_is_unreachable(response.status()) {
+        return Err(mark_offline());
+    }
     mark_online();
     if !response.ok() {
         return Err(format!(
@@ -2868,6 +2903,9 @@ where
         request = request.header("Authorization", format!("Bearer {token}"));
     }
     let response = request.send().await.map_err(|_| mark_offline())?;
+    if backend_is_unreachable(response.status().as_u16()) {
+        return Err(mark_offline());
+    }
     mark_online();
     if !response.status().is_success() {
         let msg = response
@@ -2896,6 +2934,9 @@ where
         .send()
         .await
         .map_err(|_| mark_offline())?;
+    if backend_is_unreachable(response.status()) {
+        return Err(mark_offline());
+    }
     mark_online();
     if !response.ok() {
         let msg = response
@@ -2921,6 +2962,9 @@ where
         request = request.header("Authorization", format!("Bearer {token}"));
     }
     let response = request.send().await.map_err(|_| mark_offline())?;
+    if backend_is_unreachable(response.status().as_u16()) {
+        return Err(mark_offline());
+    }
     mark_online();
     if !response.status().is_success() {
         let msg = response
@@ -2948,6 +2992,9 @@ where
         .send()
         .await
         .map_err(|_| mark_offline())?;
+    if backend_is_unreachable(response.status()) {
+        return Err(mark_offline());
+    }
     mark_online();
     if !response.ok() {
         let msg = response
@@ -3789,6 +3836,35 @@ fn shuffle_order(order: &mut [usize]) {
 
 #[cfg(test)]
 mod tests {
+
+    /// A tab left open across a deploy used to stick on `HTTP 502` and never
+    /// retry. `web` (Caddy) and `server` are separate containers, so while
+    /// the server restarts Caddy answers with 502 — a real response, which
+    /// the client counted as proof the server was up. `IS_ONLINE` stayed
+    /// true, and the reconnect loop only runs while it is false.
+    #[test]
+    fn the_gateway_family_means_the_server_is_down_not_the_request_wrong() {
+        for status in [502, 503, 504] {
+            assert!(
+                backend_is_unreachable(status),
+                "{status} is the proxy saying it cannot reach the app server, \
+                 so the client should go offline and start retrying"
+            );
+        }
+    }
+
+    /// The other side of the line, which matters just as much: these come
+    /// *from* the server, so it is up. Treating them as unreachable would
+    /// drop a working session into the reconnect loop over one bad request.
+    #[test]
+    fn other_failures_do_not_mean_the_server_is_down() {
+        for status in [200, 400, 401, 403, 404, 409, 422, 500] {
+            assert!(
+                !backend_is_unreachable(status),
+                "{status} is the server itself answering — it is reachable"
+            );
+        }
+    }
     use super::*;
 
     fn sample_tile(id: usize, letter: char) -> RackTileView {

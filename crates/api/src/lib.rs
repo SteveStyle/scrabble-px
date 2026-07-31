@@ -55,7 +55,18 @@ use serde::{Deserialize, Serialize};
 // the same release fixes the session being lost on reload, and that fix is
 // *client* code, so open tabs only receive it when something makes them
 // reload.
-pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 8 };
+// 2.9: the client stops treating a proxy 502/503/504 as "the server is up".
+// Minor: there is a new client build and the old one still runs, so it is
+// an optional update on desktop and an automatic reload on web. Pointedly
+// so — the bug is a tab getting stuck across a deploy, so without the bump
+// the fix could not reach the tabs it was written for. No server change in
+// this one at all.
+// Despite the name this is a *client* version: it tells a client whether a
+// new build exists and whether the one it is running may carry on. It was
+// named for an assumption that a client update implied an API behaviour
+// change, which is not true — 2.9 moves with no server change at all. See
+// docs/3.3's "Decide whether the API version moves".
+pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 9 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApiVersion {
