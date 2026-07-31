@@ -35,6 +35,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let email_from_address = std::env::var("RESEND_FROM_ADDRESS")
         .unwrap_or_else(|_| "Tile Lite Elite <noreply@mail.tileliteelite.com>".to_string());
     let email_config = EmailConfig::new(email_api_key, email_from_address);
+
+    // `--migrate-only`: apply pending migrations and exit, without binding a
+    // port or loading any games.
+    //
+    // Exists so a deploy can find out whether this build's migrations apply
+    // to the live database *before* it becomes the live server. Migrations
+    // otherwise run as a side effect of startup, which fuses two questions
+    // that want separate answers: "does the schema change work" and "does
+    // the new version serve traffic". Fused, a failing migration takes the
+    // site down — the old container has already been replaced and the new
+    // one exits, restarts, exits. Asked separately, the old version is still
+    // running and the deploy can simply stop.
+    //
+    // Safe to run against a database an older server is still using: SQLite
+    // wraps each migration in a transaction, so this either completes or
+    // leaves nothing behind. `scripts/deploy.sh` stops the server first
+    // anyway, so the old code never sees a half-changed schema.
+    if std::env::args().any(|arg| arg == "--migrate-only") {
+        let pool = server_game::persistence::connect(&database_url).await?;
+        let version = server_game::persistence::applied_schema_version(&pool).await?;
+        tracing::info!(
+            database_url,
+            schema_version = version.unwrap_or(0),
+            "migrations applied; exiting (--migrate-only)"
+        );
+        return Ok(());
+    }
+
     let state = AppState::new(&database_url, public_base_url, email_config).await?;
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(bind.parse::<SocketAddr>()?).await?;

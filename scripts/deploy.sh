@@ -21,8 +21,22 @@ set -euo pipefail
 # answerable from source control alone.
 #
 # Refuses to run unless: the commit is on origin/main, CI passed for it,
-# and local staging is currently running it. See the checks below for why
-# each one exists.
+# local staging is currently running it, and production's database hasn't
+# already moved past the schema this build knows. See the checks below.
+#
+# The deploy itself, once those pass:
+#
+#   1. build the images from a clean checkout, transfer them
+#   2. retag the live images :previous, so rollback is a retag not a rebuild
+#   3. stop the server and snapshot the database
+#   4. apply migrations on their own — a failure here aborts with the
+#      previous version still installed, rather than taking the site down
+#   5. start the new version
+#   6. smoke test the public URL for the expected version, and roll back
+#      automatically if it doesn't appear
+#
+# Steps 3-6 are what make a bad release recoverable in seconds instead of a
+# rebuild; `scripts/rollback.sh` does the same thing by hand.
 #
 # Usage:
 #   ./scripts/deploy.sh                # deploy HEAD
@@ -164,8 +178,8 @@ elif (( LIVE_SCHEMA > TARGET_SCHEMA )); then
   echo "" >&2
   echo "       Migrations don't run backwards. To go back past one, restore the" >&2
   echo "       snapshot taken before the deploy that applied it:" >&2
-  echo "         ./scripts/restore-prod-snapshot.sh            # list what's available" >&2
-  echo "         ./scripts/restore-prod-snapshot.sh <name>     # restore it, then deploy" >&2
+  echo "         ./scripts/rollback.sh                  # list snapshots and images" >&2
+  echo "         ./scripts/rollback.sh <snapshot>       # restore it, then deploy" >&2
   exit 1
 else
   echo "==> Schema check passed (database at $LIVE_SCHEMA, $TARGET_SHA knows up to $TARGET_SCHEMA)"
@@ -220,21 +234,48 @@ echo "==> Transferring to $DEPLOY_HOST"
 ssh "${SSH_OPTS[@]}" "$REMOTE" "mkdir -p $DEPLOY_REMOTE_DIR"
 scp "${SSH_OPTS[@]}" "$TMP_TAR" "$WORKTREE_DIR/docker-compose.yml" "$REMOTE:$DEPLOY_REMOTE_DIR/"
 
-echo "==> Loading images, snapshotting the database, and restarting the stack"
 REMOTE_TAR_NAME="$(basename "$TMP_TAR")"
 SNAPSHOT_NAME="pre-$DEPLOYED_VERSION-$TARGET_SHA-$(date -u +%Y%m%dT%H%M%SZ).tgz"
+
+# Rolls production back to the images and database it had a moment ago.
+# Delegated to rollback.sh so the automatic recovery below and the one you
+# would run by hand are the same code, and cannot drift apart. `--yes`
+# because at these call sites the deploy has already failed and the
+# confirmation prompt would only stand between a broken site and its fix.
+roll_back() {
+  echo "==> Rolling back to the pre-deploy state" >&2
+  if "$REPO_DIR/scripts/rollback.sh" --yes "$SNAPSHOT_NAME"; then
+    echo "==> Rolled back. Production is as it was before this deploy." >&2
+  else
+    echo "error: THE ROLLBACK ALSO FAILED. Production may be down." >&2
+    echo "       Snapshot to restore by hand: $SNAPSHOT_NAME" >&2
+    echo "       ssh in and check: docker compose logs --tail=50 server" >&2
+  fi
+}
+
+echo "==> Loading images and snapshotting the database"
 ssh "${SSH_OPTS[@]}" "$REMOTE" "
     set -e
     cd $DEPLOY_REMOTE_DIR
+
+    # Retag the live images as :previous *before* loading the new ones.
+    # Without this the old image becomes dangling the moment :latest moves,
+    # and the prune below destroys it — which is why rolling back used to
+    # mean a full local rebuild and re-transfer for an image that had been
+    # sitting here minutes earlier. Two generations, ~300MB, on a disk
+    # that is 13% used.
+    docker image tag tile-lite-elite-server:latest tile-lite-elite-server:previous 2>/dev/null || true
+    docker image tag tile-lite-elite-web:latest tile-lite-elite-web:previous 2>/dev/null || true
+
     gunzip -c $REMOTE_TAR_NAME | docker load
     rm -f $REMOTE_TAR_NAME
     mkdir -p snapshots
 
     # Stop the server before snapshotting. The database is SQLite in WAL
     # mode, so tarring it live can capture a torn state — a main file
-    # without the WAL entry that completes it. \`up -d\` is about to
-    # recreate this container anyway (new image), so quiescing it here
-    # costs no additional downtime and makes the snapshot trustworthy.
+    # without the WAL entry that completes it. The container is about to be
+    # recreated anyway, so quiescing it here costs no extra downtime and
+    # makes the snapshot trustworthy.
     docker compose stop server > /dev/null
 
     # Uses the app's own image purely because it is already present and is
@@ -246,15 +287,81 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "
         --entrypoint tar \
         tile-lite-elite-server:latest \
         czf /snapshots/$SNAPSHOT_NAME -C /data .
+    echo \"    snapshot: \$(du -h snapshots/$SNAPSHOT_NAME | cut -f1)\"
+"
 
+# Apply the schema change on its own, before the new build becomes the
+# server. Migrations otherwise run as a side effect of startup, which fuses
+# "does the schema change work" with "does the new version serve traffic" —
+# and fused, a failing migration is an outage, because the old container has
+# already been replaced and the new one just exits and restarts. Asked
+# separately, the old code is still installed and the deploy simply stops.
+#
+# `compose run` rather than a bare `docker run` so this gets the service's
+# real volume mount and environment, exactly as the server would.
+#
+# Wrapped in a timeout because the failure mode of an image that *doesn't*
+# understand `--migrate-only` is not an error — the flag is ignored, the
+# server starts normally, and it runs forever. Found the hard way against a
+# staging image built before the flag existed: the command simply never
+# returned. A deploy that hangs is worse than one that fails, so cap it.
+echo "==> Applying migrations (separately, so a failure here is not an outage)"
+if ! ssh "${SSH_OPTS[@]}" "$REMOTE" "
+    set -e
+    cd $DEPLOY_REMOTE_DIR
+    timeout 300 docker compose run --rm --no-deps server --migrate-only
+"; then
+  echo "error: migrations failed (or timed out) — this build's schema change does not apply" >&2
+  echo "       to production's database, or the image ignored --migrate-only and hung." >&2
+  echo "       Nothing was swapped in. SQLite wraps each migration in a transaction," >&2
+  echo "       so the database is unchanged, and the previous version is still installed." >&2
+  echo "       Restoring the snapshot and restarting it now, to be certain." >&2
+  roll_back
+  exit 1
+fi
+
+echo "==> Starting the new version"
+ssh "${SSH_OPTS[@]}" "$REMOTE" "
+    set -e
+    cd $DEPLOY_REMOTE_DIR
     docker compose up -d
+
+    # Prunes the image the *previous* deploy had tagged :previous, which
+    # this deploy's retag just displaced. Keeps exactly two generations.
     docker image prune -f > /dev/null
 
-    # Keep the most recent few. \`ls -t\` is safe here: these names are
-    # generated by this script and contain no whitespace.
+    # \`ls -t\` is safe here: these names are generated by this script and
+    # contain no whitespace.
     ls -1t snapshots/*.tgz 2>/dev/null | tail -n +$((SNAPSHOT_KEEP + 1)) | xargs -r rm -f
-    echo \"    snapshot: \$(du -h snapshots/$SNAPSHOT_NAME | cut -f1) \$(ls -1 snapshots/*.tgz | wc -l) kept\"
+    echo \"    snapshots kept: \$(ls -1 snapshots/*.tgz | wc -l)\"
 "
+
+# The smoke test. End to end on purpose — public DNS, TLS, Caddy, and the
+# server behind it — because that is the path a player takes, and each hop
+# is something a deploy can break without the container itself looking
+# unhealthy. Checking the version rather than just a 200 is what makes it a
+# test of *this* deploy: a stale container still answering would otherwise
+# pass.
+EXPECTED_VERSION="$DEPLOYED_VERSION+$TARGET_SHA"
+echo "==> Smoke testing $PROD_URL (expecting $EXPECTED_VERSION)"
+SMOKE_OK=0
+for _ in $(seq 1 30); do
+  LIVE_HEALTH="$(curl -sf --max-time 5 "$PROD_URL/health" 2>/dev/null || true)"
+  LIVE_APP="$(printf '%s' "$LIVE_HEALTH" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4)"
+  if [[ "$LIVE_APP" == "$EXPECTED_VERSION" ]]; then
+    SMOKE_OK=1
+    echo "    $LIVE_HEALTH"
+    break
+  fi
+  sleep 2
+done
+
+if (( SMOKE_OK == 0 )); then
+  echo "error: production did not come up healthy on $EXPECTED_VERSION within 60s." >&2
+  echo "       last /health: ${LIVE_HEALTH:-<no response>}" >&2
+  roll_back
+  exit 1
+fi
 
 echo "==> Ensuring the 'sa' alias for tile-lite-elite-admin is set up and current on the VM"
 ssh "${SSH_OPTS[@]}" "$REMOTE" "
