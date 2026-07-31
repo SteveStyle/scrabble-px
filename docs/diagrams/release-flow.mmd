@@ -1,0 +1,33 @@
+---
+config:
+  layout: elk
+  elk:
+    nodePlacementStrategy: BRANDES_KOEPF
+---
+flowchart TB
+    DEV["Dev<br/>:3000 server · :8080 web"]
+    STG["Staging<br/>:8081 · docker"]
+    PROD["Production<br/>tileliteelite.com"]
+    LG["local git<br/>working tree + history"]
+    subgraph GH["GitHub"]
+        REPO["repo · main"]
+        ACT["Actions"]
+    end
+
+    DEV ~~~ STG
+    STG ~~~ PROD
+    DEV -->|"1 · git commit"| LG
+    LG -->|"1 · git push"| REPO
+    REPO -->|"3 · CI runs"| ACT
+    LG -->|"2 · services.sh restart"| DEV
+    LG -->|"6 · deploy-staging.sh"| STG
+    LG -->|"8 · deploy.sh"| PROD
+    DEV -->|"4 · user test"| DEV
+    STG -->|"7 · curl /health"| STG
+    PROD -->|"5 · deploy-staging.sh at prod"| STG
+    ACT -.->|"8 · gate: CI green"| PROD
+    STG -.->|"8 · gate: same commit"| PROD
+    PROD -->|"8 · tag + version bump"| REPO
+    PROD -.->|"9 · deploy-staging.sh verify"| STG
+
+    style GH fill:#f7f7ff,stroke:#9370DB
