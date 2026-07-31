@@ -16,22 +16,23 @@ flowchart TB
 
     DEV ~~~ STG
     STG ~~~ PROD
-    DEV -->|"1 · git commit"| LG
-    LG -->|"1 · git push"| REPO
-    REPO -->|"3 · CI runs"| ACT
-    LG -->|"2 · services.sh restart"| DEV
-    LG -->|"6 · deploy-staging.sh"| STG
-    LG -->|"8 · deploy.sh"| PROD
-    DEV -->|"4 · user test"| DEV
-    STG -->|"7 · curl /health"| STG
-    PROD -->|"5 · deploy-staging.sh at prod"| STG
+    DEV -->|"1 · $ git commit"| LG
+    LG -->|"1 · $ git push"| REPO
+    REPO -->|"3 · CI runs (automatic)"| ACT
+    LG -->|"2 · $ services.sh restart"| DEV
+    LG -->|"6 · $ deploy-staging.sh"| STG
+    LG -->|"8 · $ deploy.sh"| PROD
+    DEV -->|"4 · user test (by hand)"| DEV
+    STG -.->|"7 · $ curl /health"| STG
+    PROD -->|"5 · $ deploy-staging.sh at prod"| STG
     ACT -.->|"8 · gate: CI green"| PROD
     STG -.->|"8 · gate: same commit"| PROD
-    PROD -->|"8 · tag + version bump"| REPO
-    PROD -.->|"9 · deploy-staging.sh verify"| STG
+    PROD -->|"8 · tag + version bump (automatic)"| REPO
+    PROD -.->|"9 · $ deploy-staging.sh verify"| STG
 
     classDef env fill:#e4eff8,stroke:#39698c,color:#12303f
     classDef repo fill:#f7efe0,stroke:#96763f,color:#3a2c12
     class DEV,STG,PROD env
     class LG,REPO,ACT repo
+    linkStyle 11,12 stroke:#b06a2c,color:#8a4b18
     style GH fill:#fdf9f1,stroke:#96763f,color:#3a2c12

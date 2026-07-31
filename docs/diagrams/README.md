@@ -10,9 +10,17 @@ npx -y @mermaid-js/mermaid-cli -i docs/diagrams/release-flow.mmd \
 
 Colour carries meaning, so keep it consistent across diagrams: **blue for
 things that run code** (environments), **sand for things that store it**
-(repositories). Both are defined as `classDef env` / `classDef repo` in the
-source rather than per-node styles, so a new box joins a category rather
-than picking its own colour.
+(repositories), **amber for a gate** a script refuses on. Boxes use
+`classDef env` / `classDef repo` rather than per-node styles, so a new box
+joins a category instead of picking its own colour.
+
+Arrow labels carry the same weight as colour, and should: `$` prefixes a
+command you type, `(automatic)` marks something done on your behalf, and
+`gate:` marks a check. That wording is what survives greyscale printing and
+colour blindness — the colour reinforces it rather than being the only
+signal. Note `linkStyle`'s `color:` does not reach the label text while
+`htmlLabels` is false, so an arrow can be recoloured but its label cannot;
+say it in words.
 
 Two things about `mermaid-config.json` that are not incidental:
 
