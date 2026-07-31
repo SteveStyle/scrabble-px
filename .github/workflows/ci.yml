@@ -32,10 +32,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # srm-utils is a git dependency (github.com/SteveStyle/utils), pulled in
-      # only by the archived old-crates. The checkout above doesn't fetch it;
-      # cargo does, during the first build step below. That repo must be
-      # reachable by the runner (it's public) for resolution to succeed.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -83,6 +79,28 @@ jobs:
   # build), so it's gated to main pushes / PRs / manual runs, and only after
   # `check` passes — no point burning a build if the code doesn't lint. See
   # docs/3.3's runbook step 3 and e2e/README.md.
+  stamp:
+    name: commit stamp (app/api versions)
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 — the check reads each commit's own Cargo.toml and
+      # API_VERSION, so it needs history, not just a snapshot.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Checks the commits this push actually added, not all of history:
+      # commits predating the convention would fail it forever. `before` is
+      # all-zeros for a new branch, in which case fall back to HEAD alone.
+      - name: Check the version stamp on each new commit
+        run: |
+          before="${{ github.event.before }}"
+          if [[ -z "$before" || "$before" == "0000000000000000000000000000000000000000" ]]; then
+            ./scripts/check-commit-stamp.sh
+          else
+            ./scripts/check-commit-stamp.sh "$before..${{ github.sha }}"
+          fi
+
   e2e:
     name: e2e (Playwright · staging stack)
     runs-on: ubuntu-latest

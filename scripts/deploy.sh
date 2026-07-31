@@ -171,6 +171,28 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "
         || echo \"    (warning: could not set up the 'sa' alias for tile-lite-elite-admin)\"
 "
 
+# Stamp the deployed commit in git history. A tag rather than a commit: it
+# points at the *thing that shipped*, not at the bump that follows it, and
+# it costs no history. `git tag --list 'prod-*'` is then the deployment log,
+# `git describe --tags` on any commit says which release it came after, and
+# `git log prod-0.4.12..prod-0.4.13` is exactly what a given deploy carried.
+#
+# Annotated (-a), so it records who deployed and when as a real object
+# rather than a bare pointer. Named explicitly against the deployed SHA, so
+# it lands correctly regardless of the bump below.
+DEPLOY_TAG="prod-$(grep -m1 '^version' "$REPO_DIR/Cargo.toml" | cut -d'"' -f2)"
+if git -C "$REPO_DIR" rev-parse -q --verify "refs/tags/$DEPLOY_TAG" > /dev/null; then
+  # Same version deployed twice — a redeploy, or a bump that didn't happen.
+  # Keep both rather than moving the tag: a force-moved tag loses the record
+  # of the earlier deploy, which is the one thing this exists to keep.
+  DEPLOY_TAG="$DEPLOY_TAG-$HEAD_SHA"
+  echo "==> Tag exists already; using $DEPLOY_TAG"
+fi
+git -C "$REPO_DIR" tag -a "$DEPLOY_TAG" "$HEAD_FULL_SHA" \
+  -m "Deployed to production $(date -u +%Y-%m-%dT%H:%MZ) from $HEAD_SHA"
+git -C "$REPO_DIR" push --quiet origin "$DEPLOY_TAG"
+echo "==> Tagged $DEPLOY_TAG"
+
 # The working tree moves one patch ahead of what was just shipped, so no
 # later commit is ever built carrying a version number already live. This
 # used to be a step you had to remember (docs/3.3, step 11) — but it is
