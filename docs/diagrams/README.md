@@ -14,13 +14,24 @@ things that run code** (environments), **sand for things that store it**
 `classDef env` / `classDef repo` rather than per-node styles, so a new box
 joins a category instead of picking its own colour.
 
-Arrow labels carry the same weight as colour, and should: `$` prefixes a
-command you type, `(automatic)` marks something done on your behalf, and
-`gate:` marks a check. That wording is what survives greyscale printing and
-colour blindness — the colour reinforces it rather than being the only
-signal. Note `linkStyle`'s `color:` does not reach the label text while
-`htmlLabels` is false, so an arrow can be recoloured but its label cannot;
-say it in words.
+Line shape carries meaning, and should carry it *structurally* rather than
+by colour: a solid arrow moves code, a dotted arrow returns an answer, and
+a diamond is a decision taken during an action. Labels do the rest — `$`
+prefixes a command you type, `(automatic)` marks something done on your
+behalf.
+
+There is deliberately **no `linkStyle`** in `release-flow.mmd`. An earlier
+version coloured the gates amber by edge index, and those indices count
+from zero including invisible `~~~` links — so adding an arrow anywhere
+above silently moved the colouring onto the wrong lines. It happened four
+times, each caught only by looking at the render. Shapes need no indices.
+
+Two more things learned by rendering rather than reading:
+
+- A bare `%%` line is parsed as a **node**, not a comment. Use `%% .` for a
+  blank line inside a comment block.
+- `linkStyle`'s `color:` never reaches label text while `htmlLabels` is
+  false, so an arrow can be recoloured but its label cannot.
 
 Two things about `mermaid-config.json` that are not incidental:
 

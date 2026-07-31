@@ -5,6 +5,20 @@ config:
     nodePlacementStrategy: BRANDES_KOEPF
 ---
 flowchart TB
+    %% Line language, applied consistently:
+    %%   -->    code moves, in the direction it moves
+    %%   -.->   an answer comes back — a query, nothing shipped
+    %%   {  }   a decision on an action arrow — the action stops here and
+    %%          is tested before it continues. Checks feed into it.
+    %% .
+    %% .
+    %% The gate is a decision on the *action*, not a property of production:
+    %% it happens inside deploy.sh, before anything ships, and the two
+    %% checks are inputs to it. Drawing it as arrows into Production implied
+    %% a relationship between Actions and Production that does not exist.
+    %% .
+    %% No linkStyle anywhere: the shapes carry the meaning. Edge indices
+    %% silently pointed at the wrong arrows four times when they did.
     DEV["Dev<br/>:3000 server · :8080 web"]
     STG["Staging<br/>:8081 · docker"]
     PROD["Production<br/>tileliteelite.com"]
@@ -14,31 +28,30 @@ flowchart TB
         ACT["Actions"]
     end
 
+
     DEV ~~~ STG
-    STG ~~~ PROD
-    DEV -->|"1.b · $ git commit"| LG
-    LG -->|"1.c · $ git push"| REPO
-    REPO -->|"1.c · CI runs (automatic)"| ACT
-    ACT -.->|"1.c · $ ci-status.sh --wait"| LG
+    STG ~~~ GATE
+
     LG -->|"1.a · $ cargo build<br/>$ services.sh restart<br/>$ cargo test"| DEV
+    LG -->|"1.b · $ git commit"| LG
+    LG -->|"1.c · $ git push"| REPO
+    REPO -->|"1.c · CI runs"| ACT
+    ACT -.->|"1.c · $ ci-status.sh --wait"| LG
+    PROD -.->|"2 · $ deploy-staging.sh at prod"| STG
     LG -->|"3 · $ deploy-staging.sh"| STG
-    LG -->|"6 · $ deploy.sh"| PROD
     STG -.->|"4 · $ curl /health"| STG
-    STG -->|"5 · user test (by hand)"| STG
-    PROD -->|"2 · $ deploy-staging.sh at prod"| STG
-    ACT -.->|"6 · gate: CI green"| PROD
-    STG -.->|"6 · gate: same commit"| PROD
-    PROD -->|"6 · tag + version bump (automatic)"| REPO
+    STG -.->|"5 · user test"| STG
+    LG -->|"6 · $ deploy.sh"| GATE{"gate"}
+    GATE -->|"ships the image"| PROD
+    ACT -.->|"CI green for this commit?"| GATE
+    STG -.->|"staging on this commit?"| GATE
+    LG -->|"6 · tag + version bump"| REPO
     PROD -.->|"7 · $ deploy-staging.sh verify"| STG
 
+    classDef gate fill:#fbe9dc,stroke:#b06a2c,color:#7a4318
     classDef env fill:#e4eff8,stroke:#39698c,color:#12303f
     classDef repo fill:#f7efe0,stroke:#96763f,color:#3a2c12
     class DEV,STG,PROD env
     class LG,REPO,ACT repo
-    %% Amber for the two gates. linkStyle takes edge *indices* in
-    %% declaration order counting from 0, including the two invisible ~~~
-    %% links — so recount these whenever an edge is added or moved, and
-    %% check the render. Adding the user-test edge silently shifted them
-    %% moved 11,12 -> 12,13 -> 11,12 -> 12,13 across four edits so far.
-    linkStyle 12,13 stroke:#b06a2c,color:#8a4b18
+    class GATE gate
     style GH fill:#fdf9f1,stroke:#96763f,color:#3a2c12
