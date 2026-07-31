@@ -189,6 +189,28 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// The highest migration version applied to this database.
+///
+/// Reported on `/health` so a deploy script can find out what schema the
+/// live database is actually at, without SSHing in. `scripts/deploy.sh`
+/// compares it against the highest migration the *target commit* carries
+/// and refuses to ship an older image that the database has already moved
+/// past — that image would fail `validate_applied_migrations` on startup
+/// and never boot. See docs/3.3's "Rolling back".
+///
+/// Read once at startup rather than per request: migrations run during
+/// `connect`, nothing applies one afterwards, so this cannot change while
+/// the process is alive.
+///
+/// `None` for a database with no migrations applied at all, which in
+/// practice means an empty file that `connect` is about to migrate.
+pub async fn applied_schema_version(pool: &Pool<Sqlite>) -> Result<Option<i64>, sqlx::Error> {
+    let row = sqlx::query("select max(version) from _sqlx_migrations")
+        .fetch_one(pool)
+        .await?;
+    Ok(row.get(0))
+}
+
 pub async fn save_game(pool: &Pool<Sqlite>, session: &GameSession) -> Result<(), sqlx::Error> {
     let now = now_unix_seconds();
     let mut tx = pool.begin().await?;

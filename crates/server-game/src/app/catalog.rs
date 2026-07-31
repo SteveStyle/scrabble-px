@@ -1,10 +1,11 @@
 use super::*;
 
-pub(crate) async fn health() -> Json<api::HealthDto> {
+pub(crate) async fn health(State(state): State<AppState>) -> Json<api::HealthDto> {
     Json(api::HealthDto {
         status: "ok".to_string(),
         api_version: api::API_VERSION,
         app_version: app_version(),
+        schema_version: state.schema_version,
     })
 }
 

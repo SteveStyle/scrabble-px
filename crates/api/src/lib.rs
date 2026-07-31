@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 // they'd never heard of. The rule to apply is "can a client observe
 // something new?", not "did a type change" — a new value for an existing
 // field is new functionality.
-pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 6 };
+pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 7 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApiVersion {
@@ -66,6 +66,19 @@ pub struct HealthDto {
     /// in to grep startup logs — e.g. `scripts/deploy-staging.sh at prod`
     /// reads this to bring staging to the same version as production.
     pub app_version: String,
+    /// Highest migration version applied to the server's database.
+    ///
+    /// Lets `scripts/deploy.sh` tell, before shipping anything, whether the
+    /// image it is about to deploy is *older* than the schema already in
+    /// place — an image that doesn't know a migration the database has
+    /// applied fails sqlx's `validate_applied_migrations` and never boots.
+    /// Rolling back across a migration is therefore a restore from the
+    /// pre-deploy snapshot, not a redeploy; this field is what makes the
+    /// script able to say so instead of shipping a container that dies.
+    ///
+    /// `None` only for a database with nothing applied yet.
+    #[serde(default)]
+    pub schema_version: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

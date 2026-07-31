@@ -42,6 +42,11 @@ DEPLOY_USER="${DEPLOY_USER:-ubuntu}"
 DEPLOY_SSH_KEY="${DEPLOY_SSH_KEY:-$HOME/.ssh/oracle_tile_lite_elite}"
 DEPLOY_REMOTE_DIR="${DEPLOY_REMOTE_DIR:-tile-lite-elite}"
 STAGING_URL="${STAGING_URL:-http://localhost:8081}"
+PROD_URL="${PROD_URL:-https://tileliteelite.com}"
+# How many pre-deploy database snapshots to keep on the VM. Rollback is
+# expected to happen immediately if at all (a later rollback would discard
+# real play), so depth beyond the last few releases has no consumer.
+SNAPSHOT_KEEP="${SNAPSHOT_KEEP:-5}"
 
 SSH_OPTS=(-i "$DEPLOY_SSH_KEY" -o ConnectTimeout=10)
 REMOTE="$DEPLOY_USER@$DEPLOY_HOST"
@@ -129,6 +134,48 @@ elif [[ "$STAGING_SHA" != "$TARGET_SHA" ]]; then
 fi
 echo "==> Staging confirmed running this commit ($TARGET_SHA) — proceeding"
 
+# Refuses to ship an image the live database has already moved past.
+#
+# Migrations only go forward. sqlx validates, on startup, that every
+# migration recorded in the database is one the binary knows about
+# (`ignore_missing` is false by default), so an older image meeting a
+# newer database fails with `VersionMissing` and **never boots**. Without
+# this check that failure arrives after the images are built, transferred
+# and swapped in — i.e. as an outage.
+#
+# The database's own version comes from `/health`'s `schema_version`; the
+# target's comes from the migration filenames in that commit's tree, read
+# straight out of git so this can run before anything is checked out.
+TARGET_SCHEMA="$(git ls-tree --name-only "$TARGET_FULL_SHA" crates/server-game/migrations/ \
+  | grep '\.sql$' | sed 's#.*/##' | grep -oE '^[0-9]+' | sort -n | tail -1 | sed 's/^0*//')"
+PROD_HEALTH="$(curl -sf --max-time 8 "$PROD_URL/health" 2>/dev/null || true)"
+LIVE_SCHEMA="$(printf '%s' "$PROD_HEALTH" | grep -o '"schema_version":[0-9]*' | cut -d: -f2)"
+
+if [[ -z "$PROD_HEALTH" ]]; then
+  echo "==> Note: couldn't reach $PROD_URL/health, so the schema check was skipped."
+elif [[ -z "$LIVE_SCHEMA" ]]; then
+  # Every deployment before this field existed. Nothing to compare against,
+  # and saying so is better than silently passing a check that never ran.
+  echo "==> Note: production reports no schema_version (it predates the field),"
+  echo "    so the schema check was skipped. It applies from the next deploy on."
+elif (( LIVE_SCHEMA > TARGET_SCHEMA )); then
+  echo "error: production's database is at migration $LIVE_SCHEMA, but $TARGET_SHA only knows up to $TARGET_SCHEMA." >&2
+  echo "       That image would fail sqlx's startup check and never boot." >&2
+  echo "" >&2
+  echo "       Migrations don't run backwards. To go back past one, restore the" >&2
+  echo "       snapshot taken before the deploy that applied it:" >&2
+  echo "         ./scripts/restore-prod-snapshot.sh            # list what's available" >&2
+  echo "         ./scripts/restore-prod-snapshot.sh <name>     # restore it, then deploy" >&2
+  exit 1
+else
+  echo "==> Schema check passed (database at $LIVE_SCHEMA, $TARGET_SHA knows up to $TARGET_SCHEMA)"
+fi
+
+# Read from the deployed commit's own tree, not the working tree's
+# Cargo.toml — on a rollback those are different numbers, and the tag has
+# to name the version that actually shipped.
+DEPLOYED_VERSION="$(git show "$TARGET_FULL_SHA:Cargo.toml" | grep -m1 '^version' | cut -d'"' -f2)"
+
 # The fresh checkout. A throwaway `git worktree` rather than checking $REF
 # out here: it leaves the real working copy (branch, staged and unstaged
 # changes) completely untouched, which is what makes it safe to deploy an
@@ -173,15 +220,40 @@ echo "==> Transferring to $DEPLOY_HOST"
 ssh "${SSH_OPTS[@]}" "$REMOTE" "mkdir -p $DEPLOY_REMOTE_DIR"
 scp "${SSH_OPTS[@]}" "$TMP_TAR" "$WORKTREE_DIR/docker-compose.yml" "$REMOTE:$DEPLOY_REMOTE_DIR/"
 
-echo "==> Loading images and restarting the stack"
+echo "==> Loading images, snapshotting the database, and restarting the stack"
 REMOTE_TAR_NAME="$(basename "$TMP_TAR")"
+SNAPSHOT_NAME="pre-$DEPLOYED_VERSION-$TARGET_SHA-$(date -u +%Y%m%dT%H%M%SZ).tgz"
 ssh "${SSH_OPTS[@]}" "$REMOTE" "
     set -e
     cd $DEPLOY_REMOTE_DIR
     gunzip -c $REMOTE_TAR_NAME | docker load
     rm -f $REMOTE_TAR_NAME
+    mkdir -p snapshots
+
+    # Stop the server before snapshotting. The database is SQLite in WAL
+    # mode, so tarring it live can capture a torn state — a main file
+    # without the WAL entry that completes it. \`up -d\` is about to
+    # recreate this container anyway (new image), so quiescing it here
+    # costs no additional downtime and makes the snapshot trustworthy.
+    docker compose stop server > /dev/null
+
+    # Uses the app's own image purely because it is already present and is
+    # debian-slim, so it has tar — no extra pull onto a 1GB VM. The volume
+    # is mounted read-only; this only ever reads.
+    docker run --rm \
+        -v tile-lite-elite-data:/data:ro \
+        -v \"\$PWD/snapshots\":/snapshots \
+        --entrypoint tar \
+        tile-lite-elite-server:latest \
+        czf /snapshots/$SNAPSHOT_NAME -C /data .
+
     docker compose up -d
     docker image prune -f > /dev/null
+
+    # Keep the most recent few. \`ls -t\` is safe here: these names are
+    # generated by this script and contain no whitespace.
+    ls -1t snapshots/*.tgz 2>/dev/null | tail -n +$((SNAPSHOT_KEEP + 1)) | xargs -r rm -f
+    echo \"    snapshot: \$(du -h snapshots/$SNAPSHOT_NAME | cut -f1) \$(ls -1 snapshots/*.tgz | wc -l) kept\"
 "
 
 echo "==> Ensuring the 'sa' alias for tile-lite-elite-admin is set up and current on the VM"
@@ -196,11 +268,6 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "
     echo \"alias sa='docker compose -f ~/$DEPLOY_REMOTE_DIR/docker-compose.yml exec server tile-lite-elite-admin'\" >> ~/.bashrc \
         || echo \"    (warning: could not set up the 'sa' alias for tile-lite-elite-admin)\"
 "
-
-# Read from the deployed commit's own tree, not the working tree's
-# Cargo.toml — on a rollback those are different numbers, and the tag has
-# to name the version that actually shipped.
-DEPLOYED_VERSION="$(git show "$TARGET_FULL_SHA:Cargo.toml" | grep -m1 '^version' | cut -d'"' -f2)"
 
 # Stamp the deployed commit in git history. A tag rather than a commit: it
 # points at the *thing that shipped*, not at the bump that follows it, and

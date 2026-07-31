@@ -77,6 +77,10 @@ pub struct AppState {
     /// need this baked in), so this field exists solely for that one link.
     pub public_base_url: String,
     pub email: crate::email::EmailConfig,
+    /// Captured once, right after migrations run — see
+    /// `persistence::applied_schema_version` for why it can't change later
+    /// and what the deploy script does with it.
+    pub schema_version: Option<i64>,
 }
 
 impl AppState {
@@ -86,6 +90,7 @@ impl AppState {
         email: crate::email::EmailConfig,
     ) -> Result<Self, sqlx::Error> {
         let db = persistence::connect(database_url).await?;
+        let schema_version = persistence::applied_schema_version(&db).await?;
         let engines = EngineRegistry::default();
         persistence::upsert_engine_profiles(&db, &engines.metadata()).await?;
 
@@ -105,6 +110,7 @@ impl AppState {
             engines,
             public_base_url,
             email,
+            schema_version,
         })
     }
 }
