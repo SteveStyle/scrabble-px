@@ -19,10 +19,10 @@ flowchart TB
     %% .
     %% No linkStyle anywhere: the shapes carry the meaning. Edge indices
     %% silently pointed at the wrong arrows four times when they did.
-    DEV["Dev<br/>:3000 server · :8080 web"]
+    DEV["Dev<br/>working tree<br/>:3000 server · :8080 web"]
     STG["Staging<br/>:8081 · docker"]
     PROD["Production<br/>tileliteelite.com"]
-    LG["local git<br/>working tree + history"]
+    LG["local git<br/>commit history"]
     subgraph GH["GitHub"]
         REPO["repo · main"]
         ACT["Actions"]
@@ -31,9 +31,13 @@ flowchart TB
 
     DEV ~~~ STG
     STG ~~~ GATE
+    %% Without this, ELK floats Production up beside Staging and "ships the
+    %% image" points upward. Pinning it after Staging puts the environments
+    %% in descending order and the deploy flow downward through the gate.
+    STG ~~~ PROD
 
-    LG -->|"1.a · $ cargo build<br/>$ services.sh restart<br/>$ cargo test"| DEV
-    LG -->|"1.b · $ git commit"| LG
+    DEV -->|"1.a · $ cargo build<br/>$ services.sh restart<br/>$ cargo test"| DEV
+    DEV -->|"1.b · $ git add<br/>$ git commit"| LG
     LG -->|"1.c · $ git push"| REPO
     REPO -->|"1.c · CI runs"| ACT
     ACT -.->|"1.c · $ ci-status.sh --wait"| LG
