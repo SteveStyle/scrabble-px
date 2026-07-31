@@ -14,6 +14,12 @@ things that run code** (environments), **sand for things that store it**
 `classDef env` / `classDef repo` rather than per-node styles, so a new box
 joins a category instead of picking its own colour.
 
+**Bold means an action somebody takes**, normal weight means it happens on
+its own. It comes from mermaid *markdown strings* — backtick-quoted labels,
+`"` + backtick + `**bold**` — not `<b>`, which leaks literally while
+`htmlLabels` is false. `wrappingWidth` and a non-breaking space after `$`
+stop long commands wrapping mid-name.
+
 Line shape carries meaning, and should carry it *structurally* rather than
 by colour: a solid arrow moves code, a dotted arrow returns an answer, and
 a diamond is a decision taken during an action. Labels do the rest — `$`

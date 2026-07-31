@@ -8,6 +8,16 @@ flowchart TB
     %% Line language, applied consistently:
     %%   -->    code moves, in the direction it moves
     %%   -.->   an answer comes back — a query, nothing shipped
+    %% Bold is an action somebody takes; normal weight is something that
+    %% happens on its own or a question being asked. Bold comes from
+    %% mermaid markdown strings (backtick-quoted labels) rather than <b>,
+    %% which leaks literally while htmlLabels is false.
+    %% .
+    %% Every arrow is numbered, in the order events happen, so the whole
+    %% sequence can be followed by reading the numbers. A letter suffix
+    %% breaks one runbook step into its ordered parts — 1.a-1.e are things
+    %% you do, 6.a-6.e are what one command does on your behalf.
+    %% .
     %%   {  }   a decision on an action arrow — the action stops here and
     %%          is tested before it continues. Checks feed into it.
     %% .
@@ -36,21 +46,24 @@ flowchart TB
     %% in descending order and the deploy flow downward through the gate.
     STG ~~~ PROD
 
-    DEV -->|"1.a · $ cargo build<br/>$ services.sh restart<br/>$ cargo test"| DEV
-    DEV -->|"1.b · $ git add<br/>$ git commit"| LG
-    LG -->|"1.c · $ git push"| REPO
-    REPO -->|"1.c · CI runs"| ACT
-    ACT -.->|"1.c · $ ci-status.sh --wait"| LG
-    PROD -.->|"2 · $ deploy-staging.sh at prod"| STG
-    LG -->|"3 · $ deploy-staging.sh"| STG
-    STG -.->|"4 · $ curl /health"| STG
-    STG -.->|"5 · user test"| STG
-    LG -->|"6 · $ deploy.sh"| GATE{"gate"}
-    GATE -->|"ships the image"| PROD
-    ACT -.->|"CI green for this commit?"| GATE
-    STG -.->|"staging on this commit?"| GATE
-    LG -->|"6 · tag + version bump"| REPO
-    PROD -.->|"7 · $ deploy-staging.sh verify"| STG
+    DEV -->|"`1.a · **$ cargo build**
+**$ services.sh restart**
+**$ cargo test**`"| DEV
+    DEV -->|"`1.b · **$ git add**
+**$ git commit**`"| LG
+    LG -->|"`1.c · **$ git push**`"| REPO
+    REPO -->|"1.d · CI runs (automatic)"| ACT
+    ACT -.->|"`1.e · **$ ci-status.sh --wait**`"| LG
+    PROD -.->|"`2 · **$ deploy-staging.sh at prod**`"| STG
+    LG -->|"`3 · **$ deploy-staging.sh**`"| STG
+    STG -.->|"`4 · **$ curl /health**`"| STG
+    STG -.->|"`5 · **user test**`"| STG
+    LG -->|"`6.a · **$ deploy.sh**`"| GATE{"gate"}
+    GATE -->|"6.d · ships the image"| PROD
+    ACT -.->|"6.b · CI green for this commit?"| GATE
+    STG -.->|"6.c · staging on this commit?"| GATE
+    LG -->|"6.e · tag + version bump"| REPO
+    PROD -.->|"`7 · **$ deploy-staging.sh verify**`"| STG
 
     classDef gate fill:#fbe9dc,stroke:#b06a2c,color:#7a4318
     classDef env fill:#e4eff8,stroke:#39698c,color:#12303f

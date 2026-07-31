@@ -76,7 +76,7 @@ echo "==> HEAD ($HEAD_SHA) confirmed pushed to $UPSTREAM"
 # red run stopped nothing, and the only real check was whoever remembered
 # to run the suites by hand.
 #
-# Delegated to ci-status.sh so that the check made by hand at step 1.c and
+# Delegated to ci-status.sh so that the check made by hand at step 1.e and
 # the one enforced here are the same code, and cannot answer differently.
 if [[ "${DEPLOY_SKIP_CI:-}" == "1" ]]; then
   echo "==> WARNING: skipping the CI gate (DEPLOY_SKIP_CI=1)"
