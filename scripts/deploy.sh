@@ -62,7 +62,12 @@ PROD_URL="${PROD_URL:-https://tileliteelite.com}"
 # real play), so depth beyond the last few releases has no consumer.
 SNAPSHOT_KEEP="${SNAPSHOT_KEEP:-5}"
 
-SSH_OPTS=(-i "$DEPLOY_SSH_KEY" -o ConnectTimeout=10)
+# `-n` redirects ssh's stdin from /dev/null. Without it ssh reads the
+# script's own stdin, and a command run before an interactive prompt
+# swallows the answer: rollback.sh's confirmation read hit EOF and
+# `set -e` aborted it. Found during the 2026-08-01 rollback drill, on the
+# most destructive command in the repo — the one place a prompt must work.
+SSH_OPTS=(-n -i "$DEPLOY_SSH_KEY" -o ConnectTimeout=10)
 REMOTE="$DEPLOY_USER@$DEPLOY_HOST"
 
 cd "$REPO_DIR"
@@ -134,38 +139,12 @@ elif ! "$REPO_DIR/scripts/ci-status.sh" "$TARGET_FULL_SHA"; then
   exit 1
 fi
 
-# Refuses to ship a commit that was never actually exercised in staging —
-# a passing `cargo test` only proves the code compiles and unit-tests
-# clean, not that it boots/migrates cleanly in a real container. Without
-# this check, testing commit A in staging and then committing a "quick
-# fix" B before deploying would silently ship B untested — easy to do
-# without noticing, since deploy.sh has no other way to know staging
-# wasn't re-run. See docs/3.3-testing-ci-and-release.md.
-if [[ "$DEPLOY_REF" == "HEAD" ]]; then
-  STAGING_CMD="./scripts/deploy-staging.sh"
-else
-  STAGING_CMD="./scripts/deploy-staging.sh at $DEPLOY_REF"
-fi
-STAGING_HEALTH="$(curl -sf --max-time 5 "$STAGING_URL/health" 2>/dev/null || true)"
-# `|| true` on every one of these: `grep` exits 1 when it matches nothing,
-# and under `set -o pipefail` that kills the assignment outright — so the
-# "is it empty" branch written to handle exactly that case never runs, and
-# the script dies with no message at all. This is not hypothetical; it
-# aborted a production deploy silently.
-STAGING_VERSION="$(printf '%s' "$STAGING_HEALTH" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || true)"
-STAGING_SHA="${STAGING_VERSION#*+}"
-if [[ -z "$STAGING_VERSION" ]]; then
-  echo "error: local staging ($STAGING_URL) isn't reachable — test this commit there first: $STAGING_CMD" >&2
-  exit 1
-elif [[ "$STAGING_SHA" == "$STAGING_VERSION" ]]; then
-  echo "error: staging is running $STAGING_VERSION, which has no commit id — was it deployed via deploy-staging.sh?" >&2
-  exit 1
-elif [[ "$STAGING_SHA" != "$TARGET_SHA" ]]; then
-  echo "error: staging is running commit $STAGING_SHA, not $TARGET_SHA ($DEPLOY_REF) — test it in staging first: $STAGING_CMD" >&2
-  exit 1
-fi
-echo "==> Staging confirmed running this commit ($TARGET_SHA) — proceeding"
-
+# Ordered before the staging check deliberately. This is an impossibility,
+# not a process requirement: no amount of staging makes an image bootable
+# against a database it does not understand. Checked second, a rollback
+# across a migration was told "test it in staging first", which costs four
+# minutes of rebuilding before the deploy refuses anyway. Found in the
+# 2026-08-01 rollback drill.
 # Refuses to ship an image the live database has already moved past.
 #
 # Migrations only go forward. sqlx validates, on startup, that every
@@ -211,6 +190,38 @@ if [[ -z "$DEPLOYED_VERSION" ]]; then
   echo "error: couldn't read a version from $TARGET_SHA's Cargo.toml." >&2
   exit 1
 fi
+
+# Refuses to ship a commit that was never actually exercised in staging —
+# a passing `cargo test` only proves the code compiles and unit-tests
+# clean, not that it boots/migrates cleanly in a real container. Without
+# this check, testing commit A in staging and then committing a "quick
+# fix" B before deploying would silently ship B untested — easy to do
+# without noticing, since deploy.sh has no other way to know staging
+# wasn't re-run. See docs/3.3-testing-ci-and-release.md.
+if [[ "$DEPLOY_REF" == "HEAD" ]]; then
+  STAGING_CMD="./scripts/deploy-staging.sh"
+else
+  STAGING_CMD="./scripts/deploy-staging.sh at $DEPLOY_REF"
+fi
+STAGING_HEALTH="$(curl -sf --max-time 5 "$STAGING_URL/health" 2>/dev/null || true)"
+# `|| true` on every one of these: `grep` exits 1 when it matches nothing,
+# and under `set -o pipefail` that kills the assignment outright — so the
+# "is it empty" branch written to handle exactly that case never runs, and
+# the script dies with no message at all. This is not hypothetical; it
+# aborted a production deploy silently.
+STAGING_VERSION="$(printf '%s' "$STAGING_HEALTH" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || true)"
+STAGING_SHA="${STAGING_VERSION#*+}"
+if [[ -z "$STAGING_VERSION" ]]; then
+  echo "error: local staging ($STAGING_URL) isn't reachable — test this commit there first: $STAGING_CMD" >&2
+  exit 1
+elif [[ "$STAGING_SHA" == "$STAGING_VERSION" ]]; then
+  echo "error: staging is running $STAGING_VERSION, which has no commit id — was it deployed via deploy-staging.sh?" >&2
+  exit 1
+elif [[ "$STAGING_SHA" != "$TARGET_SHA" ]]; then
+  echo "error: staging is running commit $STAGING_SHA, not $TARGET_SHA ($DEPLOY_REF) — test it in staging first: $STAGING_CMD" >&2
+  exit 1
+fi
+echo "==> Staging confirmed running this commit ($TARGET_SHA) — proceeding"
 
 # The fresh checkout. A throwaway `git worktree` rather than checking $REF
 # out here: it leaves the real working copy (branch, staged and unstaged

@@ -50,6 +50,27 @@ const NETWORK_RETRY_DELAY_MS: u64 = 700;
 /// the background reconnect loop) without threading it through props.
 static IS_ONLINE: GlobalSignal<bool> = Signal::global(|| true);
 
+/// Which half of the retry cycle the reconnect loop is in, so the offline
+/// indicator can say so.
+///
+/// A static "reconnecting..." looks identical to a frozen app. What tells
+/// someone it is alive is the message *changing* — and that used to happen
+/// only as a side effect of `mark_offline` writing `IS_ONLINE` on every
+/// failed request, re-rendering the banner. That worked, but by accident:
+/// anyone tidying that write to match `mark_online`'s guarded one would have
+/// deleted the feedback without noticing. This makes it deliberate, and says
+/// something truer than a flicker — that attempts are being made and are
+/// failing.
+#[derive(Clone, Copy, PartialEq)]
+enum ReconnectPhase {
+    /// Between attempts. The last one got no answer.
+    Waiting,
+    /// An attempt is in flight right now.
+    Probing,
+}
+
+static RECONNECT_PHASE: GlobalSignal<ReconnectPhase> = Signal::global(|| ReconnectPhase::Waiting);
+
 #[cfg(not(target_arch = "wasm32"))]
 async fn sleep_ms(ms: u64) {
     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
@@ -277,7 +298,12 @@ pub fn RootApp() -> Element {
             let auth_token = session().map(|current| current.session_token.clone());
             spawn(async move {
                 loop {
+                    // Nothing answered last time; say so while we wait.
+                    *RECONNECT_PHASE.write() = ReconnectPhase::Waiting;
                     sleep_ms(RECONNECT_POLL_MS).await;
+                    // Flips just before the probe, so the message alternates
+                    // once per cycle rather than sitting still.
+                    *RECONNECT_PHASE.write() = ReconnectPhase::Probing;
                     if check_server_reachable(&server_url).await {
                         break;
                     }
@@ -557,7 +583,12 @@ pub fn RootApp() -> Element {
                     p { class: "topbar-version", "app {app_version} · api {api_version}" }
                 }
                 if !IS_ONLINE() {
-                    span { class: "offline-indicator", "Can't reach the server — reconnecting..." }
+                    span { class: "offline-indicator",
+                        match RECONNECT_PHASE() {
+                            ReconnectPhase::Probing => "Can't reach the server — retrying...",
+                            ReconnectPhase::Waiting => "Can't reach the server — no response",
+                        }
+                    }
                 }
                 AuthPanel {
                     server_url: server_url.clone(),
@@ -2702,20 +2733,25 @@ const UNREACHABLE_MESSAGE: &str = "Can't reach the server.";
 /// Marks the backend unreachable. Called only at the point where a request
 /// never got a response — a genuine connection failure, not an HTTP error
 /// status. Returns `UNREACHABLE_MESSAGE` for convenience at call sites.
-/// Whether an HTTP status means the *app server* is down, as opposed to the
-/// request being wrong.
+/// Whether an HTTP status means the service cannot process requests right
+/// now, as opposed to having processed this one and rejected it.
 ///
-/// `web` (Caddy) and `server` are separate containers, so a deploy stops the
-/// server while Caddy carries on answering — and the client gets a real
-/// HTTP response carrying 502. Counting that as "the server is talking to
-/// us" is what left a tab open across a deploy stuck on the error forever:
-/// `IS_ONLINE` stayed true, and the reconnect loop only runs while it is
-/// false, so nothing ever retried.
+/// The useful line is not *who emitted the response* but *what the client
+/// should do about it*. 502, 503 and 504 all mean "not serving requests" —
+/// back off and retry — whoever produced them. 503 in particular is
+/// unambiguous even from the app itself: it says the service is
+/// unavailable, and retrying is exactly the right response.
 ///
-/// The gateway family only — 502 Bad Gateway, 503 Service Unavailable, 504
-/// Gateway Timeout. A 500 is the server itself failing one request: it is
-/// up, and dropping the whole session into the reconnect loop over that
-/// would be worse than the bug this fixes.
+/// A 500 is the other case: the service is up and answered, this one
+/// request failed. Dropping a working session into the reconnect loop over
+/// that would be worse than the bug this fixes.
+///
+/// What made this necessary: `web` (Caddy) and `server` are separate
+/// containers, so a deploy stops the server while Caddy carries on
+/// answering, and the client gets a real HTTP response carrying 502.
+/// Counting that as "the server is talking to us" left a tab open across a
+/// deploy stuck on the error forever — `IS_ONLINE` stayed true, and the
+/// reconnect loop only runs while it is false.
 fn backend_is_unreachable(status: u16) -> bool {
     (502..=504).contains(&status)
 }

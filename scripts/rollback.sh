@@ -43,7 +43,12 @@ DEPLOY_SSH_KEY="${DEPLOY_SSH_KEY:-$HOME/.ssh/oracle_tile_lite_elite}"
 DEPLOY_REMOTE_DIR="${DEPLOY_REMOTE_DIR:-tile-lite-elite}"
 PROD_URL="${PROD_URL:-https://tileliteelite.com}"
 
-SSH_OPTS=(-i "$DEPLOY_SSH_KEY" -o ConnectTimeout=10)
+# `-n` redirects ssh's stdin from /dev/null. Without it ssh reads the
+# script's own stdin, and a command run before an interactive prompt
+# swallows the answer: rollback.sh's confirmation read hit EOF and
+# `set -e` aborted it. Found during the 2026-08-01 rollback drill, on the
+# most destructive command in the repo — the one place a prompt must work.
+SSH_OPTS=(-n -i "$DEPLOY_SSH_KEY" -o ConnectTimeout=10)
 REMOTE="$DEPLOY_USER@$DEPLOY_HOST"
 
 ASSUME_YES=0
