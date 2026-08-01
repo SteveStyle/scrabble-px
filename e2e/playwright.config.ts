@@ -24,5 +24,12 @@ export default defineConfig({
     actionTimeout: 15_000,
     navigationTimeout: 30_000,
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  // Two form factors. Layout regressions are invisible to the desktop run —
+  // the board, the games panel and the top bar all reflow at phone width —
+  // and CI minutes are free on a public repo, so the whole suite runs twice
+  // rather than a hand-picked subset that would drift out of date.
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'mobile', use: { ...devices['Pixel 5'] } },
+  ],
 });

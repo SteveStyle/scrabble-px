@@ -110,6 +110,23 @@ button:disabled {
     color: #8a2d1e;
     font-size: 0.85rem;
     font-weight: 600;
+
+    /* The message alternates between "retrying..." and "retrying in 3s...",
+       and the pill resized on every tick, nudging the header around. Holding
+       a floor width keeps it still.
+
+       `min()` rather than a bare `min-width`: the longest message is around
+       40 characters, which would overflow a narrow phone. Capping at 100%
+       lets it shrink to the container instead — the jump returns at that
+       width, which is the right trade against horizontal overflow.
+
+       Left-aligned so the shared prefix stays put as the tail changes, and
+       tabular digits so the countdown itself doesn't shuffle. */
+    display: inline-block;
+    min-width: min(40ch, 100%);
+    max-width: 100%;
+    text-align: left;
+    font-variant-numeric: tabular-nums;
 }
 
 .topbar-actions {
