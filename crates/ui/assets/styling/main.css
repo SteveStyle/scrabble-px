@@ -1679,21 +1679,47 @@ button:disabled {
     font-size: 0.85rem;
 }
 
+/* Two dimensions, kept independent:
+
+     hue       — whose turn it is
+     intensity — the total, or the score just taken
+
+   Each says one thing. An earlier version had the move score green for
+   "gain", which collided with the turn colour and left the active row
+   two-tone; and "gain" is redundant anyway, since a move score is only ever
+   negative in the end-game rack adjustment, where the sign already says so.
+
+   Contrast matters more than usual here: the move score is 0.8em of an
+   0.85rem row, so around 11px. The faint tones are chosen to clear 4.5:1 on
+   the cream panel rather than being the base colour at reduced opacity,
+   which is how small text ends up unreadable. */
 .rack-score {
     display: inline-flex;
     gap: 6px;
     align-items: baseline;
-    color: var(--ink-soft, #5b5348);
+    color: #6f6659;
 }
 
-/* The seat to play next. Marked rather than merely bolder, so it reads at a
-   glance without comparing weights. */
 .rack-score-active {
     color: #8a2d1e;
-    font-weight: 700;
 }
 
+/* The total: the primary number in either scheme. */
 .rack-score-value {
     font-weight: 700;
     font-variant-numeric: tabular-nums;
 }
+
+/* The score just taken: same hue, lighter and unbolded, so it reads as a
+   detail of the seat rather than a competing figure. */
+.rack-score-delta {
+    font-size: 0.8em;
+    font-weight: 400;
+    color: #857a6a;
+    font-variant-numeric: tabular-nums;
+}
+
+.rack-score-active .rack-score-delta {
+    color: #9c4633;
+}
+

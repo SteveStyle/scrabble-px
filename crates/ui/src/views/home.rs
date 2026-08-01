@@ -281,6 +281,9 @@ pub fn Home(
                                     if active { "● " }
                                     "{label}"
                                     span { class: "rack-score-value", "{participant.score}" }
+                                    if let Some(delta) = last_move_delta(&game.moves, participant.seat_number) {
+                                        span { class: "rack-score-delta", "{delta:+}" }
+                                    }
                                 }
                             }
                         });
@@ -570,8 +573,54 @@ fn seat_labels(names: &[String]) -> Vec<String> {
     }
 }
 
+/// The score a seat took on its most recent move, for the scores row.
+///
+/// A narrower question than the seats table's `last_move_cell`, which also
+/// wants the word, the move type and the elapsed time. Here only the number
+/// matters: the totals say who is winning, and this says who is *moving*.
+///
+/// `None` for a seat that has not played yet, which is different from a seat
+/// that scored nothing — a pass gives `Some(0)`, and showing "+0" says
+/// something true that a blank would not.
+fn last_move_delta(moves: &[api::MoveRecordDto], seat_number: u8) -> Option<i32> {
+    moves
+        .iter()
+        .rev()
+        .find(|record| record.seat_number == seat_number)
+        .map(|record| record.score_delta)
+}
+
 #[cfg(test)]
 mod tests {
+
+    fn move_by(seat_number: u8, score_delta: i32) -> api::MoveRecordDto {
+        api::MoveRecordDto {
+            move_number: 0,
+            seat_number,
+            move_type: "place".to_string(),
+            main_word: None,
+            score_delta,
+            elapsed_us: None,
+            positions: Vec::new(),
+            description: String::new(),
+        }
+    }
+
+    #[test]
+    fn last_move_delta_takes_the_seats_most_recent_move() {
+        let moves = vec![move_by(0, 14), move_by(1, 22), move_by(0, 39)];
+        assert_eq!(last_move_delta(&moves, 0), Some(39));
+        assert_eq!(last_move_delta(&moves, 1), Some(22));
+    }
+
+    /// A seat that has not played is not the same as one that scored
+    /// nothing, and the row shows "+0" for the second.
+    #[test]
+    fn last_move_delta_distinguishes_no_move_from_a_scoreless_one() {
+        let moves = vec![move_by(0, 0)];
+        assert_eq!(last_move_delta(&moves, 0), Some(0));
+        assert_eq!(last_move_delta(&moves, 1), None);
+    }
 
     #[test]
     fn seat_labels_abbreviate_to_initials() {
