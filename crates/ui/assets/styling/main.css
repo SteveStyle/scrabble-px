@@ -73,6 +73,22 @@ button:disabled {
     display: flex;
     flex-direction: column;
     gap: 2px;
+
+    /* A flex item will not shrink below its content's intrinsic width unless
+       told it may, and `min-width: auto` is the default. The brand block
+       carries "TILE LITE ELITE" at `letter-spacing: 0.18em` plus a version
+       line, which together were 2px wider than a 320px viewport once the
+       font fell back — enough to scroll the whole page sideways.
+
+       Caught on CI rather than locally: the runner has neither "Palatino
+       Linotype" nor "Book Antiqua", so the substituted serif is wider. The
+       layout was only ever fitting by the width of whichever fonts happened
+       to be installed. */
+    min-width: 0;
+}
+
+.topbar-brand > * {
+    overflow-wrap: anywhere;
 }
 
 /* A bit larger than the shared eyebrow style above, and no bottom margin since
