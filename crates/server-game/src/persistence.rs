@@ -189,6 +189,37 @@ pub async fn migrate(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// Records this boot in `rollback_drill` and returns how many the database
+/// has seen.
+///
+/// The point is the *dependency*, not the data. A migration exists because
+/// code needs it, so a rollback drill whose table nothing referenced would
+/// rehearse a case that never occurs: the interesting property of a real
+/// schema change is that code and database have to move together, and this
+/// makes that true here. A build carrying this function cannot run against a
+/// database without the table — the insert fails and startup fails with it.
+///
+/// The rows are also the drill's clearest evidence. They accumulate while
+/// the release is live and vanish when the pre-deploy snapshot is restored,
+/// which shows the *database* was rolled back rather than merely the code.
+///
+/// Goes with `0007_rollback_drill.sql`, and comes out with it — see
+/// docs/3.3's "Rollback drill".
+pub async fn record_rollback_drill_boot(
+    pool: &Pool<Sqlite>,
+    note: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query("insert into rollback_drill (created_at, note) values (?1, ?2)")
+        .bind(now_unix_seconds())
+        .bind(note)
+        .execute(pool)
+        .await?;
+    let row = sqlx::query("select count(*) from rollback_drill")
+        .fetch_one(pool)
+        .await?;
+    Ok(row.get(0))
+}
+
 /// The highest migration version applied to this database.
 ///
 /// Reported on `/health` so a deploy script can find out what schema the

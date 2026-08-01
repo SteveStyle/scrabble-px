@@ -91,6 +91,18 @@ impl AppState {
     ) -> Result<Self, sqlx::Error> {
         let db = persistence::connect(database_url).await?;
         let schema_version = persistence::applied_schema_version(&db).await?;
+
+        // Ties this build to migration 0007, so the drill rehearses a real
+        // schema change rather than an inert one — see
+        // `record_rollback_drill_boot`. Fails startup if the table is
+        // missing, which is the coupling being demonstrated.
+        let drill_boots =
+            persistence::record_rollback_drill_boot(&db, &crate::app_version()).await?;
+        tracing::info!(
+            drill_boots,
+            schema_version = schema_version.unwrap_or(0),
+            "rollback drill: boot recorded"
+        );
         let engines = EngineRegistry::default();
         persistence::upsert_engine_profiles(&db, &engines.metadata()).await?;
 
