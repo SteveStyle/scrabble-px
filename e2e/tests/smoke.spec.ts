@@ -101,12 +101,29 @@ for (const width of [320, 360, 414]) {
     await page.getByRole('button', { name: 'Start', exact: true }).click();
     await expect(page.locator('.rack-panel')).toBeVisible();
 
-    const overflow = await page.evaluate(
-      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-    );
+    const { overflow, culprits } = await page.evaluate(() => {
+      const viewport = document.documentElement.clientWidth;
+      // Name what actually sticks out. A bare number says the page is too
+      // wide; this says which element made it so, which is the difference
+      // between a diagnosis and a puzzle — particularly on CI, where the
+      // failure may not reproduce locally because font fallbacks differ.
+      const culprits = Array.from(document.querySelectorAll('*'))
+        .filter((el) => el.getBoundingClientRect().right > viewport + 1)
+        .slice(0, 6)
+        .map((el) => {
+          const right = Math.round(el.getBoundingClientRect().right);
+          const cls = typeof el.className === 'string' && el.className ? `.${el.className.trim().split(/\s+/).join('.')}` : '';
+          return `${el.tagName.toLowerCase()}${cls} right=${right}`;
+        });
+      return {
+        overflow: document.documentElement.scrollWidth - viewport,
+        culprits,
+      };
+    });
     expect(
       overflow,
-      `the page scrolls sideways by ${overflow}px at ${width}px wide`,
+      `the page scrolls sideways by ${overflow}px at ${width}px wide.\n` +
+        `Widest offenders:\n  ${culprits.join('\n  ')}`,
     ).toBeLessThanOrEqual(1);
   });
 }
