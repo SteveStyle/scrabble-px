@@ -1758,11 +1758,11 @@ button:disabled {
    rows on a phone, where vertical space is the scarce thing. Pushed to the
    end of the scores row so the tiles get the full width.
 
-   Kept as a chip, and darker than the seats around it. Moving it here first
-   turned it into muted text that wrapped to its own line — quieter than the
-   chip it replaced, when how many tiles remain is something you need to know
-   at a glance late in a game. Prominence is the point; the position is only
-   where there happened to be room.
+   A chip, so it is findable — but no louder than that. It should be
+   available when someone looks for it, not competing with the scores for
+   attention. Moving it here first made it muted text that wrapped to its own
+   line, which was too quiet; making it bold and dark was then too loud. The
+   chip shape is enough to locate it.
 
    `margin-left: auto` pushes it clear of the seats, so it reads as a
    different kind of fact rather than a fifth player. */
@@ -1770,9 +1770,8 @@ button:disabled {
     margin-left: auto;
     border-radius: 999px;
     padding: 3px 10px;
-    background: rgba(111, 75, 44, 0.10);
-    color: var(--oak-deep);
-    font-weight: 700;
+    background: rgba(111, 75, 44, 0.08);
+    color: #6f6659;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
 }

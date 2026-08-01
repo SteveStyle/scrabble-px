@@ -81,3 +81,32 @@ test('Play Greedy Bot starts a game and renders the board', async ({ page }) => 
   await expect(page.locator('.board-cell').first()).toBeVisible();
   await expect(page.locator('.rack-tile').first()).toBeVisible();
 });
+
+/// Layout must survive phones narrower than the one it was designed on.
+///
+/// The scores row, the offline pill and the rack were all sized against a
+/// single handset (~393 CSS px). A narrower screen is where a fixed width or
+/// a non-shrinking flex item stops fitting — and the failure is horizontal
+/// scrolling, which is far worse on a phone than a wrapped line.
+///
+/// 320px is the narrowest in common use (iPhone SE and similar). Asserting
+/// "the document is no wider than the viewport" catches the whole class
+/// rather than the one element that happened to break.
+for (const width of [320, 360, 414]) {
+  test(`no horizontal overflow at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 720 });
+    await register(page, uniqueName(`w${width}`));
+
+    await page.getByRole('button', { name: 'Play Greedy Bot' }).click();
+    await page.getByRole('button', { name: 'Start', exact: true }).click();
+    await expect(page.locator('.rack-panel')).toBeVisible();
+
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    );
+    expect(
+      overflow,
+      `the page scrolls sideways by ${overflow}px at ${width}px wide`,
+    ).toBeLessThanOrEqual(1);
+  });
+}
