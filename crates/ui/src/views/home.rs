@@ -277,8 +277,7 @@ pub fn Home(
                                 span {
                                     key: "{participant.seat_number}",
                                     class: if active { "rack-score rack-score-active" } else { "rack-score" },
-                                    if active { "● " }
-                                    "{label}"
+                                    span { class: "rack-score-name", "{label}" }
                                     span { class: "rack-score-value", "{participant.score}" }
                                     if let Some(delta) = last_move_delta(&game.moves, participant.seat_number) {
                                         span { class: "rack-score-delta", "{delta:+}" }

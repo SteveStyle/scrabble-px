@@ -1707,8 +1707,27 @@ button:disabled {
     color: #6f6659;
 }
 
+/* Whose turn it is, said twice.
+   
+   The bullet marker is gone at the owner's suggestion, but colour cannot
+   carry this alone: rust against muted brown is a red/brown distinction,
+   which is the hardest axis for the common forms of colour blindness — the
+   two could read as identical. Weight is the second channel, and it works
+   regardless of how the hues are perceived.
+   
+   Weight rather than a background chip or an underline because the row is
+   already dense, and this reuses an axis the row uses anyway (the total is
+   bolder than its move score). */
+.rack-score-name {
+    font-weight: 400;
+}
+
 .rack-score-active {
     color: #8a2d1e;
+}
+
+.rack-score-active .rack-score-name {
+    font-weight: 700;
 }
 
 /* The total: the primary number in either scheme. */
@@ -1739,10 +1758,21 @@ button:disabled {
    rows on a phone, where vertical space is the scarce thing. Pushed to the
    end of the scores row so the tiles get the full width.
 
-   `margin-left: auto` so it sits right, away from the seats, and reads as a
-   different kind of fact. */
+   Kept as a chip, and darker than the seats around it. Moving it here first
+   turned it into muted text that wrapped to its own line — quieter than the
+   chip it replaced, when how many tiles remain is something you need to know
+   at a glance late in a game. Prominence is the point; the position is only
+   where there happened to be room.
+
+   `margin-left: auto` pushes it clear of the seats, so it reads as a
+   different kind of fact rather than a fifth player. */
 .rack-scores-bag {
     margin-left: auto;
-    color: #6f6659;
+    border-radius: 999px;
+    padding: 3px 10px;
+    background: rgba(111, 75, 44, 0.10);
+    color: var(--oak-deep);
+    font-weight: 700;
     white-space: nowrap;
+    font-variant-numeric: tabular-nums;
 }
