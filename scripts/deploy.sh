@@ -68,6 +68,11 @@ SNAPSHOT_KEEP="${SNAPSHOT_KEEP:-5}"
 # `set -e` aborted it. Found during the 2026-08-01 rollback drill, on the
 # most destructive command in the repo — the one place a prompt must work.
 SSH_OPTS=(-n -i "$DEPLOY_SSH_KEY" -o ConnectTimeout=10)
+# The same connection options minus `-n`, which is an ssh-only flag: scp
+# rejects it outright ("unknown option -- n") and the transfer dies after the
+# images have already been built and compressed. Found by a real deploy —
+# every check I had run stopped at the gates and never reached the scp.
+SCP_OPTS=(-i "$DEPLOY_SSH_KEY" -o ConnectTimeout=10)
 REMOTE="$DEPLOY_USER@$DEPLOY_HOST"
 
 cd "$REPO_DIR"
@@ -269,7 +274,7 @@ echo "    $(du -h "$TMP_TAR" | cut -f1) compressed"
 
 echo "==> Transferring to $DEPLOY_HOST"
 ssh "${SSH_OPTS[@]}" "$REMOTE" "mkdir -p $DEPLOY_REMOTE_DIR"
-scp "${SSH_OPTS[@]}" "$TMP_TAR" "$WORKTREE_DIR/docker-compose.yml" "$REMOTE:$DEPLOY_REMOTE_DIR/"
+scp "${SCP_OPTS[@]}" "$TMP_TAR" "$WORKTREE_DIR/docker-compose.yml" "$REMOTE:$DEPLOY_REMOTE_DIR/"
 
 REMOTE_TAR_NAME="$(basename "$TMP_TAR")"
 SNAPSHOT_NAME="pre-$DEPLOYED_VERSION-$TARGET_SHA-$(date -u +%Y%m%dT%H%M%SZ).tgz"
