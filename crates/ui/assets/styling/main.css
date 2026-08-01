@@ -112,19 +112,21 @@ button:disabled {
     font-weight: 600;
 
     /* The message alternates between "retrying..." and "retrying in 3s...",
-       and the pill resized on every tick, nudging the header around. Holding
-       a floor width keeps it still.
+       and the pill resized on every tick, nudging the header around.
 
-       `min()` rather than a bare `min-width`: the longest message is around
-       40 characters, which would overflow a narrow phone. Capping at 100%
-       lets it shrink to the container instead — the jump returns at that
-       width, which is the right trade against horizontal overflow.
+       A *fixed* width, not a floor. This span is the middle child of
+       `.topbar`, which is `justify-content: space-between`, so a
+       variable-width item grows outward in both directions and recentres
+       itself — `min-width` left the longer message exceeding the floor, so
+       it still moved. Sizing to the longest message pins both edges, which
+       matters most on the left, where the eye starts reading.
 
-       Left-aligned so the shared prefix stays put as the tail changes, and
-       tabular digits so the countdown itself doesn't shuffle. */
+       `min()` caps it at the container so it cannot overflow a narrow
+       phone; there it shrinks and the movement returns, which is the right
+       trade against horizontal scrolling. Tabular digits keep the countdown
+       itself from shuffling. */
     display: inline-block;
-    min-width: min(40ch, 100%);
-    max-width: 100%;
+    width: min(42ch, 100%);
     text-align: left;
     font-variant-numeric: tabular-nums;
 }
@@ -1656,4 +1658,42 @@ button:disabled {
     .turn-actions-buttons {
         justify-content: flex-start;
     }
+}
+
+/* A glance-able score line inside the rack panel.
+
+   On a phone the seats table is scrolled far above the board — the owner
+   plays positioned so the board and rack are both visible, which puts the
+   scores out of sight entirely. This is the same on desktop rather than
+   behind a media query: one layout is easier to reason about than two, and
+   the duplication on a wide screen is mild.
+
+   Wraps rather than scrolls, so six seats become two lines instead of
+   something you have to swipe. */
+.rack-scores {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    align-items: baseline;
+    margin-bottom: 10px;
+    font-size: 0.85rem;
+}
+
+.rack-score {
+    display: inline-flex;
+    gap: 6px;
+    align-items: baseline;
+    color: var(--ink-soft, #5b5348);
+}
+
+/* The seat to play next. Marked rather than merely bolder, so it reads at a
+   glance without comparing weights. */
+.rack-score-active {
+    color: #8a2d1e;
+    font-weight: 700;
+}
+
+.rack-score-value {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
 }

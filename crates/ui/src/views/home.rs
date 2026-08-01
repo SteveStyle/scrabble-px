@@ -255,6 +255,29 @@ pub fn Home(
 
             if has_rack {
                 div { class: "rack-panel",
+                    // Scores, where the eye already is. On a phone the seats
+                    // table sits far above the board — see issue #3.
+                    {
+                        let names: Vec<String> = game
+                            .participants
+                            .iter()
+                            .map(|participant| participant.display_name.clone())
+                            .collect();
+                        let labels = seat_labels(&names);
+                        let entries = game.participants.iter().zip(labels).map(|(participant, label)| {
+                            let active = participant.seat_number == game.current_seat;
+                            rsx! {
+                                span {
+                                    key: "{participant.seat_number}",
+                                    class: if active { "rack-score rack-score-active" } else { "rack-score" },
+                                    if active { "● " }
+                                    "{label}"
+                                    span { class: "rack-score-value", "{participant.score}" }
+                                }
+                            }
+                        });
+                        rsx! { div { class: "rack-scores", {entries} } }
+                    }
                     if has_unresolved_blank {
                         div { class: "blank-picker",
                             p { class: "composer-copy",
@@ -501,8 +524,79 @@ fn format_status(game: &GameStateDto) -> &'static str {
     }
 }
 
+/// Short labels for the seats, unique within this game.
+///
+/// The scores row has to fit several seats on a phone, so `Greedy 1` becomes
+/// `G1` and `Steve45` becomes `S` — the first character of each
+/// whitespace-separated word. That handles the common shape (a human plus
+/// numbered bots) without inventing anything to read.
+///
+/// If any two seats would end up with the same label, *every* seat falls
+/// back to its full name rather than lengthening only the pair that clashed.
+/// Abbreviating some names and not others is harder to read than
+/// abbreviating none, and an ambiguous label is worse than a long one when
+/// the whole point is to tell at a glance who is winning.
+fn seat_labels(names: &[String]) -> Vec<String> {
+    let short: Vec<String> = names
+        .iter()
+        .map(|name| {
+            name.split_whitespace()
+                .filter_map(|word| word.chars().next())
+                .collect::<String>()
+        })
+        .collect();
+
+    let mut seen: Vec<&str> = short.iter().map(String::as_str).collect();
+    seen.sort_unstable();
+    let all_distinct = {
+        let before = seen.len();
+        seen.dedup();
+        seen.len() == before
+    };
+
+    if all_distinct && short.iter().all(|label| !label.is_empty()) {
+        short
+    } else {
+        names.to_vec()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn seat_labels_abbreviate_to_initials() {
+        let names = vec![
+            "Steve45".to_string(),
+            "Greedy 1".to_string(),
+            "Greedy 2".to_string(),
+            "Greedy 3".to_string(),
+        ];
+        assert_eq!(seat_labels(&names), vec!["S", "G1", "G2", "G3"]);
+    }
+
+    /// Abbreviating only the names that happen not to clash would leave a
+    /// row mixing "S" with "Steve" and "Sam", which reads worse than either
+    /// extreme. All or nothing.
+    #[test]
+    fn seat_labels_fall_back_to_full_names_when_any_would_collide() {
+        let names = vec!["Steve".to_string(), "Sam".to_string()];
+        assert_eq!(seat_labels(&names), vec!["Steve", "Sam"]);
+    }
+
+    #[test]
+    fn seat_labels_handle_multi_word_and_non_ascii_names() {
+        let names = vec!["Mary Jane Smith".to_string(), "José".to_string()];
+        assert_eq!(seat_labels(&names), vec!["MJS", "J"]);
+    }
+
+    /// A name that is only whitespace yields an empty label, which would be
+    /// an invisible seat. Falling back keeps every seat visible.
+    #[test]
+    fn seat_labels_fall_back_when_a_name_yields_nothing() {
+        let names = vec!["   ".to_string(), "Greedy 1".to_string()];
+        assert_eq!(seat_labels(&names), vec!["   ", "Greedy 1"]);
+    }
     use super::*;
 
     fn place_record(positions: Vec<api::PositionDto>) -> api::MoveRecordDto {
