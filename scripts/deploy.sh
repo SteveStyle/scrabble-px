@@ -133,7 +133,11 @@ echo "==> $TARGET_SHA confirmed on the remote ($REMOTE_BRANCHES)"
 # the one enforced here are the same code, and cannot answer differently.
 if [[ "${DEPLOY_SKIP_CI:-}" == "1" ]]; then
   echo "==> WARNING: skipping the CI gate (DEPLOY_SKIP_CI=1)"
-elif ! "$REPO_DIR/scripts/ci-status.sh" "$TARGET_FULL_SHA"; then
+# `--wait` rather than a bare check: CI takes 3-10 minutes, so deploying
+# shortly after a push otherwise refuses with "still in progress" and leaves
+# you to run the wait by hand and come back. Blocking here folds that into
+# the one command you already typed.
+elif ! "$REPO_DIR/scripts/ci-status.sh" --wait "$TARGET_FULL_SHA"; then
   echo "error: refusing to deploy — see above. Fix CI rather than deploying past it," >&2
   echo "       or set DEPLOY_SKIP_CI=1 if GitHub itself is the problem." >&2
   exit 1

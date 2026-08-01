@@ -146,6 +146,37 @@ if ! COMMIT="$(git rev-parse --verify "${REF}^{commit}" 2>/dev/null)"; then
 fi
 SHORT_SHA="$(git rev-parse --short "$COMMIT")"
 
+# Refuses to build an image the staging volume has already moved past — the
+# same rule `deploy.sh` applies to production, which staging lacked.
+#
+# `up` keeps the volume deliberately, so after moving around with
+# `at <ref>` (or rehearsing a rollback) the database can be *ahead* of the
+# code being built. sqlx then sees an applied migration the binary doesn't
+# have, exits with `VersionMissing`, and the container crash-loops. That
+# happened for real on 2026-08-01: the volume still carried a migration from
+# an abandoned branch, and the only clue was a line buried in
+# `docker compose logs`.
+#
+# Only in `up` mode: `at` wipes the volume first, so there is nothing to
+# outrun. Read from the *running* stack, which `up` has not stopped yet.
+if [[ "$MODE" == "up" ]]; then
+  STAGING_SCHEMA="$(curl -sf --max-time 5 "$STAGING_URL/health" 2>/dev/null \
+    | grep -o '"schema_version":[0-9]*' | cut -d: -f2 || true)"
+  TARGET_SCHEMA="$(git ls-tree --name-only "$COMMIT" crates/server-game/migrations/ \
+    | grep '\.sql$' | sed 's#.*/##' | grep -oE '^[0-9]+' | sort -n | tail -1 | sed 's/^0*//' || true)"
+  if [[ -n "$STAGING_SCHEMA" && -n "$TARGET_SCHEMA" ]] && (( STAGING_SCHEMA > TARGET_SCHEMA )); then
+    echo "error: staging's database is at migration $STAGING_SCHEMA, but $SHORT_SHA only knows up to $TARGET_SCHEMA." >&2
+    echo "       That build would fail sqlx's startup check and crash-loop." >&2
+    echo "" >&2
+    echo "       The volume is ahead of the code — usually after an 'at <ref>' or a" >&2
+    echo "       rollback rehearsal. Wipe it and start clean:" >&2
+    echo "         ./scripts/deploy-staging.sh reset && ./scripts/deploy-staging.sh" >&2
+    echo "       or build that ref against a fresh volume:" >&2
+    echo "         ./scripts/deploy-staging.sh at $SHORT_SHA" >&2
+    exit 1
+  fi
+fi
+
 if [[ "$MODE" == "up" && -n "$(git status --porcelain)" ]]; then
   echo "==> Note: your working tree has uncommitted changes. They are NOT part of this"
   echo "    build — staging runs a clean checkout of HEAD ($SHORT_SHA). Commit to test them."
@@ -184,6 +215,29 @@ docker build --target runtime-web \
 
 echo "==> Starting staging stack"
 "${COMPOSE[@]}" up -d --no-build
+
+# Waits for it to actually answer before claiming success. Without this the
+# script printed "Staging is up" and exited 0 while the server was
+# crash-looping behind a healthy Caddy — the failure looked like a success
+# until someone curled it. Checks the *version* too, so a container that
+# never restarted can't pass.
+echo "==> Waiting for staging to answer on $SHORT_SHA"
+STAGING_READY=0
+for _ in $(seq 1 30); do
+  LIVE="$(curl -sf --max-time 5 "$STAGING_URL/health" 2>/dev/null \
+    | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || true)"
+  if [[ "${LIVE##*+}" == "$SHORT_SHA" ]]; then
+    STAGING_READY=1
+    echo "    $LIVE"
+    break
+  fi
+  sleep 2
+done
+if (( STAGING_READY == 0 )); then
+  echo "error: staging did not come up on $SHORT_SHA within 60s." >&2
+  echo "       Check why:  docker compose -f docker-compose.staging.yml logs --tail=30 server" >&2
+  exit 1
+fi
 
 if [[ "$MODE" == "at" ]]; then
   echo "==> Staging is up at http://localhost:8081, running $REF ($SHORT_SHA) against a fresh database"
