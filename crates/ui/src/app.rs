@@ -27,6 +27,16 @@ const BOARD_HEIGHT: usize = 15;
 /// How often the background reconnect loop pings `/health` while the
 /// server is unreachable.
 const RECONNECT_POLL_MS: u64 = 3000;
+/// How long "retrying..." stays on screen after a probe.
+///
+/// A failed probe returns in milliseconds — a refused connection or a 502
+/// from Caddy is immediate — so without this the label alternates too fast
+/// to read: it flashes for a frame while "no response" holds the other
+/// three seconds. Holding it does not slow anything down; the probe has
+/// already happened and the cycle is still `RECONNECT_POLL_MS`. It only
+/// makes the change legible, which is the entire point of showing a phase
+/// rather than a static message.
+const PROBE_LABEL_MS: u64 = 800;
 /// Delay between WebSocket reconnect attempts.
 const WEBSOCKET_RETRY_MS: u64 = 3000;
 /// How often the games list (and with it, unread-chat mail icons) is
@@ -298,15 +308,18 @@ pub fn RootApp() -> Element {
             let auth_token = session().map(|current| current.session_token.clone());
             spawn(async move {
                 loop {
-                    // Nothing answered last time; say so while we wait.
-                    *RECONNECT_PHASE.write() = ReconnectPhase::Waiting;
-                    sleep_ms(RECONNECT_POLL_MS).await;
-                    // Flips just before the probe, so the message alternates
-                    // once per cycle rather than sitting still.
                     *RECONNECT_PHASE.write() = ReconnectPhase::Probing;
+                    // Recovery is never delayed: a successful probe leaves
+                    // immediately, without waiting out the label.
                     if check_server_reachable(&server_url).await {
                         break;
                     }
+                    // Failed. Hold "retrying..." long enough to be read,
+                    // then say what the result was for the rest of the
+                    // cycle. Total time between attempts is unchanged.
+                    sleep_ms(PROBE_LABEL_MS).await;
+                    *RECONNECT_PHASE.write() = ReconnectPhase::Waiting;
+                    sleep_ms(RECONNECT_POLL_MS.saturating_sub(PROBE_LABEL_MS)).await;
                 }
                 *IS_ONLINE.write() = true;
                 info_message.set(Some("Reconnected — catching up...".to_string()));
