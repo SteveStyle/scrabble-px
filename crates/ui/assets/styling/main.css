@@ -1673,7 +1673,11 @@ button:disabled {
 .rack-scores {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px 14px;
+    /* Tight on purpose. Four seats at three digits each, plus a move score
+       apiece and the bag, is close to a phone's width — and a wrapped row
+       costs the vertical line that moving the bag off the rack row was
+       meant to save. Every few px here is headroom for a longer game. */
+    gap: 6px 12px;
     align-items: baseline;
     margin-bottom: 10px;
     font-size: 0.85rem;
@@ -1695,7 +1699,10 @@ button:disabled {
    which is how small text ends up unreadable. */
 .rack-score {
     display: inline-flex;
-    gap: 6px;
+    /* Between the label and the total only; the move score is pulled tight
+       against the total below, so it reads as "106+35" rather than three
+       separate figures. */
+    gap: 5px;
     align-items: baseline;
     color: #6f6659;
 }
@@ -1717,9 +1724,25 @@ button:disabled {
     font-weight: 400;
     color: #857a6a;
     font-variant-numeric: tabular-nums;
+    /* Cancels the flex gap so the move score sits against its total. */
+    margin-left: -3px;
 }
 
 .rack-score-active .rack-score-delta {
     color: #9c4633;
 }
 
+/* The bag count, alongside the scores rather than beside the tiles.
+
+   It used to sit in `.rack-row` as a `flex-shrink: 0` item, which cost the
+   rack about 94px of width — enough that a seven-tile rack wrapped to two
+   rows on a phone, where vertical space is the scarce thing. Pushed to the
+   end of the scores row so the tiles get the full width.
+
+   `margin-left: auto` so it sits right, away from the seats, and reads as a
+   different kind of fact. */
+.rack-scores-bag {
+    margin-left: auto;
+    color: #6f6659;
+    white-space: nowrap;
+}

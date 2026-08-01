@@ -264,8 +264,7 @@ pub fn Home(
                     // placeholder participant literally named "Open a game"
                     // — which this row rendered as "● Oag 0", since the
                     // abbreviation is initials and that is three words.
-                    if game.status != api::GameStatus::Waiting {
-                        {
+                    {
                         let names: Vec<String> = game
                             .participants
                             .iter()
@@ -287,7 +286,24 @@ pub fn Home(
                                 }
                             }
                         });
-                        rsx! { div { class: "rack-scores", {entries} } }
+                        // Seats only once play has started — a `Waiting`
+                        // game has nothing but zeros to report, and the
+                        // empty board before any game is opened is backed
+                        // by a placeholder participant named "Open a game",
+                        // which this rendered as "● Oag 0".
+                        //
+                        // The bag count always shows. It moved here from the
+                        // rack row, where as a non-shrinking flex item it
+                        // took ~94px from the tiles — enough to push a
+                        // seven-tile rack onto a second line on a phone. It
+                        // belongs with the scores anyway: both are state you
+                        // glance at rather than act on.
+                        let started = game.status != api::GameStatus::Waiting;
+                        rsx! {
+                            div { class: "rack-scores",
+                                if started { {entries} }
+                                span { class: "rack-scores-bag", "Bag {game.bag_count}" }
+                            }
                         }
                     }
                     if has_unresolved_blank {
@@ -357,7 +373,6 @@ pub fn Home(
                             on_click_tile: on_click_rack_tile,
                             on_toggle_exchange_tile,
                         }
-                        span { class: "meta-chip rack-row-bag", "Bag {game.bag_count}" }
                     }
 
                     div { class: "turn-actions",
