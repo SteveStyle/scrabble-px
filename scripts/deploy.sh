@@ -483,4 +483,52 @@ else
   echo "    committed and pushed"
 fi
 
+# Closes the milestone this release delivered, and opens the next one.
+#
+# GitHub's `Closes #N` fires when a commit reaches the default branch, which
+# — with no branching here — is the moment it is *written*, not the moment
+# it ships. That marked issues done while they sat unreleased, which is
+# exactly what "track a change through to production" needs to distinguish.
+# So commits say `Refs #N`, issue state means "work done", and the milestone
+# means "in production". This is the step that makes the second one true.
+#
+# Rolling forward only, same test as the version bump: a rollback deploys an
+# older version whose milestone closed long ago.
+#
+# Best-effort throughout. A GitHub hiccup must not fail a deploy that has
+# already succeeded — production is live either way, and the worst case is a
+# milestone closed by hand.
+if [[ "$BRANCH_TIP" == "$TARGET_FULL_SHA" ]] && command -v gh > /dev/null; then
+  MILESTONE="$(gh api "repos/{owner}/{repo}/milestones?state=open" \
+    --jq ".[] | select(.title == \"$DEPLOYED_VERSION\") | .number" 2>/dev/null || true)"
+  if [[ -n "$MILESTONE" ]]; then
+    echo "==> Closing milestone $DEPLOYED_VERSION and its issues"
+    for ISSUE in $(gh issue list --milestone "$DEPLOYED_VERSION" --state open \
+      --json number --jq '.[].number' 2>/dev/null || true); do
+      if gh issue close "$ISSUE" \
+        --comment "Released in $DEPLOY_TAG — production is running $DEPLOYED_VERSION+$TARGET_SHA." \
+        > /dev/null 2>&1; then
+        echo "    closed #$ISSUE"
+      else
+        echo "    warning: could not close #$ISSUE" >&2
+      fi
+    done
+    gh api --method PATCH "repos/{owner}/{repo}/milestones/$MILESTONE" \
+      -f state=closed > /dev/null 2>&1 \
+      && echo "    milestone $DEPLOYED_VERSION closed" \
+      || echo "    warning: could not close milestone $DEPLOYED_VERSION" >&2
+  fi
+
+  # The tree has just moved to NEXT_VERSION, so anything reported from here
+  # belongs to that release. Creating it now means an issue never has to
+  # wait for a milestone to exist before it can be filed.
+  if [[ "${DEPLOY_SKIP_BUMP:-}" != "1" ]] \
+    && ! gh api "repos/{owner}/{repo}/milestones?state=all" \
+      --jq '.[].title' 2>/dev/null | grep -qx "$NEXT_VERSION"; then
+    gh api repos/{owner}/{repo}/milestones -f title="$NEXT_VERSION" \
+      -f description="Changes on main not yet in production." > /dev/null 2>&1 \
+      && echo "    opened milestone $NEXT_VERSION for what comes next"
+  fi
+fi
+
 echo "==> Done — https://$DEPLOY_HOST.sslip.io (or your configured hostname)"

@@ -257,7 +257,15 @@ pub fn Home(
                 div { class: "rack-panel",
                     // Scores, where the eye already is. On a phone the seats
                     // table sits far above the board — see issue #3.
-                    {
+                    //
+                    // Only once play has started. A `Waiting` game has
+                    // nothing to report but a row of zeros, and the empty
+                    // board shown before any game is opened is backed by a
+                    // placeholder participant literally named "Open a game"
+                    // — which this row rendered as "● Oag 0", since the
+                    // abbreviation is initials and that is three words.
+                    if game.status != api::GameStatus::Waiting {
+                        {
                         let names: Vec<String> = game
                             .participants
                             .iter()
@@ -277,6 +285,7 @@ pub fn Home(
                             }
                         });
                         rsx! { div { class: "rack-scores", {entries} } }
+                        }
                     }
                     if has_unresolved_blank {
                         div { class: "blank-picker",
