@@ -99,12 +99,25 @@ fi
 # rejected the case this script now exists to support — a commit reached
 # by tag or SHA has no `@{u}` at all, so a rollback failed a gate it
 # actually passed.
+#
+# Any remote branch, not `origin/main` specifically. The comment above is
+# the rule — "this commit is on the remote" — and pinning it to main was
+# stricter than that without saying so. It also blocked a legitimate case:
+# deploying a branch deliberately, to trial a change or to rehearse a
+# rollback with something you intend to abandon (docs/3.3's "Rollback
+# drill"). A branch that has been pushed is just as reproducible as main;
+# what must never ship is a commit that exists only on this machine.
+#
+# `grep -v '\->'` drops the `origin/HEAD -> origin/main` symbolic line,
+# which is not a branch and would otherwise make any commit look reachable.
 git fetch --quiet origin
-if ! git merge-base --is-ancestor "$TARGET_FULL_SHA" origin/main; then
-  echo "error: $TARGET_SHA ($DEPLOY_REF) is not on origin/main — push it first: git push origin main" >&2
+REMOTE_BRANCHES="$(git branch -r --contains "$TARGET_FULL_SHA" 2>/dev/null | grep -v '\->' | tr -d ' ' | tr '\n' ' ' || true)"
+if [[ -z "$REMOTE_BRANCHES" ]]; then
+  echo "error: $TARGET_SHA ($DEPLOY_REF) is not on any remote branch — push it first." >&2
+  echo "       Production must only ever run a commit that survives losing this machine." >&2
   exit 1
 fi
-echo "==> $TARGET_SHA confirmed present on origin/main"
+echo "==> $TARGET_SHA confirmed on the remote ($REMOTE_BRANCHES)"
 
 # Refuses to ship a commit CI hasn't passed. Until this existed, CI was
 # only a signal running alongside the release rather than a gate on it: a
