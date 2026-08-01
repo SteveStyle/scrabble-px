@@ -26,16 +26,14 @@ pub(crate) const BOARD_WIDTH: usize = 15;
 const BOARD_HEIGHT: usize = 15;
 /// How often the background reconnect loop pings `/health` while the
 /// server is unreachable.
-const RECONNECT_POLL_MS: u64 = 3000;
-/// How long "retrying..." stays on screen after a probe.
+const RECONNECT_POLL_SECS: u64 = 3;
+/// How long "retrying..." stays up after a failed probe, before the
+/// countdown to the next one starts.
 ///
-/// A failed probe returns in milliseconds — a refused connection or a 502
-/// from Caddy is immediate — so without this the label alternates too fast
-/// to read: it flashes for a frame while "no response" holds the other
-/// three seconds. Holding it does not slow anything down; the probe has
-/// already happened and the cycle is still `RECONNECT_POLL_MS`. It only
-/// makes the change legible, which is the entire point of showing a phase
-/// rather than a static message.
+/// A failed probe returns in milliseconds — a refused connection, or a 502
+/// straight from Caddy — so without this it is gone before it can be read.
+/// Nothing is slowed: the attempt has already happened, and a *successful*
+/// probe leaves immediately rather than waiting the label out.
 const PROBE_LABEL_MS: u64 = 800;
 /// Delay between WebSocket reconnect attempts.
 const WEBSOCKET_RETRY_MS: u64 = 3000;
@@ -73,13 +71,19 @@ static IS_ONLINE: GlobalSignal<bool> = Signal::global(|| true);
 /// failing.
 #[derive(Clone, Copy, PartialEq)]
 enum ReconnectPhase {
-    /// Between attempts. The last one got no answer.
-    Waiting,
     /// An attempt is in flight right now.
     Probing,
+    /// Counting down to the next attempt, this many seconds to go.
+    ///
+    /// A countdown rather than a static "waiting": it is legible the whole
+    /// time, so nothing has to be caught mid-flash, and its reset to the
+    /// top is what tells you an attempt just happened and failed. That is
+    /// the signal the original accidental flicker was carrying, made
+    /// explicit and readable.
+    WaitingFor(u64),
 }
 
-static RECONNECT_PHASE: GlobalSignal<ReconnectPhase> = Signal::global(|| ReconnectPhase::Waiting);
+static RECONNECT_PHASE: GlobalSignal<ReconnectPhase> = Signal::global(|| ReconnectPhase::Probing);
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn sleep_ms(ms: u64) {
@@ -314,12 +318,11 @@ pub fn RootApp() -> Element {
                     if check_server_reachable(&server_url).await {
                         break;
                     }
-                    // Failed. Hold "retrying..." long enough to be read,
-                    // then say what the result was for the rest of the
-                    // cycle. Total time between attempts is unchanged.
                     sleep_ms(PROBE_LABEL_MS).await;
-                    *RECONNECT_PHASE.write() = ReconnectPhase::Waiting;
-                    sleep_ms(RECONNECT_POLL_MS.saturating_sub(PROBE_LABEL_MS)).await;
+                    for remaining in (1..=RECONNECT_POLL_SECS).rev() {
+                        *RECONNECT_PHASE.write() = ReconnectPhase::WaitingFor(remaining);
+                        sleep_ms(1000).await;
+                    }
                 }
                 *IS_ONLINE.write() = true;
                 info_message.set(Some("Reconnected — catching up...".to_string()));
@@ -598,8 +601,10 @@ pub fn RootApp() -> Element {
                 if !IS_ONLINE() {
                     span { class: "offline-indicator",
                         match RECONNECT_PHASE() {
-                            ReconnectPhase::Probing => "Can't reach the server — retrying...",
-                            ReconnectPhase::Waiting => "Can't reach the server — no response",
+                            ReconnectPhase::Probing => "Can't reach the server — retrying...".to_string(),
+                            ReconnectPhase::WaitingFor(secs) => {
+                                format!("Can't reach the server — retrying in {secs}s...")
+                            }
                         }
                     }
                 }
