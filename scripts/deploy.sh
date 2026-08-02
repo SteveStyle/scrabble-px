@@ -45,12 +45,17 @@ set -euo pipefail
 #                                      # to roll back to a previous release
 #
 # Configure via environment variables (defaults match the current VM):
+#   DEPLOY_ENV       production | rehearsal (default: production)
 #   DEPLOY_HOST      Public IP or hostname of the VM (default: 129.151.69.246)
 #   DEPLOY_USER      SSH user (default: ubuntu)
 #   DEPLOY_SSH_KEY   Private key path (default: ~/.ssh/oracle_tile_lite_elite)
 #   DEPLOY_REMOTE_DIR  Directory on the VM holding docker-compose.yml (default: tile-lite-elite)
+#
+# Everything defaults to production, so an unset environment behaves exactly
+# as this script always has. `scripts/deploy-rehearsal.sh` sets the lot.
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+DEPLOY_ENV="${DEPLOY_ENV:-production}"
 DEPLOY_HOST="${DEPLOY_HOST:-129.151.69.246}"
 DEPLOY_USER="${DEPLOY_USER:-ubuntu}"
 DEPLOY_SSH_KEY="${DEPLOY_SSH_KEY:-$HOME/.ssh/oracle_tile_lite_elite}"
@@ -61,6 +66,20 @@ PROD_URL="${PROD_URL:-https://tileliteelite.com}"
 # expected to happen immediately if at all (a later rollback would discard
 # real play), so depth beyond the last few releases has no consumer.
 SNAPSHOT_KEEP="${SNAPSHOT_KEEP:-5}"
+
+case "$DEPLOY_ENV" in
+  production|rehearsal) ;;
+  *) echo "error: DEPLOY_ENV must be 'production' or 'rehearsal', not '$DEPLOY_ENV'." >&2; exit 1 ;;
+esac
+
+# What a *release* means only applies to production: the prod-* tag is the
+# deployment log, the version bump moves the tree past what is now live, and
+# the milestone closure records what reached users. A rehearsal does none of
+# those things — it proves the mechanism. Tagging prod-0.4.19 for a deploy
+# that never touched production would corrupt the one record that answers
+# "what has actually shipped".
+IS_RELEASE=0
+[[ "$DEPLOY_ENV" == "production" ]] && IS_RELEASE=1
 
 # `-n` redirects ssh's stdin from /dev/null. Without it ssh reads the
 # script's own stdin, and a command run before an interactive prompt
@@ -76,6 +95,36 @@ SCP_OPTS=(-i "$DEPLOY_SSH_KEY" -o ConnectTimeout=10)
 REMOTE="$DEPLOY_USER@$DEPLOY_HOST"
 
 cd "$REPO_DIR"
+
+# Which script is this? deploy.sh runs from the working tree, not from the
+# commit being deployed — the payload is always a clean worktree checkout,
+# but the *script* is whatever is on disk now. So a production deploy made
+# while sitting on a feature branch runs that branch's tooling, silently.
+# Printing the script's own identity makes that visible in the output
+# instead of remembered. See issue #14 for why this is a mitigation rather
+# than a fix (the fix is a separate released-scripts checkout, judged not
+# worth its own upkeep).
+SCRIPT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+SCRIPT_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+SCRIPT_DIRTY=""
+git diff --quiet -- scripts/ 2>/dev/null || SCRIPT_DIRTY=" (uncommitted changes in scripts/)"
+echo "==> $DEPLOY_ENV deploy, using tooling from $SCRIPT_BRANCH@$SCRIPT_SHA$SCRIPT_DIRTY"
+
+# Production should only ever run merged tooling; unmerged tooling belongs on
+# the rehearsal host, which is what it is for. Rehearsal deliberately has no
+# such guard — a guard there would defeat the environment's purpose.
+if (( IS_RELEASE )) && { [[ "$SCRIPT_BRANCH" != "main" ]] || [[ -n "$SCRIPT_DIRTY" ]]; }; then
+  echo
+  echo "    WARNING: deploying to production with tooling that is not merged."
+  echo "    Test tooling changes on the rehearsal host first:"
+  echo "        ./scripts/deploy-rehearsal.sh"
+  echo
+  read -r -p "    Type 'production' to run this anyway: " CONFIRM_TOOLING
+  if [[ "$CONFIRM_TOOLING" != "production" ]]; then
+    echo "    Stopped — nothing was deployed."
+    exit 1
+  fi
+fi
 
 # Fail fast with a clear message rather than a confusing worktree error
 # further down if the ref doesn't exist locally.
@@ -212,6 +261,13 @@ if [[ "$DEPLOY_REF" == "HEAD" ]]; then
 else
   STAGING_CMD="./scripts/deploy-staging.sh at $DEPLOY_REF"
 fi
+# Gating a rehearsal on another environment is circular — the rehearsal is
+# what the gate is *for*. Production keeps the gate; today it points at the
+# local preview, and repointing it at the rehearsal host is the second half
+# of #14, deliberately left until the rehearsal environment has been proven.
+if (( ! IS_RELEASE )); then
+  echo "==> Skipping the staging gate: this deploy is the rehearsal"
+else
 STAGING_HEALTH="$(curl -sf --max-time 5 "$STAGING_URL/health" 2>/dev/null || true)"
 # `|| true` on every one of these: `grep` exits 1 when it matches nothing,
 # and under `set -o pipefail` that kills the assignment outright — so the
@@ -231,6 +287,7 @@ elif [[ "$STAGING_SHA" != "$TARGET_SHA" ]]; then
   exit 1
 fi
 echo "==> Staging confirmed running this commit ($TARGET_SHA) — proceeding"
+fi
 
 # The fresh checkout. A throwaway `git worktree` rather than checking $REF
 # out here: it leaves the real working copy (branch, staged and unstaged
@@ -430,7 +487,12 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "
 # rather than a bare pointer. Named explicitly against the deployed SHA, so
 # it lands correctly regardless of the bump below.
 DEPLOY_TAG="prod-$DEPLOYED_VERSION"
-if git -C "$REPO_DIR" rev-parse -q --verify "refs/tags/$DEPLOY_TAG" > /dev/null; then
+if (( ! IS_RELEASE )); then
+  # No tag, and DEPLOY_TAG is still referenced by the messages below, so it
+  # keeps a readable value rather than being unset under `set -u`.
+  DEPLOY_TAG="(none — $DEPLOY_ENV deploy, not a release)"
+  echo "==> No prod-* tag: this was a $DEPLOY_ENV deploy, not a release"
+elif git -C "$REPO_DIR" rev-parse -q --verify "refs/tags/$DEPLOY_TAG" > /dev/null; then
   # Same version deployed twice — a redeploy, a rollback to a release that
   # already carries its tag, or a bump that didn't happen. Keep both rather
   # than moving the tag: a force-moved tag loses the record of the earlier
@@ -438,10 +500,12 @@ if git -C "$REPO_DIR" rev-parse -q --verify "refs/tags/$DEPLOY_TAG" > /dev/null;
   DEPLOY_TAG="$DEPLOY_TAG-$(date -u +%Y%m%dT%H%M%SZ)"
   echo "==> Tag exists already; using $DEPLOY_TAG"
 fi
-git -C "$REPO_DIR" tag -a "$DEPLOY_TAG" "$TARGET_FULL_SHA" \
-  -m "Deployed to production $(date -u +%Y-%m-%dT%H:%MZ) from $TARGET_SHA"
-git -C "$REPO_DIR" push --quiet origin "$DEPLOY_TAG"
-echo "==> Tagged $DEPLOY_TAG"
+if (( IS_RELEASE )); then
+  git -C "$REPO_DIR" tag -a "$DEPLOY_TAG" "$TARGET_FULL_SHA" \
+    -m "Deployed to production $(date -u +%Y-%m-%dT%H:%MZ) from $TARGET_SHA"
+  git -C "$REPO_DIR" push --quiet origin "$DEPLOY_TAG"
+  echo "==> Tagged $DEPLOY_TAG"
+fi
 
 # The working tree moves one patch ahead of what was just shipped, so no
 # later commit is ever built carrying a version number already live. This
@@ -457,7 +521,9 @@ CURRENT_BRANCH="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD)"
 BRANCH_TIP="$(git -C "$REPO_DIR" rev-parse HEAD)"
 NEXT_VERSION="$(printf '%s' "$DEPLOYED_VERSION" | awk -F. '{printf "%s.%s.%d", $1, $2, $3 + 1}')"
 
-if [[ "${DEPLOY_SKIP_BUMP:-}" == "1" ]]; then
+if (( ! IS_RELEASE )); then
+  echo "==> No version bump: a $DEPLOY_ENV deploy does not consume a version"
+elif [[ "${DEPLOY_SKIP_BUMP:-}" == "1" ]]; then
   echo "==> Skipping the version bump (DEPLOY_SKIP_BUMP=1) — production is on $DEPLOYED_VERSION"
 elif [[ "$BRANCH_TIP" != "$TARGET_FULL_SHA" ]]; then
   echo "==> Deployed $DEPLOYED_VERSION from an earlier commit, so leaving the version alone."
@@ -503,7 +569,9 @@ fi
 # Best-effort throughout. A GitHub hiccup must not fail a deploy that has
 # already succeeded — production is live either way, and the worst case is a
 # milestone closed by hand.
-if [[ "$BRANCH_TIP" == "$TARGET_FULL_SHA" ]] && command -v gh > /dev/null; then
+if (( ! IS_RELEASE )); then
+  echo "==> No milestone change: a $DEPLOY_ENV deploy has not reached users"
+elif [[ "$BRANCH_TIP" == "$TARGET_FULL_SHA" ]] && command -v gh > /dev/null; then
   MILESTONE="$(gh api "repos/{owner}/{repo}/milestones?state=open" \
     --jq ".[] | select(.title == \"$DEPLOYED_VERSION\") | .number" 2>/dev/null || true)"
   if [[ -n "$MILESTONE" ]]; then
