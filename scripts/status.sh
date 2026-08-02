@@ -9,7 +9,7 @@ set -euo pipefail
 #   is the work done          issue open/closed
 #   is it in production       milestone open/closed
 #   is it being worked on     a branch named `issue-<N>-*` exists
-#   merged, awaiting release  git merge-base --is-ancestor <branch> origin/main
+#   merged, awaiting release  a `Refs #N` commit is on origin/main
 #   what type of change       the issue's type label (docs/3.3, "The six types")
 #   what is live right now    GET /health
 #
@@ -67,9 +67,27 @@ remote_branch_for_issue() {
 }
 
 state_of_issue() {
-  local num="$1" branch
+  local num="$1" type="${2:-}" branch
   branch="$(branch_for_issue "$num")"
   [[ -z "$branch" ]] && branch="$(remote_branch_for_issue "$num")"
+
+  # Ask main's history first, not the branches. A merged change has its
+  # branch deleted, so branch-only detection reported finished work as "not
+  # started" — which it did for three issues the moment they were merged.
+  # `Refs #N` is in every commit by convention, and unlike a branch it is
+  # permanent. The trailing guard stops #1 matching "Refs #19".
+  if git log origin/main -E --grep="Refs #${num}([^0-9]|\$)" \
+       --format=%h 2>/dev/null | grep -q .; then
+    # Only the types that change the app wait for a release. Documentation
+    # and non-production tooling are finished at merge, so say so as an
+    # action rather than leaving them looking blocked on something.
+    case "$type" in
+      documentation)    echo "merged — close it" ;;
+      non-prod-tooling) echo "merged — smoke-test, then close" ;;
+      *)                echo "merged, awaiting release" ;;
+    esac
+    return
+  fi
 
   if [[ -z "$branch" ]]; then
     echo "not started"
@@ -81,11 +99,10 @@ state_of_issue() {
   # branch this script was written on.
   if [[ "$(git rev-parse "$branch" 2>/dev/null)" == "$(git rev-parse origin/main 2>/dev/null)" ]]; then
     echo "branched, no commits ($branch)"
-  # Merged means "its commits are reachable from origin/main" — which is
-  # true for a fast-forward merge and stays true if the branch is later
-  # deleted, unlike anything that inspects the branch itself.
+  # A branch whose commits are all in main but which carries no `Refs #N`
+  # — an older change, or one whose trailer was forgotten.
   elif git merge-base --is-ancestor "$branch" origin/main 2>/dev/null; then
-    echo "merged, awaiting release"
+    echo "merged (no Refs trailer)"
   else
     echo "in progress ($branch)"
   fi
@@ -123,9 +140,10 @@ if [[ -z "$ISSUES" ]]; then
 else
   while IFS=$'\t' read -r num title labels milestone; do
     [[ -z "$num" ]] && continue
-    state="$(state_of_issue "$num")"
+    TYPE="$(type_of "$labels")"
+    state="$(state_of_issue "$num" "$TYPE")"
     [[ -n "$milestone" ]] && state="$state · $milestone"
-    printf '    %-4s %-40s %-16s %s\n' "$num" "${title:0:40}" "$(type_of "$labels")" "$state"
+    printf '    %-4s %-40s %-16s %s\n' "$num" "${title:0:40}" "$TYPE" "$state"
   done <<< "$(printf '%s' "$ISSUES" | sort -n)"
 fi
 echo
