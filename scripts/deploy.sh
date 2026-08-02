@@ -60,7 +60,12 @@ DEPLOY_HOST="${DEPLOY_HOST:-129.151.69.246}"
 DEPLOY_USER="${DEPLOY_USER:-ubuntu}"
 DEPLOY_SSH_KEY="${DEPLOY_SSH_KEY:-$HOME/.ssh/oracle_tile_lite_elite}"
 DEPLOY_REMOTE_DIR="${DEPLOY_REMOTE_DIR:-tile-lite-elite}"
-STAGING_URL="${STAGING_URL:-http://localhost:8081}"
+# What production is gated on. This is the *rehearsal* host, not the local
+# preview: "did the release mechanism work against a real host" is a far
+# stronger guarantee than "did you look at it on localhost", and the second
+# is what this used to check. STAGING_URL is still honoured so an existing
+# environment or muscle-memory override keeps working.
+REHEARSAL_URL="${REHEARSAL_URL:-${STAGING_URL:-https://129.151.84.183.sslip.io}}"
 PROD_URL="${PROD_URL:-https://tileliteelite.com}"
 # How many pre-deploy database snapshots to keep on the VM. Rollback is
 # expected to happen immediately if at all (a later rollback would discard
@@ -257,18 +262,21 @@ fi
 # without noticing, since deploy.sh has no other way to know staging
 # wasn't re-run. See docs/3.3-testing-ci-and-release.md.
 if [[ "$DEPLOY_REF" == "HEAD" ]]; then
-  STAGING_CMD="./scripts/deploy-staging.sh"
+  STAGING_CMD="./scripts/deploy-rehearsal.sh"
 else
-  STAGING_CMD="./scripts/deploy-staging.sh at $DEPLOY_REF"
+  STAGING_CMD="./scripts/deploy-rehearsal.sh $DEPLOY_REF"
 fi
 # Gating a rehearsal on another environment is circular — the rehearsal is
-# what the gate is *for*. Production keeps the gate; today it points at the
-# local preview, and repointing it at the rehearsal host is the second half
-# of #14, deliberately left until the rehearsal environment has been proven.
+# what the gate is *for*.
+#
+# The preview environment is deliberately *not* a gate. A gate can only
+# check that the bits were present somewhere, never that you looked at them
+# and were happy, so gating on preview adds friction while proving nothing
+# the rehearsal does not already prove better.
 if (( ! IS_RELEASE )); then
-  echo "==> Skipping the staging gate: this deploy is the rehearsal"
+  echo "==> Skipping the rehearsal gate: this deploy is the rehearsal"
 else
-STAGING_HEALTH="$(curl -sf --max-time 5 "$STAGING_URL/health" 2>/dev/null || true)"
+STAGING_HEALTH="$(curl -sf --max-time 5 "$REHEARSAL_URL/health" 2>/dev/null || true)"
 # `|| true` on every one of these: `grep` exits 1 when it matches nothing,
 # and under `set -o pipefail` that kills the assignment outright — so the
 # "is it empty" branch written to handle exactly that case never runs, and
@@ -277,16 +285,16 @@ STAGING_HEALTH="$(curl -sf --max-time 5 "$STAGING_URL/health" 2>/dev/null || tru
 STAGING_VERSION="$(printf '%s' "$STAGING_HEALTH" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || true)"
 STAGING_SHA="${STAGING_VERSION#*+}"
 if [[ -z "$STAGING_VERSION" ]]; then
-  echo "error: local staging ($STAGING_URL) isn't reachable — test this commit there first: $STAGING_CMD" >&2
+  echo "error: the rehearsal host ($REHEARSAL_URL) isn't reachable — rehearse this commit first: $STAGING_CMD" >&2
   exit 1
 elif [[ "$STAGING_SHA" == "$STAGING_VERSION" ]]; then
-  echo "error: staging is running $STAGING_VERSION, which has no commit id — was it deployed via deploy-staging.sh?" >&2
+  echo "error: the rehearsal host is running $STAGING_VERSION, which has no commit id — was it deployed via deploy-rehearsal.sh?" >&2
   exit 1
 elif [[ "$STAGING_SHA" != "$TARGET_SHA" ]]; then
-  echo "error: staging is running commit $STAGING_SHA, not $TARGET_SHA ($DEPLOY_REF) — test it in staging first: $STAGING_CMD" >&2
+  echo "error: the rehearsal host is running commit $STAGING_SHA, not $TARGET_SHA ($DEPLOY_REF) — rehearse it first: $STAGING_CMD" >&2
   exit 1
 fi
-echo "==> Staging confirmed running this commit ($TARGET_SHA) — proceeding"
+echo "==> Rehearsal host confirmed running this commit ($TARGET_SHA) — proceeding"
 fi
 
 # The fresh checkout. A throwaway `git worktree` rather than checking $REF
