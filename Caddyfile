@@ -17,8 +17,17 @@
 # plus GoDaddy's default www CNAME to the root domain) and kept the
 # sslip.io address alongside it as a fallback that needs no DNS at all —
 # Caddy obtains and renews certs for every hostname listed here.
+#
+# The addresses come from $SITE_ADDRESS, defaulting to production's. Caddy
+# substitutes {$VAR} when it parses this file, so one image serves every
+# host and each supplies its own names via docker-compose's `environment:`.
+# Hard-coding them meant any other host running this image demanded a
+# certificate for tileliteelite.com — which it cannot validate, because DNS
+# points somewhere else. Repeated failures also risk a Let's Encrypt rate
+# limit. A host with no DNS of its own uses <ip>.sslip.io, which resolves
+# back to that IP and certificates immediately (see docs/3.1's HTTPS note).
 
-tileliteelite.com, www.tileliteelite.com, 129.151.69.246.sslip.io {
+{$SITE_ADDRESS:tileliteelite.com, www.tileliteelite.com, 129.151.69.246.sslip.io} {
 	encode zstd gzip
 
 	# Caddy's automatic directive ordering runs try_files/file_server before

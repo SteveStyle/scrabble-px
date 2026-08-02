@@ -21,7 +21,7 @@ services:
       TILE_LITE_ELITE_DATABASE_URL: sqlite:///data/tile-lite-elite.sqlite3
       # Only used to build the link inside a password-reset email — see
       # AppState::public_base_url's doc comment in crates/server-game/src/app.rs.
-      TILE_LITE_ELITE_PUBLIC_BASE_URL: https://tileliteelite.com
+      TILE_LITE_ELITE_PUBLIC_BASE_URL: ${TILE_LITE_ELITE_PUBLIC_BASE_URL:-https://tileliteelite.com}
       # `${VAR}` substitution reads from a `.env` file Compose auto-loads
       # from this same directory — NOT the `environment:` block above,
       # which would commit the real secret to git. `deploy.sh` never
@@ -52,6 +52,20 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp" # HTTP/3 (QUIC) — Caddy tries this opportunistically; harmless if the port's blocked upstream, just falls back to HTTP/2.
+    environment:
+      # Hostnames Caddy serves and obtains certificates for, read by the
+      # {$SITE_ADDRESS} placeholder in the Caddyfile. Any other host sets its
+      # own in the `.env` beside this file.
+      #
+      # The default is repeated here rather than left to the Caddyfile's own
+      # {$SITE_ADDRESS:...} fallback, because Compose always *sets* the
+      # variable — an absent one becomes an empty string, and Caddy applies
+      # its default only when the variable is missing, not when it is empty.
+      # `${SITE_ADDRESS:-}` therefore produced an empty site address and
+      # "Error: adapting config using caddyfile", verified against the real
+      # image. The two defaults must stay in step; this is the one that
+      # applies to every compose deployment.
+      SITE_ADDRESS: ${SITE_ADDRESS:-tileliteelite.com, www.tileliteelite.com, 129.151.69.246.sslip.io}
     volumes:
       # Caddy's obtained TLS certificates live here — without this, a
       # container recreation (not just a restart) would silently re-request
