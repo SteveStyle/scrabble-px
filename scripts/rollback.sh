@@ -37,6 +37,13 @@ set -euo pipefail
 # Configure via the same environment variables as deploy.sh:
 #   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_REMOTE_DIR, PROD_URL
 
+# Which environment this is pointed at. Everything defaults to production,
+# so an unset environment behaves exactly as this script always has — but
+# the wording below follows DEPLOY_ENV, because being told you are about to
+# destroy "production" while pointed at a rehearsal host is precisely the
+# wrong thing to read when confirming the most destructive command here.
+DEPLOY_ENV="${DEPLOY_ENV:-production}"
+ENV_LABEL="$DEPLOY_ENV"
 DEPLOY_HOST="${DEPLOY_HOST:-129.151.69.246}"
 DEPLOY_USER="${DEPLOY_USER:-ubuntu}"
 DEPLOY_SSH_KEY="${DEPLOY_SSH_KEY:-$HOME/.ssh/oracle_tile_lite_elite}"
@@ -67,7 +74,7 @@ done
 # deliberately — the destructive form has to be asked for by name, and you
 # can't name one without having seen this first.
 if [[ -z "$SNAPSHOT" ]]; then
-  echo "==> Production ($DEPLOY_HOST)"
+  echo "==> ${ENV_LABEL^} ($DEPLOY_HOST)"
   CURRENT="$(curl -sf --max-time 8 "$PROD_URL/health" 2>/dev/null || true)"
   echo "    live now:  $(printf '%s' "$CURRENT" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || echo unknown)"
   ssh "${SSH_OPTS[@]}" "$REMOTE" "
@@ -89,8 +96,9 @@ if [[ -z "$SNAPSHOT" ]]; then
   "
   echo
   echo "    Roll back with: ./scripts/rollback.sh <snapshot-name>"
-  echo "    The name records the version and commit that were live *before*"
-  echo "    that deploy — which is what you are going back to."
+  echo "    A name reads pre-<version>-<commit>: the snapshot taken immediately"
+  echo "    *before* <commit> was deployed. Restoring it returns you to whatever"
+  echo "    was live before <commit> — not to <commit> itself."
   exit 0
 fi
 
@@ -114,7 +122,7 @@ fi
 if (( ASSUME_YES == 0 )); then
   CURRENT="$(curl -sf --max-time 8 "$PROD_URL/health" 2>/dev/null \
     | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || true)"
-  echo "==> About to roll production back on $DEPLOY_HOST"
+  echo "==> About to roll $ENV_LABEL back on $DEPLOY_HOST"
   echo "        snapshot:  $SNAPSHOT"
   echo "        live now:  ${CURRENT:-unknown}"
   if (( DB_ONLY == 1 )); then
@@ -173,6 +181,6 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 
-echo "warning: production didn't answer /health within 60s after the rollback." >&2
+echo "warning: $ENV_LABEL didn't answer /health within 60s after the rollback." >&2
 echo "         Check it: ssh into the VM and 'docker compose logs --tail=50 server'" >&2
 exit 1
