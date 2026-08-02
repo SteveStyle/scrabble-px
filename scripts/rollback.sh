@@ -48,7 +48,23 @@ DEPLOY_HOST="${DEPLOY_HOST:-129.151.69.246}"
 DEPLOY_USER="${DEPLOY_USER:-ubuntu}"
 DEPLOY_SSH_KEY="${DEPLOY_SSH_KEY:-$HOME/.ssh/oracle_tile_lite_elite}"
 DEPLOY_REMOTE_DIR="${DEPLOY_REMOTE_DIR:-tile-lite-elite}"
-PROD_URL="${PROD_URL:-https://tileliteelite.com}"
+# The URL of the host this script is acting on — production by default, the
+# rehearsal host when a wrapper says so. Named TARGET_URL rather than
+# PROD_URL because it is not always production: deploy-staging.sh and
+# status.sh both use PROD_URL to mean the *live site*, and one name meaning
+# both "my target" and "the live site" in scripts that run in the same
+# session is how a value set for one silently changes the other (#24).
+# Whether TARGET_URL came from the environment, recorded before defaulting —
+# the guard below needs to tell "the caller set it" from "we defaulted it".
+TARGET_URL_FROM_ENV="${TARGET_URL:+yes}"
+TARGET_URL="${TARGET_URL:-https://tileliteelite.com}"
+if [[ -n "${PROD_URL:-}" && -z "$TARGET_URL_FROM_ENV" ]]; then
+  echo "error: PROD_URL is set but this script now reads TARGET_URL." >&2
+  echo "       It was renamed because PROD_URL means the live site elsewhere;" >&2
+  echo "       silently honouring it here would smoke-test the wrong host." >&2
+  echo "       Set TARGET_URL=${PROD_URL} instead." >&2
+  exit 1
+fi
 
 # `-n` redirects ssh's stdin from /dev/null. Without it ssh reads the
 # script's own stdin, and a command run before an interactive prompt
@@ -75,7 +91,7 @@ done
 # can't name one without having seen this first.
 if [[ -z "$SNAPSHOT" ]]; then
   echo "==> ${ENV_LABEL^} ($DEPLOY_HOST)"
-  CURRENT="$(curl -sf --max-time 8 "$PROD_URL/health" 2>/dev/null || true)"
+  CURRENT="$(curl -sf --max-time 8 "$TARGET_URL/health" 2>/dev/null || true)"
   echo "    live now:  $(printf '%s' "$CURRENT" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || echo unknown)"
   ssh "${SSH_OPTS[@]}" "$REMOTE" "
       cd $DEPLOY_REMOTE_DIR 2>/dev/null || { echo '    (no deploy directory)'; exit 0; }
@@ -120,7 +136,7 @@ if (( DB_ONLY == 0 )); then
 fi
 
 if (( ASSUME_YES == 0 )); then
-  CURRENT="$(curl -sf --max-time 8 "$PROD_URL/health" 2>/dev/null \
+  CURRENT="$(curl -sf --max-time 8 "$TARGET_URL/health" 2>/dev/null \
     | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || true)"
   echo "==> About to roll $ENV_LABEL back on $DEPLOY_HOST"
   echo "        snapshot:  $SNAPSHOT"
@@ -172,7 +188,7 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "
 
 echo "==> Waiting for it to come back"
 for _ in $(seq 1 30); do
-  HEALTH="$(curl -sf --max-time 5 "$PROD_URL/health" 2>/dev/null || true)"
+  HEALTH="$(curl -sf --max-time 5 "$TARGET_URL/health" 2>/dev/null || true)"
   if [[ -n "$HEALTH" ]]; then
     echo "    $HEALTH"
     echo "==> Rolled back."

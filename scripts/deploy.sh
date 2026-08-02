@@ -66,7 +66,23 @@ DEPLOY_REMOTE_DIR="${DEPLOY_REMOTE_DIR:-tile-lite-elite}"
 # is what this used to check. STAGING_URL is still honoured so an existing
 # environment or muscle-memory override keeps working.
 REHEARSAL_URL="${REHEARSAL_URL:-${STAGING_URL:-https://129.151.84.183.sslip.io}}"
-PROD_URL="${PROD_URL:-https://tileliteelite.com}"
+# The URL of the host this script is acting on — production by default, the
+# rehearsal host when a wrapper says so. Named TARGET_URL rather than
+# PROD_URL because it is not always production: deploy-staging.sh and
+# status.sh both use PROD_URL to mean the *live site*, and one name meaning
+# both "my target" and "the live site" in scripts that run in the same
+# session is how a value set for one silently changes the other (#24).
+# Whether TARGET_URL came from the environment, recorded before defaulting —
+# the guard below needs to tell "the caller set it" from "we defaulted it".
+TARGET_URL_FROM_ENV="${TARGET_URL:+yes}"
+TARGET_URL="${TARGET_URL:-https://tileliteelite.com}"
+if [[ -n "${PROD_URL:-}" && -z "$TARGET_URL_FROM_ENV" ]]; then
+  echo "error: PROD_URL is set but this script now reads TARGET_URL." >&2
+  echo "       It was renamed because PROD_URL means the live site elsewhere;" >&2
+  echo "       silently honouring it here would smoke-test the wrong host." >&2
+  echo "       Set TARGET_URL=${PROD_URL} instead." >&2
+  exit 1
+fi
 # How many pre-deploy database snapshots to keep on the VM. Rollback is
 # expected to happen immediately if at all (a later rollback would discard
 # real play), so depth beyond the last few releases has no consumer.
@@ -232,11 +248,11 @@ fi
 # straight out of git so this can run before anything is checked out.
 TARGET_SCHEMA="$(git ls-tree --name-only "$TARGET_FULL_SHA" crates/server-game/migrations/ \
   | grep '\.sql$' | sed 's#.*/##' | grep -oE '^[0-9]+' | sort -n | tail -1 | sed 's/^0*//')"
-PROD_HEALTH="$(curl -sf --max-time 8 "$PROD_URL/health" 2>/dev/null || true)"
+PROD_HEALTH="$(curl -sf --max-time 8 "$TARGET_URL/health" 2>/dev/null || true)"
 LIVE_SCHEMA="$(printf '%s' "$PROD_HEALTH" | grep -o '"schema_version":[0-9]*' | cut -d: -f2 || true)"
 
 if [[ -z "$PROD_HEALTH" ]]; then
-  echo "==> Note: couldn't reach $PROD_URL/health, so the schema check was skipped."
+  echo "==> Note: couldn't reach $TARGET_URL/health, so the schema check was skipped."
 elif [[ -z "$LIVE_SCHEMA" ]]; then
   # Every deployment before this field existed. Nothing to compare against,
   # and saying so is better than silently passing a check that never ran.
@@ -460,10 +476,10 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "
 # test of *this* deploy: a stale container still answering would otherwise
 # pass.
 EXPECTED_VERSION="$DEPLOYED_VERSION+$TARGET_SHA"
-echo "==> Smoke testing $PROD_URL (expecting $EXPECTED_VERSION)"
+echo "==> Smoke testing $TARGET_URL (expecting $EXPECTED_VERSION)"
 SMOKE_OK=0
 for _ in $(seq 1 30); do
-  LIVE_HEALTH="$(curl -sf --max-time 5 "$PROD_URL/health" 2>/dev/null || true)"
+  LIVE_HEALTH="$(curl -sf --max-time 5 "$TARGET_URL/health" 2>/dev/null || true)"
   # Unreachable /health is the normal state for the first few seconds here,
   # so this must survive matching nothing rather than abort the retry loop.
   LIVE_APP="$(printf '%s' "$LIVE_HEALTH" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || true)"

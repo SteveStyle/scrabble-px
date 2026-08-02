@@ -32,13 +32,15 @@ PROD_URL="${PROD_URL:-https://tileliteelite.com}"
 # rehearsal-target.sh's own comment is the reason: two definitions eventually
 # disagree, and the one that disagrees silently points somewhere wrong.
 #
-# Read in a *subshell*. That file exports PROD_URL, because deploy.sh calls
-# the host it is deploying to PROD_URL whichever host that is — so sourcing
-# it here would overwrite production's URL with the rehearsal one and this
-# script would report the rehearsal host twice.
+# Read in a *subshell* regardless: that file exports variables meant for
+# deploy.sh, and this script only wants one value out of it. Before #24 the
+# variable was called PROD_URL, and sourcing it directly overwrote
+# production's URL with the rehearsal one — this script reported the
+# rehearsal host on both lines, which looked plausible because they are
+# usually on the same commit.
 REHEARSAL_URL="${REHEARSAL_URL:-$(
   . "$(cd "$(dirname "$0")" && pwd)/rehearsal-target.sh" > /dev/null 2>&1
-  printf '%s' "$PROD_URL"
+  printf '%s' "$TARGET_URL"
 )}"
 # `STAGING_URL` honoured as a fallback, as deploy.sh does: preview is what
 # used to be called staging, and #22 has yet to rename the files.

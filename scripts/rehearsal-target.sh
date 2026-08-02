@@ -12,4 +12,4 @@ export DEPLOY_HOST=129.151.84.183
 export DEPLOY_USER=ubuntu
 export DEPLOY_SSH_KEY="$HOME/.ssh/oracle_tile_lite_elite_rehearsal"
 export DEPLOY_REMOTE_DIR=tile-lite-elite
-export PROD_URL=https://129.151.84.183.sslip.io
+export TARGET_URL=https://129.151.84.183.sslip.io
