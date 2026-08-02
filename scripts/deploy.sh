@@ -124,6 +124,16 @@ if (( IS_RELEASE )) && { [[ "$SCRIPT_BRANCH" != "main" ]] || [[ -n "$SCRIPT_DIRT
   echo "    Test tooling changes on the rehearsal host first:"
   echo "        ./scripts/deploy-rehearsal.sh"
   echo
+  # Refuse rather than block when there is no terminal. A bare `read` with
+  # no stdin waits forever, so this hung a non-interactive run instead of
+  # failing it — found by testing the guard itself. A deploy that hangs is
+  # worse than one that stops, the same lesson as the `timeout 300` around
+  # --migrate-only.
+  if [[ ! -t 0 ]]; then
+    echo "    Not a terminal, so this cannot be confirmed. Refusing." >&2
+    echo "    Merge the tooling to main first, or run this interactively." >&2
+    exit 1
+  fi
   read -r -p "    Type 'production' to run this anyway: " CONFIRM_TOOLING
   if [[ "$CONFIRM_TOOLING" != "production" ]]; then
     echo "    Stopped — nothing was deployed."
