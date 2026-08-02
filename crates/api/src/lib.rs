@@ -63,11 +63,15 @@ use serde::{Deserialize, Serialize};
 // moves nothing here and this number goes back to meaning the contract.
 // Carries the 502 fix (a proxy 502 no longer counts as "the server is up")
 // and the switch itself.
-// Despite the name this is a *client* version: it tells a client whether a
-// new build exists and whether the one it is running may carry on. It was
-// named for an assumption that a client update implied an API behaviour
-// change, which is not true — 2.9 moves with no server change at all. See
-// docs/3.3's "Decide whether the API version moves".
+// This number describes the *wire contract*, and nothing else. It once
+// doubled as a client-update signal, on the assumption that a client change
+// implied an API behaviour change — which is not true, and 2.9 is the proof:
+// it moved with no server change at all. That reading was dropped rather
+// than kept, because a third-party client needs the contract version to mean
+// the contract, not "our web build changed". Client updates are delivered by
+// a hash of the built bundle instead; see `watch_for_new_bundle` in
+// `tile-lite-elite-ui`, and docs/3.3's "Decide whether the API version
+// moves" for which changes bump this.
 pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 9 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
