@@ -28,7 +28,21 @@ set -euo pipefail
 # Needs `gh` authenticated (same as deploy.sh's milestone handling).
 
 PROD_URL="${PROD_URL:-https://tileliteelite.com}"
-STAGING_URL="${STAGING_URL:-http://localhost:8081}"
+# The rehearsal host comes from the file that defines it, not a second copy —
+# rehearsal-target.sh's own comment is the reason: two definitions eventually
+# disagree, and the one that disagrees silently points somewhere wrong.
+#
+# Read in a *subshell*. That file exports PROD_URL, because deploy.sh calls
+# the host it is deploying to PROD_URL whichever host that is — so sourcing
+# it here would overwrite production's URL with the rehearsal one and this
+# script would report the rehearsal host twice.
+REHEARSAL_URL="${REHEARSAL_URL:-$(
+  . "$(cd "$(dirname "$0")" && pwd)/rehearsal-target.sh" > /dev/null 2>&1
+  printf '%s' "$PROD_URL"
+)}"
+# `STAGING_URL` honoured as a fallback, as deploy.sh does: preview is what
+# used to be called staging, and #22 has yet to rename the files.
+PREVIEW_URL="${PREVIEW_URL:-${STAGING_URL:-http://localhost:8081}}"
 
 if [[ "${1:-}" == "--fetch" ]]; then
   echo "==> Fetching"
@@ -50,8 +64,9 @@ version_of() {
 }
 
 echo "==> Environments"
-printf '    %-12s %s\n' "production" "$(v=$(version_of "$PROD_URL"); echo "${v:-unreachable}")"
-printf '    %-12s %s\n' "staging" "$(v=$(version_of "$STAGING_URL"); echo "${v:-not running}")"
+printf '    %-12s %-18s %s\n' "production" "$(v=$(version_of "$PROD_URL"); echo "${v:-unreachable}")" "what users have"
+printf '    %-12s %-18s %s\n' "rehearsal" "$(v=$(version_of "$REHEARSAL_URL"); echo "${v:-not running}")" "what the release gate checks"
+printf '    %-12s %-18s %s\n' "preview" "$(v=$(version_of "$PREVIEW_URL"); echo "${v:-not running}")" "what you last looked at"
 echo
 
 # The branch for an issue, preferring a local one (that is what you are
