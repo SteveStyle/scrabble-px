@@ -58,8 +58,11 @@ pub(crate) async fn admin_reset_password(
     if request.new_password.is_empty() {
         return Err(ApiProblem::bad_request("A new password is required"));
     }
-    let password_hash = hash_password(&request.new_password)
-        .map_err(|_| ApiProblem::bad_request("Could not process that password"))?;
+    // Bounded like every other hash, though this endpoint is loopback-only
+    // with a single client: the work costs the same 19 MiB either way, and an
+    // admin reset landing during a login flurry should queue with them rather
+    // than adding to the total.
+    let password_hash = hash_password_bounded(&state, &request.new_password).await?;
     let updated = persistence::update_player_password(&state.db, &player_id, &password_hash)
         .await
         .map_err(ApiProblem::from_sqlx)?;

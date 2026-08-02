@@ -19,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use sqlx::{Pool, Sqlite};
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{RwLock, Semaphore, broadcast};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -81,6 +81,37 @@ pub struct AppState {
     /// `persistence::applied_schema_version` for why it can't change later
     /// and what the deploy script does with it.
     pub schema_version: Option<i64>,
+    /// How many password hashes may run at once.
+    ///
+    /// Argon2 is deliberately memory-hard — `Argon2::default()` is the OWASP
+    /// profile, 19 MiB and two passes per hash — which is the property that
+    /// makes stored hashes expensive to attack, and the reason unbounded
+    /// concurrency here is dangerous. On the production VM (2 CPUs, ~438 MB
+    /// free) roughly 23 simultaneous hashes exhaust memory, and hashing on
+    /// the blocking pool would otherwise be bounded only by tokio's default
+    /// 512 threads.
+    ///
+    /// A semaphore rather than a smaller pool: engine search shares that
+    /// pool, and each workload wants its own bound. See `engine_limit`.
+    pub hash_limit: Arc<Semaphore>,
+    /// How many engine move searches may run at once. `run_engine_turns`
+    /// already bounds a single search's *duration* with `tokio::time::timeout`,
+    /// but nothing bounded how many ran together: ten concurrent games meant
+    /// ten blocking threads competing for two cores, and a bot harness (#10)
+    /// makes that the normal case rather than the unlucky one.
+    pub engine_limit: Arc<Semaphore>,
+}
+
+/// Read a concurrency limit from the environment, falling back to a default
+/// tuned for the production VM's two cores. Nonsense values fall back rather
+/// than failing: a typo in an environment variable should not stop the
+/// server booting, and the default is always safe.
+fn concurrency_from_env(var: &str, default: usize) -> usize {
+    std::env::var(var)
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
 }
 
 impl AppState {
@@ -103,6 +134,19 @@ impl AppState {
 
         let (events, _) = broadcast::channel(64);
 
+        // Defaults sized for the production VM: 2 CPUs, ~438 MB free. Four
+        // concurrent hashes is ~76 MB and keeps both cores busy without
+        // starving anything else; two engine searches match the core count,
+        // since a search is pure computation with nothing to overlap.
+        let hash_limit = Arc::new(Semaphore::new(concurrency_from_env(
+            "TILE_LITE_ELITE_HASH_CONCURRENCY",
+            4,
+        )));
+        let engine_limit = Arc::new(Semaphore::new(concurrency_from_env(
+            "TILE_LITE_ELITE_ENGINE_CONCURRENCY",
+            2,
+        )));
+
         Ok(Self {
             db,
             games: Arc::new(RwLock::new(games)),
@@ -111,6 +155,8 @@ impl AppState {
             public_base_url,
             email,
             schema_version,
+            hash_limit,
+            engine_limit,
         })
     }
 }

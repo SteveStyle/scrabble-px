@@ -7184,3 +7184,91 @@ async fn no_two_events_share_a_version_and_each_carries_the_ratings() {
         "expected at least a start and an engine reply, saw {versions:?}"
     );
 }
+
+// ========== Bounded password hashing (#11) ==========
+
+/// The bounded path must still hash and verify correctly — the semaphore is
+/// a capacity guard, not a behaviour change.
+#[tokio::test]
+async fn bounded_hashing_round_trips() {
+    let state = create_test_state(&test_database_url()).await;
+    let hash = crate::app::auth::hash_password_bounded(&state, "correct horse")
+        .await
+        .expect("hashing should succeed");
+    assert!(
+        crate::app::auth::verify_password_bounded(&state, "correct horse", &hash)
+            .await
+            .expect("verify should not error"),
+        "the right password should verify"
+    );
+    assert!(
+        !crate::app::auth::verify_password_bounded(&state, "wrong horse", &hash)
+            .await
+            .expect("verify should not error"),
+        "the wrong password should not verify"
+    );
+}
+
+/// With every permit already taken, a hash request waits briefly and then
+/// gives up with 503 rather than queueing indefinitely or stalling a worker.
+///
+/// This is the behaviour the whole change exists for: unbounded, these
+/// requests would each allocate 19 MiB on tokio's 512-thread blocking pool.
+#[tokio::test]
+async fn hashing_gives_up_with_503_when_no_permit_is_free() {
+    let mut state = create_test_state(&test_database_url()).await;
+    // One permit, held for the duration of the test, so no caller can get one.
+    state.hash_limit = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+    let held = std::sync::Arc::clone(&state.hash_limit)
+        .acquire_owned()
+        .await
+        .expect("test should be able to take the only permit");
+
+    let started = std::time::Instant::now();
+    let outcome = crate::app::auth::hash_password_bounded(&state, "anything").await;
+    let waited = started.elapsed();
+
+    let problem = outcome.expect_err("should have been refused");
+    assert_eq!(
+        problem.status_for_test(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "capacity exhaustion is 503 (the server is full), not 429 (you are asking too often)"
+    );
+    assert!(
+        waited < std::time::Duration::from_secs(2),
+        "should give up promptly rather than queueing; waited {waited:?}"
+    );
+
+    drop(held);
+    // With the permit back, the same call succeeds — the refusal was capacity,
+    // not a permanent failure.
+    assert!(
+        crate::app::auth::hash_password_bounded(&state, "anything")
+            .await
+            .is_ok(),
+        "should succeed once a permit frees"
+    );
+}
+
+/// A bad concurrency value in the environment must not stop the server
+/// booting: a typo should fall back to a safe default, not take the site down.
+#[test]
+fn concurrency_falls_back_on_nonsense_values() {
+    unsafe { std::env::set_var("TILE_LITE_ELITE_TEST_CONCURRENCY", "not-a-number") };
+    assert_eq!(
+        crate::app::concurrency_from_env("TILE_LITE_ELITE_TEST_CONCURRENCY", 4),
+        4
+    );
+    unsafe { std::env::set_var("TILE_LITE_ELITE_TEST_CONCURRENCY", "0") };
+    assert_eq!(
+        crate::app::concurrency_from_env("TILE_LITE_ELITE_TEST_CONCURRENCY", 4),
+        4,
+        "zero would deadlock every hash, so it must not be accepted"
+    );
+    unsafe { std::env::set_var("TILE_LITE_ELITE_TEST_CONCURRENCY", "7") };
+    assert_eq!(
+        crate::app::concurrency_from_env("TILE_LITE_ELITE_TEST_CONCURRENCY", 4),
+        7
+    );
+    unsafe { std::env::remove_var("TILE_LITE_ELITE_TEST_CONCURRENCY") };
+}

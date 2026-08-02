@@ -24,8 +24,7 @@ pub(crate) async fn register_player(
         ));
     }
 
-    let password_hash = hash_password(&request.password)
-        .map_err(|_| ApiProblem::bad_request("Could not process that password"))?;
+    let password_hash = hash_password_bounded(&state, &request.password).await?;
 
     let player_id = Uuid::new_v4().to_string();
     persistence::create_player(&state.db, &player_id, display_name, email, &password_hash)
@@ -78,7 +77,7 @@ pub(crate) async fn login_player(
         .map_err(ApiProblem::from_sqlx)?
         .ok_or_else(|| mismatch("unknown display name"))?;
 
-    if !verify_password(&request.password, &player.password_hash) {
+    if !verify_password_bounded(&state, &request.password, &player.password_hash).await? {
         return Err(mismatch("wrong password"));
     }
 
@@ -194,7 +193,7 @@ pub(crate) async fn change_password(
     // can sit valid on a device for a long time — proving you still know
     // the password is what makes this a deliberate account action rather
     // than something a stolen token alone can do.
-    if !verify_password(&request.current_password, &player.password_hash) {
+    if !verify_password_bounded(&state, &request.current_password, &player.password_hash).await? {
         tracing::warn!(
             player_id,
             "password change rejected: wrong current password"
@@ -202,8 +201,7 @@ pub(crate) async fn change_password(
         return Err(ApiProblem::bad_request("Current password is incorrect"));
     }
 
-    let new_hash = hash_password(&request.new_password)
-        .map_err(|_| ApiProblem::bad_request("Could not process that password"))?;
+    let new_hash = hash_password_bounded(&state, &request.new_password).await?;
     persistence::update_player_password(&state.db, &player_id, &new_hash)
         .await
         .map_err(ApiProblem::from_sqlx)?;
@@ -378,8 +376,7 @@ pub(crate) async fn reset_password(
         return Err(invalid());
     }
 
-    let new_hash = hash_password(&request.new_password)
-        .map_err(|_| ApiProblem::bad_request("Could not process that password"))?;
+    let new_hash = hash_password_bounded(&state, &request.new_password).await?;
     persistence::update_player_password(&state.db, &record.player_id, &new_hash)
         .await
         .map_err(ApiProblem::from_sqlx)?;
@@ -398,6 +395,74 @@ pub(crate) async fn reset_password(
     tracing::info!(player_id = %record.player_id, "password reset via emailed token; all sessions invalidated");
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// How long a caller waits for a hashing permit before being turned away.
+///
+/// A *concurrency* limit is transient in a way a *rate* limit is not — a
+/// permit frees in about the time one hash takes — so a brief wait converts
+/// a spurious rejection into a slightly slow success. It must stay well
+/// under the reverse proxy's response-header timeout, or the caller gets a
+/// 502 and the work was wasted.
+const HASH_PERMIT_WAIT: Duration = Duration::from_millis(250);
+
+/// Run one Argon2 operation under the hashing semaphore, on the blocking
+/// pool.
+///
+/// Two things happen here and neither works without the other.
+///
+/// `spawn_blocking` moves the computation off the async worker threads.
+/// Tokio only switches tasks at an `.await`, and Argon2 awaits nothing, so
+/// hashing directly in a handler occupies a worker for its whole duration —
+/// with one worker per CPU and two CPUs, two simultaneous logins left no
+/// thread to poll anything at all, including games in progress.
+///
+/// The semaphore then bounds how many run at once. `spawn_blocking` alone
+/// would have made things worse: tokio's blocking pool defaults to 512
+/// threads, so an unbounded move there trades "two requests stall the
+/// runtime" for "hundreds of concurrent hashes exhaust memory".
+async fn with_hash_permit<F, T>(state: &AppState, work: F) -> Result<T, ApiProblem>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let permit = tokio::time::timeout(
+        HASH_PERMIT_WAIT,
+        Arc::clone(&state.hash_limit).acquire_owned(),
+    )
+    .await
+    .map_err(|_| ApiProblem::unavailable("The server is busy — please try again.", 1))?
+    .map_err(|_| ApiProblem::internal("hashing capacity unavailable"))?;
+
+    tokio::task::spawn_blocking(move || {
+        // Held for the duration of the work, released when this closure ends.
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(|error| ApiProblem::internal(format!("password hashing failed: {error}")))
+}
+
+/// `hash_password`, bounded. See `with_hash_permit`.
+pub(crate) async fn hash_password_bounded(
+    state: &AppState,
+    password: &str,
+) -> Result<String, ApiProblem> {
+    let password = password.to_owned();
+    with_hash_permit(state, move || hash_password(&password))
+        .await?
+        .map_err(ApiProblem::internal)
+}
+
+/// `verify_password`, bounded. See `with_hash_permit`.
+pub(crate) async fn verify_password_bounded(
+    state: &AppState,
+    password: &str,
+    stored_hash: &str,
+) -> Result<bool, ApiProblem> {
+    let password = password.to_owned();
+    let stored_hash = stored_hash.to_owned();
+    with_hash_permit(state, move || verify_password(&password, &stored_hash)).await
 }
 
 // ========== Helper Functions ==========
