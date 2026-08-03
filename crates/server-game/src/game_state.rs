@@ -362,6 +362,38 @@ impl GameSession {
         self.version += 1;
     }
 
+    /// Attach a player to a seat — the second half of accepting an invitation,
+    /// once `claim_invitation` has decided who won the race for it.
+    ///
+    /// A method rather than a handler-side mutation, and that is the whole
+    /// point. Every mutation must bump `version`, because the client applies
+    /// an incoming state only on a strictly greater one
+    /// (`should_apply_update`). Accepting an invitation used to be written
+    /// inline in the handler, so the version never moved: the broadcast
+    /// arrived carrying a version the client already had and was discarded,
+    /// and so was the response to an explicit Refresh, since the same guard
+    /// applies to every incoming DTO. Only a full page reload recovered.
+    ///
+    /// Returns `false` if there is no such seat, leaving the game untouched.
+    pub fn claim_seat(&mut self, seat_number: u8, player_id: String, display_name: String) -> bool {
+        let claimed = match self
+            .participants
+            .iter_mut()
+            .find(|participant| participant.seat_number == seat_number)
+        {
+            Some(participant) => {
+                participant.player_id = Some(player_id);
+                participant.display_name = display_name;
+                true
+            }
+            None => false,
+        };
+        if claimed {
+            self.mark_changed();
+        }
+        claimed
+    }
+
     /// Swaps two seats' positions — and with them, turn order, since
     /// `current_seat`/rack refill/every other turn-taking mechanism walks
     /// `participants` by index (see `start`, `apply_place_move`, etc.), not
@@ -1859,6 +1891,42 @@ mod tests {
             Some(seat_two_holds),
             "the going-out bonus counts only seats still holding tiles"
         );
+    }
+
+    /// Claiming a seat must bump `version`, or no client ever sees it.
+    ///
+    /// The client applies an incoming state only on a strictly greater
+    /// version, and that guard is on *every* incoming DTO — so an unbumped
+    /// change is invisible over the WebSocket and invisible to an explicit
+    /// refetch alike. Observed in preview: a second tab kept showing
+    /// "Invited — awaiting response" after the invitation had been accepted,
+    /// and only a full page reload corrected it.
+    #[test]
+    fn claiming_a_seat_bumps_the_version() {
+        let mut game = two_human_game(Some("alice"));
+        let before = game.version;
+
+        assert!(game.claim_seat(1, "bob".to_string(), "Bob".to_string()));
+
+        assert!(
+            game.version > before,
+            "version must increase or the change reaches no client: {before} -> {}",
+            game.version
+        );
+        assert_eq!(game.participants[1].player_id.as_deref(), Some("bob"));
+        assert_eq!(game.participants[1].display_name, "Bob");
+    }
+
+    /// An unknown seat leaves the game untouched — including the version, so
+    /// a failed claim does not trigger a pointless reload everywhere.
+    #[test]
+    fn claiming_an_unknown_seat_changes_nothing() {
+        let mut game = two_human_game(Some("alice"));
+        let before = game.version;
+
+        assert!(!game.claim_seat(99, "bob".to_string(), "Bob".to_string()));
+
+        assert_eq!(game.version, before);
     }
 
     #[test]

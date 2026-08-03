@@ -243,14 +243,14 @@ pub(crate) async fn accept_invitation(
         let game = games
             .get_mut(&record.game_id)
             .ok_or_else(|| ApiProblem::not_found("Game not found"))?;
-        if let Some(participant) = game
-            .participants
-            .iter_mut()
-            .find(|p| p.seat_number == record.seat_number)
-        {
-            participant.player_id = Some(caller_player_id.clone());
-            participant.display_name = claimant.display_name.clone();
-        }
+        // Through the method, not inline: `claim_seat` bumps `version`, and
+        // without that the state change reaches no client at all — not by
+        // broadcast, and not by an explicit Refresh either.
+        game.claim_seat(
+            record.seat_number,
+            caller_player_id.clone(),
+            claimant.display_name.clone(),
+        );
         let dto = game.to_dto();
         persistence::save_game(&state.db, game)
             .await
