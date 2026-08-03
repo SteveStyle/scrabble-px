@@ -143,9 +143,31 @@ type_of() {
   esac
 }
 
+# Width available for the title: whatever the terminal has left after the
+# fixed columns. Titles were cut at 40 characters with no ellipsis, so a
+# truncated one read as a complete one — "DTO conversion belongs at the
+# boundary," looked like the whole issue.
+#
+# 22 covers the number and type columns and their gaps; 30 leaves room for
+# the longest state ("merged — smoke-test, then close"). Falls back to 100
+# columns when there is no terminal, so piping to a file stays readable.
+TERM_COLS="${COLUMNS:-$(tput cols 2> /dev/null || echo 100)}"
+TITLE_WIDTH=$((TERM_COLS - 22 - 30))
+(( TITLE_WIDTH < 30 )) && TITLE_WIDTH=30
+
+# Cut to fit, with a trailing ellipsis only when something was actually cut.
+fit_title() {
+  local title="$1"
+  if (( ${#title} > TITLE_WIDTH )); then
+    printf '%s…' "${title:0:$((TITLE_WIDTH - 1))}"
+  else
+    printf '%s' "$title"
+  fi
+}
+
 echo "==> Open changes"
-printf '    %-4s %-40s %-16s %s\n' "#" "TITLE" "TYPE" "STATE"
-printf '    '; printf '%.0s-' {1..96}; echo
+printf "    %-4s %-${TITLE_WIDTH}s %-16s %s\n" "#" "TITLE" "TYPE" "STATE"
+printf '    '; printf '%*s' $((TITLE_WIDTH + 44)) '' | tr ' ' '-'; echo
 
 ISSUES="$(gh issue list --state open --limit 100 \
   --json number,title,labels,milestone \
@@ -160,7 +182,7 @@ else
     TYPE="$(type_of "$labels")"
     state="$(state_of_issue "$num" "$TYPE")"
     [[ -n "$milestone" ]] && state="$state · $milestone"
-    printf '    %-4s %-40s %-16s %s\n' "$num" "${title:0:40}" "$TYPE" "$state"
+    printf "    %-4s %-${TITLE_WIDTH}s %-16s %s\n" "$num" "$(fit_title "$title")" "$TYPE" "$state"
   done <<< "$(printf '%s' "$ISSUES" | sort -n)"
 fi
 echo
@@ -182,7 +204,7 @@ if [[ -n "$AWAITING" && -n "$OPEN_MILESTONES" ]]; then
   while IFS=$'\t' read -r num title milestone; do
     [[ -z "$num" ]] && continue
     if grep -qxF "$milestone" <<< "$OPEN_MILESTONES" 2>/dev/null; then
-      printf '    %-4s %-40s %s\n' "$num" "${title:0:40}" "$milestone"
+      printf "    %-4s %-${TITLE_WIDTH}s %s\n" "$num" "$(fit_title "$title")" "$milestone"
       FOUND=1
     fi
   done <<< "$AWAITING"
