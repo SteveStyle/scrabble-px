@@ -8,6 +8,21 @@ npx -y @mermaid-js/mermaid-cli -i docs/diagrams/release-flow.mmd \
   -o docs/diagrams/release-flow.svg -c docs/diagrams/mermaid-config.json -b white
 ```
 
+**If that writes nothing and exits silently**, use Docker instead — it
+carries its own browser and sidesteps the problem entirely:
+
+```bash
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD/docs/diagrams":/data \
+  minlag/mermaid-cli -i /data/release-flow.mmd -o /data/release-flow.svg \
+  -c /data/mermaid-config.json -b white
+```
+
+The silent failure is Puppeteer's: `~/.cache/puppeteer` can hold *empty*
+version directories, so it believes Chromium is installed, tries to launch
+nothing, and `mermaid-cli` swallows the error — no output, no file, exit 1.
+Clearing the cache does not help if the re-download also fails. `-u` matters:
+without it the container writes the SVG as root.
+
 Colour carries meaning, so keep it consistent across diagrams: **blue for
 things that run code** (environments), **sand for things that store it**
 (repositories), **amber for a gate** a script refuses on. Boxes use
