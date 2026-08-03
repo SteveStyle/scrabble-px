@@ -15,6 +15,20 @@ pub fn to_rules_direction(direction: DirectionDto) -> rules_shared::Direction {
     }
 }
 
+/// The inverse of `to_rules_premium`, for rendering a board the client owns
+/// rather than one the server sent — currently only the empty-board
+/// placeholder, which derives its layout from `rules-shared` so it cannot
+/// drift from the board games are actually played on.
+pub fn premium_to_dto(premium: rules_shared::Premium) -> PremiumDto {
+    match premium {
+        rules_shared::Premium::Blank => PremiumDto::Blank,
+        rules_shared::Premium::DoubleLetter => PremiumDto::DoubleLetter,
+        rules_shared::Premium::TripleLetter => PremiumDto::TripleLetter,
+        rules_shared::Premium::DoubleWord => PremiumDto::DoubleWord,
+        rules_shared::Premium::TripleWord => PremiumDto::TripleWord,
+    }
+}
+
 pub fn to_rules_premium(premium: &PremiumDto) -> rules_shared::Premium {
     match premium {
         PremiumDto::Blank => rules_shared::Premium::Blank,

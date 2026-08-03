@@ -1,8 +1,7 @@
 use api::{
     BoardCellDto, CreateGameRequest, CreateSeatRequest, DirectionDto, GameActionRequest,
     GameEventDto, GameStateDto, GameStatus, InvitePlayerRequest, MoveCandidateDto, ParticipantDto,
-    PositionDto, PremiumDto, RackDto, SeatClaim, SeatKind, StartGameRequest, TileDto,
-    TilePlacementDto,
+    PositionDto, RackDto, SeatClaim, SeatKind, StartGameRequest, TileDto, TilePlacementDto,
 };
 use dioxus::prelude::*;
 use futures_util::StreamExt;
@@ -1855,47 +1854,26 @@ fn empty_live_game() -> GameStateDto {
     }
 }
 
+/// The board shown before any game is open.
+///
+/// Derived from `rules-shared` rather than written out here. It used to be a
+/// literal, and when the played layout changed the literal did not — so the
+/// landing page displayed a board nobody plays on. Deriving it means the
+/// placeholder cannot drift from the real thing again.
+///
+/// Any variant would do: every edition shares one board (see
+/// `VariantRules`'s note that the premium layout is not part of what an
+/// edition varies).
 fn empty_board() -> Vec<BoardCellDto> {
-    let mut board = vec![
-        BoardCellDto {
-            premium: PremiumDto::Blank,
+    rules_shared::VariantRules::official()
+        .premiums
+        .iter()
+        .map(|premium| BoardCellDto {
+            premium: crate::client_rules::premium_to_dto(*premium),
             letter: None,
             is_blank: false,
-        };
-        15 * 15
-    ];
-
-    for (x, y, premium) in [
-        (0, 0, PremiumDto::TripleWord),
-        (3, 0, PremiumDto::DoubleLetter),
-        (7, 0, PremiumDto::TripleWord),
-        (1, 1, PremiumDto::DoubleWord),
-        (5, 1, PremiumDto::TripleLetter),
-        (2, 2, PremiumDto::DoubleWord),
-        (6, 2, PremiumDto::DoubleLetter),
-        (0, 3, PremiumDto::DoubleLetter),
-        (3, 3, PremiumDto::DoubleWord),
-        (7, 3, PremiumDto::DoubleLetter),
-        (4, 4, PremiumDto::DoubleWord),
-        (1, 5, PremiumDto::TripleLetter),
-        (5, 5, PremiumDto::TripleLetter),
-        (2, 6, PremiumDto::DoubleLetter),
-        (6, 6, PremiumDto::DoubleLetter),
-        (0, 7, PremiumDto::TripleWord),
-        (3, 7, PremiumDto::DoubleLetter),
-        (7, 7, PremiumDto::DoubleWord),
-    ] {
-        for (mx, my) in mirrored_positions(x, y) {
-            board[(my as usize) * 15 + (mx as usize)].premium = premium.clone();
-        }
-    }
-
-    board
-}
-
-fn mirrored_positions(x: u8, y: u8) -> [(u8, u8); 4] {
-    let max = 14;
-    [(x, y), (max - x, y), (x, max - y), (max - x, max - y)]
+        })
+        .collect()
 }
 
 /// Minimal percent-encoding for a single query-string value — just enough
@@ -4133,6 +4111,42 @@ mod tests {
     fn matching_version_is_compatible() {
         let v = api::ApiVersion { major: 1, minor: 2 };
         assert_eq!(compare_api_version(v, v), VersionCheck::Compatible);
+    }
+
+    /// The placeholder board must be the board games are played on.
+    ///
+    /// It used to be a hardcoded literal of the official layout — triple-word
+    /// in the corners, the classic double-word diagonal — which is precisely
+    /// the layout this project moved away from. When the played board
+    /// changed, the literal did not, and the landing page kept showing the
+    /// old one. Deriving it fixes that; this test stops a literal creeping
+    /// back.
+    #[test]
+    fn placeholder_board_matches_the_real_layout() {
+        let board = empty_board();
+        let expected = rules_shared::VariantRules::official().premiums;
+
+        assert_eq!(board.len(), expected.len(), "board should be 15x15");
+        for (index, cell) in board.iter().enumerate() {
+            assert_eq!(
+                crate::client_rules::to_rules_premium(&cell.premium),
+                expected[index],
+                "premium at index {index} should match the played layout"
+            );
+        }
+    }
+
+    /// The specific thing that was wrong, asserted directly: the corner is
+    /// not a triple-word. Redundant against the test above, and worth having
+    /// because it names the mistake rather than the mechanism.
+    #[test]
+    fn the_corner_is_not_a_triple_word() {
+        let board = empty_board();
+        assert_ne!(
+            board[0].premium,
+            api::PremiumDto::TripleWord,
+            "a triple-word corner is the official layout, which this project does not use"
+        );
     }
 
     #[test]
