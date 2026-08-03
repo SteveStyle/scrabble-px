@@ -488,6 +488,11 @@ impl GameSession {
         };
         participant.resigned = true;
         let display_name = participant.display_name.clone();
+        // The timeout path sets `resigned` itself rather than going through
+        // `finish_via_resignation`, so it needs this call too. Two places
+        // retire a seat; both must return its tiles, or a timeout strands a
+        // rack exactly as a resignation used to.
+        self.return_rack_to_bag(seat);
         self.moves.push(MoveRecord {
             move_number: self.turn_number,
             seat_number: seat,
@@ -878,6 +883,47 @@ impl GameSession {
     /// than that still playing, this seat simply drops out and everyone
     /// else continues, matching a real multi-player table where one
     /// player quitting shouldn't end the game for the rest.
+    /// Return a departing seat's tiles to the bag.
+    ///
+    /// A seat that leaves mid-game — resigned, force-resigned, or retired for
+    /// exceeding the move time limit — used to keep its rack, taking those
+    /// tiles out of play. In a two-player game the game ends immediately and
+    /// nobody notices; with three or more, the survivors play on against a bag
+    /// quietly missing up to a full rack, possibly including a blank or the Q.
+    /// That distorts every subsequent draw and brings the endgame forward.
+    ///
+    /// It also fixes a second bug without touching it. `finish_game` loops
+    /// over *all* participants, resigned included, so a stranded rack was
+    /// deducted from the resigner's score and added to the going-out player's
+    /// bonus — for a seat that had left the game. An empty rack scores zero,
+    /// so that loop becomes harmless rather than needing a `!resigned` filter.
+    /// The invariant to rely on: **a seat that has left holds no tiles.**
+    ///
+    /// Shuffled after returning, like `exchange` does. Appending without
+    /// shuffling would make the returned tiles the last ones drawn, which is
+    /// predictable in a way the rest of the bag is not.
+    fn return_rack_to_bag(&mut self, seat_number: u8) {
+        let Some(participant) = self.participants.get_mut(seat_number as usize) else {
+            return;
+        };
+        let rack = participant.rack;
+        participant.rack = Rack::default();
+
+        for (index, count) in rack.counts.iter().enumerate() {
+            for _ in 0..*count {
+                self.bag.push(Tile::Letter(Letter(index as u8)));
+            }
+        }
+        // A rack blank is already unassigned — a blank only acquires a letter
+        // when it is played — so there is nothing to reset here, unlike
+        // `exchange`, which takes tiles that may have been assigned.
+        for _ in 0..rack.blanks {
+            self.bag.push(Tile::Blank { acting_as: None });
+        }
+
+        shuffle_bag(&mut self.bag, self.random_seed ^ self.turn_number as u64);
+    }
+
     fn finish_via_resignation(
         &mut self,
         seat_number: u8,
@@ -889,6 +935,8 @@ impl GameSession {
             .get_mut(seat_number as usize)
             .ok_or_else(|| format!("Unknown seat {seat_number}"))?;
         participant.resigned = true;
+        let description = format!("{} {reason}", participant.display_name);
+        self.return_rack_to_bag(seat_number);
         self.moves.push(MoveRecord {
             move_number: self.turn_number,
             seat_number,
@@ -896,7 +944,7 @@ impl GameSession {
             main_word: None,
             score_delta: 0,
             positions: Vec::new(),
-            description: format!("{} {reason}", participant.display_name),
+            description,
             elapsed_us: None,
         });
         self.mark_changed();
@@ -1540,6 +1588,24 @@ mod tests {
         }
     }
 
+    /// Three seats, because the tile-return bug is invisible with two: the
+    /// game ends the moment one of them leaves, so a stranded rack never
+    /// affects a later draw.
+    fn three_human_game() -> GameSession {
+        GameSession::new(
+            "game-3".to_string(),
+            vec![
+                participant(0, SeatKind::Human, Some("alice")),
+                participant(1, SeatKind::Human, Some("bob")),
+                participant(2, SeatKind::Human, Some("carol")),
+            ],
+            Some("alice".to_string()),
+            42,
+            VariantRules::official(),
+            3600,
+        )
+    }
+
     fn two_human_game(creator_player_id: Option<&str>) -> GameSession {
         GameSession::new(
             "game-1".to_string(),
@@ -1677,6 +1743,102 @@ mod tests {
         assert_eq!(game.messages[0].display_name, "Bob");
         // Trimmed, matching `post_chat_message`'s own doc comment.
         assert_eq!(game.messages[0].body, "gg");
+    }
+
+    // ========== A departing seat returns its tiles (#21) ==========
+
+    /// Total tiles are conserved when a seat resigns: whatever was on the
+    /// rack is back in the bag, so the survivors draw from a full one.
+    ///
+    /// Before this, three-player games continued against a bag quietly short
+    /// of up to a full rack — possibly including a blank or the Q — which
+    /// distorted every later draw and brought the endgame forward.
+    #[test]
+    fn resigning_returns_the_rack_to_the_bag() {
+        let mut game = three_human_game();
+        game.start();
+
+        let rack_before = game.participants[0].rack.count();
+        let bag_before = game.bag.len();
+        assert!(rack_before > 0, "a started game should have dealt tiles");
+
+        game.apply_resign(0)
+            .expect("seat 0 should be able to resign");
+
+        assert_eq!(
+            game.participants[0].rack.count(),
+            0,
+            "a seat that has left holds no tiles"
+        );
+        assert_eq!(
+            game.bag.len(),
+            bag_before + rack_before as usize,
+            "every tile from the rack is back in the bag"
+        );
+    }
+
+    /// The same for a seat retired on time, which sets `resigned` itself
+    /// instead of going through `finish_via_resignation`. Two code paths
+    /// retire a seat; a fix to only one of them would leave this stranding
+    /// tiles exactly as resignation used to.
+    #[test]
+    fn timing_out_returns_the_rack_to_the_bag() {
+        let mut game = three_human_game();
+        game.move_time_limit_seconds = 1;
+        game.start();
+        // Pretend the current seat's turn began long enough ago to expire.
+        game.turn_started_at -= 10;
+
+        let seat = game.current_seat as usize;
+        let rack_before = game.participants[seat].rack.count();
+        let bag_before = game.bag.len();
+
+        assert!(game.apply_move_timeout(), "the turn should have expired");
+
+        assert_eq!(game.participants[seat].rack.count(), 0);
+        assert_eq!(game.bag.len(), bag_before + rack_before as usize);
+    }
+
+    /// `finish_game` deducts every participant's rack value, resigned seats
+    /// included, and adds it to whoever goes out. With the rack returned,
+    /// that value is zero — so a player who resigned early is not scored
+    /// again when the game later ends, and nobody collects a bonus from
+    /// tiles belonging to someone who had left.
+    ///
+    /// This is the second bug the fix closes without touching `finish_game`.
+    #[test]
+    fn a_resigned_seats_score_is_final_when_the_game_later_finishes() {
+        let mut game = three_human_game();
+        game.start();
+        game.participants[0].score = 42;
+
+        game.apply_resign(0)
+            .expect("seat 0 should be able to resign");
+        let score_after_resigning = game.participants[0].score;
+
+        // What seat 2 still holds — the only rack that should feed the bonus,
+        // since seat 0 has left and seat 1 is the one going out.
+        let letter_values = game.rules.letter_values;
+        let rack_value = |rack: &Rack| -> i32 {
+            rack.counts
+                .iter()
+                .zip(letter_values.iter())
+                .map(|(&count, &value)| count as i32 * value as i32)
+                .sum()
+        };
+        let seat_two_holds = rack_value(&game.participants[2].rack);
+
+        game.finish_game(Some(1));
+
+        assert_eq!(
+            game.participants[0].score, score_after_resigning,
+            "finishing later must not move the score of a seat that had left"
+        );
+        assert_eq!(
+            game.final_bonus_points,
+            Some(seat_two_holds),
+            "the going-out bonus counts only seats still holding tiles"
+        );
     }
 
     #[test]
