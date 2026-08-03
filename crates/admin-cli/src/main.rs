@@ -64,11 +64,16 @@ enum UsersAction {
     /// tokens and rating history. Their past games are kept, with the seat
     /// unclaimed rather than deleted, so game history and other players'
     /// records survive.
-    Delete { player_id: String },
+    Delete {
+        /// Display name or account id. Names are unique, so either
+        /// identifies exactly one account.
+        user: String,
+    },
     /// Reset a user's password. Prints the new password if you don't
     /// supply one — there's no email flow to deliver it any other way.
     ResetPassword {
-        player_id: String,
+        /// Display name or account id, as for `delete`.
+        user: String,
         #[arg(long)]
         password: Option<String>,
     },
@@ -187,7 +192,8 @@ fn run_users(
                     .collect(),
             );
         }
-        UsersAction::Delete { player_id } => {
+        UsersAction::Delete { user } => {
+            let player_id = resolve_user(client, server, &user)?;
             check_response(
                 client
                     .delete(format!("{server}/admin/users/{player_id}"))
@@ -199,10 +205,8 @@ fn run_users(
                 serde_json::json!({ "deleted": true, "player_id": player_id }),
             );
         }
-        UsersAction::ResetPassword {
-            player_id,
-            password,
-        } => {
+        UsersAction::ResetPassword { user, password } => {
+            let player_id = resolve_user(client, server, &user)?;
             let new_password = password.unwrap_or_else(generate_password);
             check_response(
                 client
@@ -458,6 +462,41 @@ fn check_response(
 /// A 16-character password from a charset with visually-ambiguous
 /// characters (0/O, 1/l/I) removed, since a human has to read this off a
 /// terminal and type it somewhere.
+/// Turn a display name or an account id into an id.
+///
+/// `display_name` is `not null unique` in the schema, so a name identifies
+/// exactly one account — which is what makes accepting either safe. The
+/// admin API only takes ids, so a name is resolved here by listing users
+/// rather than by adding a lookup endpoint for one caller.
+///
+/// A value that matches no name is passed through unchanged and assumed to
+/// be an id. That keeps every existing invocation working, and an id that
+/// does not exist still fails at the API with a clear 404 — trying to
+/// distinguish "not a name" from "not an id" here would only duplicate a
+/// check the server already does.
+fn resolve_user(
+    client: &reqwest::blocking::Client,
+    server: &str,
+    user: &str,
+) -> Result<String, String> {
+    let users: Vec<api::AdminPlayerSummaryDto> = check_response(
+        client
+            .get(format!("{server}/admin/users"))
+            .send()
+            .map_err(fmt_err)?,
+    )?
+    .json()
+    .map_err(fmt_err)?;
+
+    match users
+        .iter()
+        .find(|candidate| candidate.display_name == user)
+    {
+        Some(found) => Ok(found.id.clone()),
+        None => Ok(user.to_string()),
+    }
+}
+
 fn generate_password() -> String {
     use rand::Rng;
     const CHARSET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
