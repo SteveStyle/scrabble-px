@@ -43,7 +43,7 @@ REHEARSAL_URL="${REHEARSAL_URL:-$(
   printf '%s' "$TARGET_URL"
 )}"
 # `STAGING_URL` honoured as a fallback, as deploy.sh does: preview is what
-# used to be called staging, and #22 has yet to rename the files.
+# used to be called staging before #22 renamed the files.
 PREVIEW_URL="${PREVIEW_URL:-${STAGING_URL:-http://localhost:8081}}"
 
 if [[ "${1:-}" == "--fetch" ]]; then

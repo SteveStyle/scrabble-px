@@ -50,7 +50,7 @@ DEPLOY_SSH_KEY="${DEPLOY_SSH_KEY:-$HOME/.ssh/oracle_tile_lite_elite}"
 DEPLOY_REMOTE_DIR="${DEPLOY_REMOTE_DIR:-tile-lite-elite}"
 # The URL of the host this script is acting on — production by default, the
 # rehearsal host when a wrapper says so. Named TARGET_URL rather than
-# PROD_URL because it is not always production: deploy-staging.sh and
+# PROD_URL because it is not always production: deploy-preview.sh and
 # status.sh both use PROD_URL to mean the *live site*, and one name meaning
 # both "my target" and "the live site" in scripts that run in the same
 # session is how a value set for one silently changes the other (#24).

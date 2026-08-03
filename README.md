@@ -85,7 +85,7 @@ cd e2e && npm test         # Playwright, drives the real client in a browser
 ```
 
 CI runs format, clippy (warnings denied), the test suite, and a wasm build
-on every push, plus the end-to-end suite against a real staging Docker stack
+on every push, plus the end-to-end suite against a real preview Docker stack
 on pull requests and pushes to `main`. See
 [3.3 Testing, CI & Release](docs/3.3-testing-ci-and-release.md).
 

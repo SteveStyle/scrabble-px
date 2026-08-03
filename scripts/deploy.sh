@@ -21,7 +21,7 @@ set -euo pipefail
 # answerable from source control alone.
 #
 # Refuses to run unless: the commit is on origin/main, CI passed for it,
-# local staging is currently running it, and production's database hasn't
+# the rehearsal host is currently running it, and production's database hasn't
 # already moved past the schema this build knows. See the checks below.
 #
 # The deploy itself, once those pass:
@@ -68,7 +68,7 @@ DEPLOY_REMOTE_DIR="${DEPLOY_REMOTE_DIR:-tile-lite-elite}"
 REHEARSAL_URL="${REHEARSAL_URL:-${STAGING_URL:-https://129.151.84.183.sslip.io}}"
 # The URL of the host this script is acting on — production by default, the
 # rehearsal host when a wrapper says so. Named TARGET_URL rather than
-# PROD_URL because it is not always production: deploy-staging.sh and
+# PROD_URL because it is not always production: deploy-preview.sh and
 # status.sh both use PROD_URL to mean the *live site*, and one name meaning
 # both "my target" and "the live site" in scripts that run in the same
 # session is how a value set for one silently changes the other (#24).
@@ -228,10 +228,10 @@ elif ! "$REPO_DIR/scripts/ci-status.sh" --wait "$TARGET_FULL_SHA"; then
   exit 1
 fi
 
-# Ordered before the staging check deliberately. This is an impossibility,
-# not a process requirement: no amount of staging makes an image bootable
+# Ordered before the rehearsal check deliberately. This is an impossibility,
+# not a process requirement: no amount of rehearsing makes an image bootable
 # against a database it does not understand. Checked second, a rollback
-# across a migration was told "test it in staging first", which costs four
+# across a migration was told "rehearse it first", which costs four
 # minutes of rebuilding before the deploy refuses anyway. Found in the
 # 2026-08-01 rollback drill.
 # Refuses to ship an image the live database has already moved past.
@@ -280,12 +280,12 @@ if [[ -z "$DEPLOYED_VERSION" ]]; then
   exit 1
 fi
 
-# Refuses to ship a commit that was never actually exercised in staging —
+# Refuses to ship a commit that was never actually exercised on the rehearsal host —
 # a passing `cargo test` only proves the code compiles and unit-tests
 # clean, not that it boots/migrates cleanly in a real container. Without
-# this check, testing commit A in staging and then committing a "quick
+# this check, rehearsing commit A and then committing a "quick
 # fix" B before deploying would silently ship B untested — easy to do
-# without noticing, since deploy.sh has no other way to know staging
+# without noticing, since deploy.sh has no other way to know the rehearsal host
 # wasn't re-run. See docs/3.3-testing-ci-and-release.md.
 if [[ "$DEPLOY_REF" == "HEAD" ]]; then
   STAGING_CMD="./scripts/deploy-rehearsal.sh"
@@ -436,7 +436,7 @@ ssh "${SSH_OPTS[@]}" "$REMOTE" "
 # Wrapped in a timeout because the failure mode of an image that *doesn't*
 # understand `--migrate-only` is not an error — the flag is ignored, the
 # server starts normally, and it runs forever. Found the hard way against a
-# staging image built before the flag existed: the command simply never
+# image built before the flag existed: the command simply never
 # returned. A deploy that hangs is worse than one that fails, so cap it.
 echo "==> Applying migrations (separately, so a failure here is not an outage)"
 if ! ssh "${SSH_OPTS[@]}" "$REMOTE" "

@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 // The suite runs against an ALREADY-RUNNING dev environment — runbook step 2
 // (`services.sh restart-server` / `restart`) starts server (:3000) and web
 // (:8080), and step 3 runs these tests against it. Point elsewhere (e.g.
-// staging on :8081) with PLAYWRIGHT_BASE_URL. There is deliberately no
+// preview on :8081) with PLAYWRIGHT_BASE_URL. There is deliberately no
 // `webServer:` block: this suite does not own the app's lifecycle.
 const baseURL = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:8080';
 

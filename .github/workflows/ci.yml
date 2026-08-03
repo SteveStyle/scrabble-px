@@ -2,9 +2,9 @@ name: CI
 
 # The `check` job (fmt · clippy · test · wasm) runs on every push (any branch),
 # on pull requests, and on demand. The heavier `e2e` job (Playwright against the
-# staging Docker stack) is gated to main pushes, PRs, and manual runs — it does a
+# preview Docker stack) is gated to main pushes, PRs, and manual runs — it does a
 # full image build, so it doesn't run on every branch push. See
-# docs/3.3-testing-ci-and-release.md for how this fits alongside local staging.
+# docs/3.3-testing-ci-and-release.md for how this fits alongside local preview.
 on:
   push:
   pull_request:
@@ -72,7 +72,7 @@ jobs:
       - name: Wasm build (web client)
         run: cargo build -p tile-lite-elite-ui --target wasm32-unknown-unknown
 
-  # End-to-end UI tests: build + run the staging Docker stack (the same images
+  # End-to-end UI tests: build + run the preview Docker stack (the same images
   # scripts/deploy.sh ships — so the fragile dx/wasm-bindgen packaging is done
   # inside the Dockerfile, not reproduced on the runner) and drive the real
   # client in a browser with Playwright. Heavier than `check` (a full image
@@ -102,7 +102,7 @@ jobs:
           fi
 
   e2e:
-    name: e2e (Playwright · staging stack)
+    name: e2e (Playwright · preview stack)
     runs-on: ubuntu-latest
     needs: check
     if: >
@@ -115,7 +115,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      # Build the staging images with a GitHub Actions layer cache. The big,
+      # Build the preview images with a GitHub Actions layer cache. The big,
       # stable win is the builder stage's `cargo install dioxus-cli`/
       # `wasm-bindgen-cli` layer (compiled from source, minutes) — invariant
       # unless those pinned versions change, so it's restored from cache on
@@ -123,7 +123,7 @@ jobs:
       # `up --no-build` below) and builds both services against the one shared,
       # cached `builder` stage. Deps/app still recompile on a source change (no
       # cargo-chef here).
-      - name: Build the staging images (cached)
+      - name: Build the preview images (cached)
         uses: docker/bake-action@v7
         with:
           # Build from the checked-out working directory. Required from v6
@@ -133,7 +133,7 @@ jobs:
           # no longer be the tree this job checked out — silently, since a
           # git-context build of the same commit still succeeds.
           source: .
-          files: docker-compose.staging.yml
+          files: docker-compose.preview.yml
           load: true
           set: |
             *.cache-from=type=gha
@@ -141,22 +141,22 @@ jobs:
         env:
           TILE_LITE_ELITE_BUILD_ID: ${{ github.sha }}
 
-      - name: Start the staging stack
+      - name: Start the preview stack
         env:
           TILE_LITE_ELITE_BUILD_ID: ${{ github.sha }}
-        run: docker compose -f docker-compose.staging.yml up -d --no-build
+        run: docker compose -f docker-compose.preview.yml up -d --no-build
 
-      - name: Wait for staging to be healthy
+      - name: Wait for preview to be healthy
         run: |
           for i in $(seq 1 60); do
             if curl -sf http://localhost:8081/health >/dev/null; then
-              echo "staging is up:"; curl -s http://localhost:8081/health; echo
+              echo "preview is up:"; curl -s http://localhost:8081/health; echo
               exit 0
             fi
             sleep 5
           done
-          echo "::error::staging did not become healthy within 5 minutes"
-          docker compose -f docker-compose.staging.yml logs --tail=200
+          echo "::error::preview did not become healthy within 5 minutes"
+          docker compose -f docker-compose.preview.yml logs --tail=200
           exit 1
 
       - name: Set up Node
@@ -184,6 +184,6 @@ jobs:
           path: e2e/playwright-report/
           retention-days: 7
 
-      - name: Tear down the staging stack
+      - name: Tear down the preview stack
         if: always()
-        run: docker compose -f docker-compose.staging.yml down -v
+        run: docker compose -f docker-compose.preview.yml down -v

@@ -22,7 +22,7 @@ npm run test:headed    # watch it in a real browser window
 npm run report         # open the last HTML report
 ```
 
-Point it elsewhere (e.g. staging) with `PLAYWRIGHT_BASE_URL=http://localhost:8081 npm test`.
+Point it elsewhere (e.g. preview) with `PLAYWRIGHT_BASE_URL=http://localhost:8081 npm test`.
 
 ## Test data & cleanup
 

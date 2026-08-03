@@ -35,7 +35,7 @@ flowchart TB
     %% a throwaway git worktree and build that, so the working tree cannot
     %% reach either environment. Do not "correct" these to start at DEV.
     DEV["Dev<br/>working tree<br/>:3000 server · :8080 web"]
-    STG["Staging<br/>:8081 · docker"]
+    STG["Preview<br/>:8081 · docker"]
     PROD["Production<br/>tileliteelite.com"]
     LG["local git<br/>commit history"]
     subgraph GH["GitHub"]
@@ -46,8 +46,8 @@ flowchart TB
 
     DEV ~~~ STG
     STG ~~~ GATE
-    %% Without this, ELK floats Production up beside Staging and "ships the
-    %% image" points upward. Pinning it after Staging puts the environments
+    %% Without this, ELK floats Production up beside Preview and "ships the
+    %% image" points upward. Pinning it after Preview puts the environments
     %% in descending order and the deploy flow downward through the gate.
     STG ~~~ PROD
 
@@ -59,16 +59,16 @@ flowchart TB
     LG -->|"`1.c · **$ git push**`"| REPO
     REPO -->|"1.d · CI runs (automatic)"| ACT
     ACT -.->|"`1.e · **$ ci-status.sh --wait**`"| LG
-    PROD -.->|"`2 · **$ deploy-staging.sh at prod**`"| STG
-    LG -->|"`3 · **$ deploy-staging.sh**`"| STG
+    PROD -.->|"`2 · **$ deploy-preview.sh at prod**`"| STG
+    LG -->|"`3 · **$ deploy-preview.sh**`"| STG
     STG -.->|"`4 · **$ curl /health**`"| STG
     STG -.->|"`5 · **user test**`"| STG
     LG -->|"`6.a · **$ deploy.sh**`"| GATE{"gate"}
     GATE -->|"6.d · ships the image"| PROD
     ACT -.->|"6.b · CI green for this commit?"| GATE
-    STG -.->|"6.c · staging on this commit?"| GATE
+    STG -.->|"6.c · preview on this commit?"| GATE
     LG -->|"6.e · tag + version bump"| REPO
-    PROD -.->|"`7 · **$ deploy-staging.sh verify**`"| STG
+    PROD -.->|"`7 · **$ deploy-preview.sh verify**`"| STG
 
     classDef gate fill:#fbe9dc,stroke:#b06a2c,color:#7a4318
     classDef env fill:#e4eff8,stroke:#39698c,color:#12303f

@@ -125,7 +125,7 @@ EXPOSE 80
 # production that a bare loopback probe there fails: Caddy's global
 # HTTP->HTTPS auto-redirect fires for any Host on :80, including one that
 # matches none of the configured hostnames, and the TLS handshake on :443
-# then fails (no cert for that SNI). Staging's Caddyfile.staging has no
+# then fails (no cert for that SNI). Preview's Caddyfile.preview has no
 # TLS/redirect at all, so this bug only showed up once actually deployed
 # to production — a real lesson in why "verified" means checked against
 # the environment that actually differs, not just checked anywhere.

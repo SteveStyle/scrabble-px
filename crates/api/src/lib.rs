@@ -93,8 +93,8 @@ pub struct HealthDto {
     /// `Major.Minor.Patch[+build]` — see `server-game`'s `app_version()`.
     /// Lets anything that can reach `/health` (a human with `curl`, a
     /// deploy script) find out exactly which commit is live without SSHing
-    /// in to grep startup logs — e.g. `scripts/deploy-staging.sh at prod`
-    /// reads this to bring staging to the same version as production.
+    /// in to grep startup logs — e.g. `scripts/deploy-preview.sh at prod`
+    /// reads this to bring preview to the same version as production.
     pub app_version: String,
     /// Highest migration version applied to the server's database.
     ///

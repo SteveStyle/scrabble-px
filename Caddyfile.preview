@@ -1,5 +1,5 @@
-# Staging equivalent of ./Caddyfile — identical routing, but plain HTTP on
-# :80 (mapped to host 8080 by docker-compose.staging.yml) instead of
+# Preview equivalent of ./Caddyfile — identical routing, but plain HTTP on
+# :80 (mapped to host 8080 by docker-compose.preview.yml) instead of
 # automatic HTTPS, since there's no real domain to provision a Let's
 # Encrypt certificate for on a local/WSL machine.
 
