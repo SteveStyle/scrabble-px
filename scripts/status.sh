@@ -155,14 +155,23 @@ TERM_COLS="${COLUMNS:-$(tput cols 2> /dev/null || echo 100)}"
 TITLE_WIDTH=$((TERM_COLS - 22 - 30))
 (( TITLE_WIDTH < 30 )) && TITLE_WIDTH=30
 
-# Cut to fit, with a trailing ellipsis only when something was actually cut.
+# Cut to fit and pad to the column, with a trailing ellipsis only when
+# something was actually cut.
+#
+# Padded here rather than with printf's `%-Ns`, which pads to a width in
+# *bytes* while `${#title}` counts *characters*. An em-dash is 3 bytes and one
+# display column, so every one in a title cost two spaces of padding and the
+# columns after it drifted left. The ellipsis is multi-byte too, so truncated
+# rows drifted as well.
 fit_title() {
   local title="$1"
   if (( ${#title} > TITLE_WIDTH )); then
-    printf '%s…' "${title:0:$((TITLE_WIDTH - 1))}"
-  else
-    printf '%s' "$title"
+    title="${title:0:$((TITLE_WIDTH - 1))}…"
   fi
+  local padding=$(( TITLE_WIDTH - ${#title} ))
+  printf '%s' "$title"
+  (( padding > 0 )) && printf '%*s' "$padding" ''
+  return 0
 }
 
 echo "==> Open changes"
@@ -182,7 +191,7 @@ else
     TYPE="$(type_of "$labels")"
     state="$(state_of_issue "$num" "$TYPE")"
     [[ -n "$milestone" ]] && state="$state · $milestone"
-    printf "    %-4s %-${TITLE_WIDTH}s %-16s %s\n" "$num" "$(fit_title "$title")" "$TYPE" "$state"
+    printf "    %-4s %s %-16s %s\n" "$num" "$(fit_title "$title")" "$TYPE" "$state"
   done <<< "$(printf '%s' "$ISSUES" | sort -n)"
 fi
 echo
@@ -204,7 +213,7 @@ if [[ -n "$AWAITING" && -n "$OPEN_MILESTONES" ]]; then
   while IFS=$'\t' read -r num title milestone; do
     [[ -z "$num" ]] && continue
     if grep -qxF "$milestone" <<< "$OPEN_MILESTONES" 2>/dev/null; then
-      printf "    %-4s %-${TITLE_WIDTH}s %s\n" "$num" "$(fit_title "$title")" "$milestone"
+      printf "    %-4s %s %s\n" "$num" "$(fit_title "$title")" "$milestone"
       FOUND=1
     fi
   done <<< "$AWAITING"
