@@ -236,6 +236,26 @@ const SCORELESS_TURN_LIMIT: u8 = 6;
 /// opponents aren't expected to be online at the same time.
 pub const DEFAULT_MOVE_TIME_LIMIT_SECONDS: u64 = 72 * 60 * 60;
 
+/// Shortest per-move limit a caller may ask for.
+///
+/// An hour, matching what the limit is for: async play where opponents are
+/// not online together. Anything shorter is a different game — see #43 on
+/// chess-style time controls, considered and deferred.
+///
+/// The lower bound matters most at **zero**, which is not merely useless but
+/// harmful: `apply_move_timeout` tests `now - turn_started_at < limit`, so a
+/// limit of 0 is false immediately and every seat retires on the first sweep,
+/// before anyone can move.
+pub const MIN_MOVE_TIME_LIMIT_SECONDS: u64 = 60 * 60;
+
+/// Longest per-move limit a caller may ask for.
+///
+/// Deliberately generous — 40 days. The requirement is only that a game times
+/// out *eventually*, so an abandoned one resolves and can then be cleaned up
+/// rather than sitting active forever. Without an upper bound, `u64::MAX`
+/// produces exactly the never-resolving game the timeout exists to prevent.
+pub const MAX_MOVE_TIME_LIMIT_SECONDS: u64 = 40 * 24 * 60 * 60;
+
 #[derive(Debug, Clone)]
 pub struct GameSession {
     pub id: String,

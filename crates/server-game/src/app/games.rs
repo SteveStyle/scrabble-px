@@ -190,9 +190,27 @@ pub(crate) async fn create_game(
     // constant, so every game created through the UI (which never sends a
     // seed) dealt the exact same racks in the exact same order, every game.
     let seed = request.seed.unwrap_or_else(rand::random);
-    let move_time_limit_seconds = request
-        .move_time_limit_seconds
-        .unwrap_or(crate::game_state::DEFAULT_MOVE_TIME_LIMIT_SECONDS);
+    // Rejected rather than clamped: a caller asking for ten seconds has
+    // misunderstood the feature, and silently substituting an hour hides that
+    // from them. Not reachable through the UI, which offers a fixed set of
+    // choices — this guards what the API accepts from any other client.
+    let move_time_limit_seconds = match request.move_time_limit_seconds {
+        None => crate::game_state::DEFAULT_MOVE_TIME_LIMIT_SECONDS,
+        Some(requested)
+            if (crate::game_state::MIN_MOVE_TIME_LIMIT_SECONDS
+                ..=crate::game_state::MAX_MOVE_TIME_LIMIT_SECONDS)
+                .contains(&requested) =>
+        {
+            requested
+        }
+        Some(requested) => {
+            return Err(ApiProblem::bad_request(format!(
+                "move_time_limit_seconds must be between {} and {} seconds (got {requested})",
+                crate::game_state::MIN_MOVE_TIME_LIMIT_SECONDS,
+                crate::game_state::MAX_MOVE_TIME_LIMIT_SECONDS,
+            )));
+        }
+    };
     let game = GameSession::new(
         Uuid::new_v4().to_string(),
         participants,

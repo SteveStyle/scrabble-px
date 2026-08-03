@@ -6226,7 +6226,11 @@ async fn overdue_turn_is_auto_retired_on_next_access() {
                 variant: None,
                 language: None,
                 board_layout: None,
-                move_time_limit_seconds: Some(60),
+                // The minimum the API accepts (#43). The value is
+                // irrelevant to what this tests — `turn_started_at` is
+                // rewound to the epoch below, which is overdue against any
+                // limit — so it just has to be one a caller may send.
+                move_time_limit_seconds: Some(crate::game_state::MIN_MOVE_TIME_LIMIT_SECONDS),
             },
         )
         .await,
@@ -6263,7 +6267,10 @@ async fn overdue_turn_is_auto_retired_on_next_access() {
         .await,
     )
     .await;
-    assert_eq!(started.move_time_limit_seconds, 60);
+    assert_eq!(
+        started.move_time_limit_seconds,
+        crate::game_state::MIN_MOVE_TIME_LIMIT_SECONDS
+    );
     assert_eq!(started.current_seat, 0);
 
     // Rewind the in-memory turn clock rather than sleeping 60 real
@@ -7271,4 +7278,102 @@ fn concurrency_falls_back_on_nonsense_values() {
         7
     );
     unsafe { std::env::remove_var("TILE_LITE_ELITE_TEST_CONCURRENCY") };
+}
+
+// ========== move_time_limit_seconds bounds (#43) ==========
+
+/// A limit of zero is not merely useless, it is harmful: `apply_move_timeout`
+/// tests `now - turn_started_at < limit`, so zero is false immediately and
+/// every seat retires on the first sweep, before anyone can move.
+#[tokio::test]
+async fn create_game_rejects_a_zero_move_time_limit() {
+    let state = create_test_state(&test_database_url()).await;
+    let app = build_router(state);
+    let alice = register_player(app.clone(), "Alice").await;
+
+    let response = send_json_auth(
+        app.clone(),
+        Method::POST,
+        "/games",
+        Some(&alice.session_token),
+        &game_request_with_limit(Some(0)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// No upper bound means `u64::MAX`, which is the never-resolving game the
+/// timeout exists to prevent — and which retention (#42) would then have
+/// nothing to act on.
+#[tokio::test]
+async fn create_game_rejects_an_absurd_move_time_limit() {
+    let state = create_test_state(&test_database_url()).await;
+    let app = build_router(state);
+    let alice = register_player(app.clone(), "Alice").await;
+
+    let response = send_json_auth(
+        app.clone(),
+        Method::POST,
+        "/games",
+        Some(&alice.session_token),
+        &game_request_with_limit(Some(u64::MAX)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// Both ends of the range are accepted, and so is omitting it — the default
+/// must stay inside its own bounds, which is easy to break by moving one.
+#[tokio::test]
+async fn create_game_accepts_the_bounds_and_the_default() {
+    let state = create_test_state(&test_database_url()).await;
+    let app = build_router(state);
+    let alice = register_player(app.clone(), "Alice").await;
+
+    for limit in [
+        Some(crate::game_state::MIN_MOVE_TIME_LIMIT_SECONDS),
+        Some(crate::game_state::MAX_MOVE_TIME_LIMIT_SECONDS),
+        Some(crate::game_state::DEFAULT_MOVE_TIME_LIMIT_SECONDS),
+        None,
+    ] {
+        let response = send_json_auth(
+            app.clone(),
+            Method::POST,
+            "/games",
+            Some(&alice.session_token),
+            &game_request_with_limit(limit),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "limit {limit:?} should be accepted"
+        );
+    }
+}
+
+fn game_request_with_limit(move_time_limit_seconds: Option<u64>) -> CreateGameRequest {
+    CreateGameRequest {
+        seats: vec![
+            CreateSeatRequest {
+                kind: SeatKind::Human,
+                display_name: "Alice".to_string(),
+                engine_id: None,
+                claim: Some(SeatClaim::Creator),
+            },
+            CreateSeatRequest {
+                kind: SeatKind::Engine,
+                display_name: "Greedy".to_string(),
+                engine_id: Some("greedy-v1".to_string()),
+                claim: None,
+            },
+        ],
+        seed: None,
+        variant: None,
+        language: None,
+        board_layout: None,
+        move_time_limit_seconds,
+    }
 }
