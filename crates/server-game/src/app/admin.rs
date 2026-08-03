@@ -29,23 +29,58 @@ pub(crate) async fn admin_delete_user(
     State(state): State<AppState>,
     Path(player_id): Path<String>,
 ) -> Result<StatusCode, ApiProblem> {
+    // Refuse while the account is mid-game. An unclaimed seat cannot take its
+    // turn, so every other player waits until the move time limit retires it.
+    // Finish or abort the game first — or wait, since a game always times out
+    // eventually (see MAX_MOVE_TIME_LIMIT_SECONDS).
+    {
+        let games = state.games.read().await;
+        let active: Vec<&str> = games
+            .values()
+            .filter(|game| game.has_active_seat_for(&player_id))
+            .map(|game| game.id.as_str())
+            .collect();
+        if !active.is_empty() {
+            return Err(ApiProblem::bad_request(format!(
+                "That account is playing in {} game(s) still under way ({}). \
+                 Finish or abort them first.",
+                active.len(),
+                active.join(", "),
+            )));
+        }
+    }
+
     let deleted = persistence::delete_player(&state.db, &player_id)
         .await
         .map_err(ApiProblem::from_sqlx)?;
     if !deleted {
         return Err(ApiProblem::not_found("Player not found"));
     }
-    // The DB row is unclaimed already (see `delete_player`); every loaded
-    // `GameSession` is a separate in-memory copy that needs the same
-    // update, or a still-running server would keep serving the seat as
-    // claimed by a player that no longer exists.
-    for game in state.games.write().await.values_mut() {
-        for participant in &mut game.participants {
-            if participant.player_id.as_deref() == Some(player_id.as_str()) {
-                participant.player_id = None;
+
+    // `delete_player` nulls `game_participants.player_id` in the database, but
+    // every loaded `GameSession` is a separate in-memory copy — and the
+    // creator id lives in `snapshot_json` rather than a column, so SQL cannot
+    // reach it at all. `release_player` does both, bumps the version so
+    // clients actually see the seat become unclaimed, and reports whether
+    // anything changed so only affected games are written and announced.
+    let mut touched = Vec::new();
+    {
+        let mut games = state.games.write().await;
+        for game in games.values_mut() {
+            if game.release_player(&player_id) {
+                if let Err(error) = persistence::save_game(&state.db, game).await {
+                    tracing::error!(game_id = %game.id, %error, "failed to persist user deletion");
+                }
+                touched.push(game.to_dto());
             }
         }
     }
+    for dto in touched {
+        let _ = state
+            .events
+            .send(api::GameEventDto::StateUpdated { game: dto });
+    }
+
     tracing::warn!(player_id, "admin: user deleted");
     Ok(StatusCode::NO_CONTENT)
 }

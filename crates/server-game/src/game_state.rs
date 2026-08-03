@@ -394,6 +394,51 @@ impl GameSession {
         claimed
     }
 
+    /// Detach a deleted account from this game: unclaim any seats it held,
+    /// and clear `creator_player_id` if it created the game.
+    ///
+    /// **Clearing the creator matters.** `caller_may_manage_game` matches
+    /// `caller_player_id == Some(creator_id)`, so a creator id pointing at a
+    /// deleted account can never be matched again — the game could never be
+    /// started, aborted, or have its seats changed. `caller_may_manage_game`
+    /// already handles a creatorless game deliberately, falling back to "any
+    /// claimed-seat owner", so clearing it puts the game onto that path
+    /// instead of into a dead end.
+    ///
+    /// Games are kept rather than deleted: other players' history is not the
+    /// deleted account's to destroy.
+    ///
+    /// Returns whether anything changed, so the caller only persists and
+    /// broadcasts the games that actually did.
+    pub fn release_player(&mut self, player_id: &str) -> bool {
+        let mut changed = false;
+        for participant in &mut self.participants {
+            if participant.player_id.as_deref() == Some(player_id) {
+                participant.player_id = None;
+                changed = true;
+            }
+        }
+        if self.creator_player_id.as_deref() == Some(player_id) {
+            self.creator_player_id = None;
+            changed = true;
+        }
+        if changed {
+            self.mark_changed();
+        }
+        changed
+    }
+
+    /// Whether this account holds a seat in a game that is under way. Used to
+    /// refuse deleting an account mid-game: an unclaimed seat cannot take its
+    /// turn, so the game waits on it until the move time limit retires the
+    /// seat — and everyone else waits too.
+    pub fn has_active_seat_for(&self, player_id: &str) -> bool {
+        self.status == GameStatus::Active
+            && self.participants.iter().any(|participant| {
+                participant.player_id.as_deref() == Some(player_id) && !participant.resigned
+            })
+    }
+
     /// Swaps two seats' positions — and with them, turn order, since
     /// `current_seat`/rack refill/every other turn-taking mechanism walks
     /// `participants` by index (see `start`, `apply_place_move`, etc.), not
@@ -1927,6 +1972,76 @@ mod tests {
         assert!(!game.claim_seat(99, "bob".to_string(), "Bob".to_string()));
 
         assert_eq!(game.version, before);
+    }
+
+    /// A deleted creator must not leave the game unmanageable.
+    ///
+    /// `caller_may_manage_game` matches `caller == Some(creator_id)`, so a
+    /// creator id pointing at a deleted account can never be matched again —
+    /// the game could never be started, aborted, or have seats changed.
+    /// Clearing it puts the game onto the creatorless fallback that function
+    /// already provides.
+    #[test]
+    fn releasing_a_player_clears_the_creator_and_their_seats() {
+        let mut game = two_human_game(Some("alice"));
+        game.participants[0].player_id = Some("alice".to_string());
+
+        assert!(game.release_player("alice"));
+
+        assert_eq!(game.creator_player_id, None, "creator must be cleared");
+        assert_eq!(
+            game.participants[0].player_id, None,
+            "seat must be unclaimed"
+        );
+    }
+
+    /// Releasing bumps the version, or no client sees the seat free up —
+    /// the same guard that made #45 invisible.
+    #[test]
+    fn releasing_a_player_bumps_the_version() {
+        let mut game = two_human_game(Some("alice"));
+        game.participants[0].player_id = Some("alice".to_string());
+        let before = game.version;
+
+        assert!(game.release_player("alice"));
+
+        assert!(game.version > before);
+    }
+
+    /// A game the account has nothing to do with is left completely alone,
+    /// including its version — so deleting one account does not make every
+    /// client reload every game.
+    #[test]
+    fn releasing_an_unrelated_player_changes_nothing() {
+        let mut game = two_human_game(Some("alice"));
+        let before = game.version;
+
+        assert!(!game.release_player("nobody"));
+
+        assert_eq!(game.version, before);
+        assert_eq!(game.creator_player_id.as_deref(), Some("alice"));
+    }
+
+    /// Only a game actually under way blocks deletion. A waiting or finished
+    /// game does not — it has no turn for the account to be holding up.
+    #[test]
+    fn only_an_active_seat_counts_as_playing() {
+        let mut game = two_human_game(Some("alice"));
+        game.participants[0].player_id = Some("alice".to_string());
+
+        assert!(
+            !game.has_active_seat_for("alice"),
+            "a Waiting game is not under way"
+        );
+
+        game.start();
+        assert!(game.has_active_seat_for("alice"));
+
+        game.apply_resign(0).expect("seat 0 should resign");
+        assert!(
+            !game.has_active_seat_for("alice"),
+            "a resigned seat is not holding anyone up"
+        );
     }
 
     #[test]
