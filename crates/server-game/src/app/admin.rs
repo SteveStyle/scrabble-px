@@ -29,23 +29,37 @@ pub(crate) async fn admin_delete_user(
     State(state): State<AppState>,
     Path(player_id): Path<String>,
 ) -> Result<StatusCode, ApiProblem> {
-    // Refuse while the account is mid-game. An unclaimed seat cannot take its
-    // turn, so every other player waits until the move time limit retires it.
-    // Finish or abort the game first — or wait, since a game always times out
-    // eventually (see MAX_MOVE_TIME_LIMIT_SECONDS).
+    // Refuse while the account has any game at all — seated or created.
+    //
+    // Deleting a user with games attached is what raises every awkward
+    // question: unclaimed seats, an unmanageable game whose creator is gone,
+    // another player's history half-owned by an account that no longer
+    // exists. Requiring the games to be gone first removes all of them.
+    //
+    // It is only reasonable because games do not last: a finished one is
+    // swept a week after it ends, and an unstarted one within 30 days unless
+    // its creator keeps asking to keep it — which a departing user will not.
+    // So the admin waits, or deletes the games explicitly first. Two ordered
+    // commands rather than one with cascading semantics.
     {
         let games = state.games.read().await;
-        let active: Vec<&str> = games
+        let attached: Vec<&str> = games
             .values()
-            .filter(|game| game.has_active_seat_for(&player_id))
+            .filter(|game| {
+                game.creator_player_id.as_deref() == Some(player_id.as_str())
+                    || game
+                        .participants
+                        .iter()
+                        .any(|seat| seat.player_id.as_deref() == Some(player_id.as_str()))
+            })
             .map(|game| game.id.as_str())
             .collect();
-        if !active.is_empty() {
+        if !attached.is_empty() {
             return Err(ApiProblem::bad_request(format!(
-                "That account is playing in {} game(s) still under way ({}). \
-                 Finish or abort them first.",
-                active.len(),
-                active.join(", "),
+                "That account still has {} game(s): {}. Delete them first, or \
+                 wait — a finished game is removed a week after it ends.",
+                attached.len(),
+                attached.join(", "),
             )));
         }
     }
