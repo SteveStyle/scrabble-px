@@ -989,3 +989,47 @@ async fn a_timed_out_seat_leaves_the_others_playing() {
     .await;
     assert_deleted(app, &playing.alice.player_id).await;
 }
+
+/// DEL-6 says the refusal names the games responsible, and an id alone does
+/// not tell an operator whether to delete a game or wait for it. This pins
+/// the description as well as the id, because the message is read by a person
+/// deciding what to do next and nothing else in the suite would notice it
+/// turning back into a list of UUIDs.
+#[tokio::test]
+async fn the_refusal_says_who_is_in_each_game_and_where_it_has_got_to() {
+    let state = create_test_state(&test_database_url()).await;
+    let app = build_router(state.clone());
+
+    let playing = create_two_human_game(app.clone()).await;
+
+    let response = delete_account(app, &playing.alice.player_id).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let problem: serde_json::Value = read_json(response).await;
+    let message = problem["message"].as_str().expect("a message").to_string();
+
+    assert!(
+        message.contains(&playing.game.id),
+        "the id is what goes into `games delete`: {message}"
+    );
+    assert!(
+        message.contains("Alice vs Bob"),
+        "who is in it decides whether deleting it is reasonable: {message}"
+    );
+    assert!(
+        message.contains("playing"),
+        "and what state it is in decides whether waiting is: {message}"
+    );
+    assert!(
+        message.contains("they created it and hold a seat"),
+        "and why it counts, since a player can be attached two ways: {message}"
+    );
+    assert!(
+        message.contains("1 game") && !message.contains("game(s)"),
+        "the count is known, so it should read as English: {message}"
+    );
+    assert!(
+        message.contains("wait") && !message.contains("Delete those games"),
+        "waiting is the advice — deleting somebody else's game to hurry a \
+         cleanup along is not: {message}"
+    );
+}

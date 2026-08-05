@@ -25,6 +25,40 @@ pub(crate) async fn admin_list_users(
     Ok(Json(players))
 }
 
+/// "1 game" or "3 games" — the count is always known here, so `game(s)` only
+/// ever made the reader do the work.
+fn count_of(noun: &str, n: usize) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// One line per game in the way: its id, who is in it, where it has got to,
+/// and why it holds the account. The id stays because it is what identifies
+/// the game anywhere else; the rest is what makes the line mean something to
+/// the person reading it.
+fn describe_blocking_game(game: &GameSession, reason: &str) -> String {
+    let who: Vec<&str> = game
+        .participants
+        .iter()
+        .map(|seat| seat.display_name.as_str())
+        .collect();
+    let state = match game.status {
+        api::GameStatus::Waiting => "not started",
+        api::GameStatus::Active => "playing",
+        api::GameStatus::Finished => "finished",
+        api::GameStatus::Aborted => "abandoned",
+    };
+    format!(
+        "  {}  {} — {}  ({reason})",
+        game.id,
+        who.join(" vs "),
+        state
+    )
+}
+
 pub(crate) async fn admin_delete_user(
     State(state): State<AppState>,
     Path(player_id): Path<String>,
@@ -50,7 +84,7 @@ pub(crate) async fn admin_delete_user(
             .map_err(ApiProblem::from_sqlx)?;
 
         let games = state.games.read().await;
-        let attached: Vec<&str> = games
+        let attached: Vec<&GameSession> = games
             .values()
             .filter(|game| {
                 game.creator_player_id.as_deref() == Some(player_id.as_str())
@@ -59,33 +93,57 @@ pub(crate) async fn admin_delete_user(
                         .iter()
                         .any(|seat| seat.player_id.as_deref() == Some(player_id.as_str()))
             })
-            .map(|game| game.id.as_str())
+            .collect();
+        let invited: Vec<&GameSession> = invited_to
+            .iter()
+            .filter_map(|game_id| games.get(game_id))
             .collect();
 
-        // Named separately because the two need different advice. Games are
-        // the admin's to delete; an invitation is not — it clears when the
-        // invitee answers it or when the game holding it goes.
-        if !attached.is_empty() || !invited_to.is_empty() {
-            let mut reasons = Vec::new();
-            if !attached.is_empty() {
-                reasons.push(format!(
-                    "still has {} game(s): {}",
-                    attached.len(),
-                    attached.join(", "),
-                ));
-            }
-            if !invited_to.is_empty() {
-                reasons.push(format!(
-                    "has been invited to {} game(s) and not replied: {}",
-                    invited_to.len(),
-                    invited_to.join(", "),
-                ));
-            }
-            return Err(ApiProblem::bad_request(format!(
-                "That account {}. Delete those games first, or wait — a \
-                 completed game is removed a week after it ends.",
-                reasons.join(", and "),
-            )));
+        // Listed rather than run into a sentence, described rather than named
+        // by id alone, and each with the reason it counts. Whoever reads this
+        // is being told to wait, so the useful thing is what they are waiting
+        // for — not an id, and not an instruction to go and delete somebody
+        // else's game to hurry it along.
+        let mut blocking: Vec<String> = Vec::new();
+        for game in &attached {
+            let created = game.creator_player_id.as_deref() == Some(player_id.as_str());
+            let seated = game
+                .participants
+                .iter()
+                .any(|seat| seat.player_id.as_deref() == Some(player_id.as_str()));
+            let reason = match (created, seated) {
+                (true, true) => "they created it and hold a seat",
+                (true, false) => "they created it",
+                _ => "they hold a seat",
+            };
+            blocking.push(describe_blocking_game(game, reason));
+        }
+        for game in &invited {
+            blocking.push(describe_blocking_game(
+                game,
+                "they were invited and have not replied",
+            ));
+        }
+
+        if !blocking.is_empty() {
+            let mut lines = vec![format!(
+                "That account cannot be deleted yet — {} still {} to it:",
+                count_of("game", blocking.len()),
+                if blocking.len() == 1 {
+                    "refers"
+                } else {
+                    "refer"
+                },
+            )];
+            lines.extend(blocking);
+            lines.push(String::new());
+            lines.push(
+                "Please wait until those games are gone, then delete the account. A \
+                 completed game goes a week after it ends, and takes its invitations \
+                 with it."
+                    .to_string(),
+            );
+            return Err(ApiProblem::bad_request(lines.join("\n")));
         }
     }
 
