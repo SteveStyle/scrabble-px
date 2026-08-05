@@ -25,6 +25,34 @@ pub(crate) async fn admin_list_users(
     Ok(Json(players))
 }
 
+/// "1 game" or "3 games" — the count is always known here, so `game(s)` only
+/// ever made the reader do the work.
+fn count_of(noun: &str, n: usize) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// One line per game in the way: its id, who is in it, and where it has got
+/// to. The id is what the operator types into `games delete`, so it stays;
+/// the rest is what tells them whether to.
+fn describe_blocking_game(game: &GameSession) -> String {
+    let who: Vec<&str> = game
+        .participants
+        .iter()
+        .map(|seat| seat.display_name.as_str())
+        .collect();
+    let state = match game.status {
+        api::GameStatus::Waiting => "not started",
+        api::GameStatus::Active => "playing",
+        api::GameStatus::Finished => "finished",
+        api::GameStatus::Aborted => "abandoned",
+    };
+    format!("  {}  {} — {}", game.id, who.join(" vs "), state)
+}
+
 pub(crate) async fn admin_delete_user(
     State(state): State<AppState>,
     Path(player_id): Path<String>,
@@ -50,7 +78,7 @@ pub(crate) async fn admin_delete_user(
             .map_err(ApiProblem::from_sqlx)?;
 
         let games = state.games.read().await;
-        let attached: Vec<&str> = games
+        let attached: Vec<&GameSession> = games
             .values()
             .filter(|game| {
                 game.creator_player_id.as_deref() == Some(player_id.as_str())
@@ -59,33 +87,51 @@ pub(crate) async fn admin_delete_user(
                         .iter()
                         .any(|seat| seat.player_id.as_deref() == Some(player_id.as_str()))
             })
-            .map(|game| game.id.as_str())
+            .collect();
+        let invited: Vec<&GameSession> = invited_to
+            .iter()
+            .filter_map(|game_id| games.get(game_id))
             .collect();
 
-        // Named separately because the two need different advice. Games are
-        // the admin's to delete; an invitation is not — it clears when the
-        // invitee answers it or when the game holding it goes.
-        if !attached.is_empty() || !invited_to.is_empty() {
-            let mut reasons = Vec::new();
+        // Listed rather than run into a sentence, and described rather than
+        // named by id alone. An operator reading this has to decide whether
+        // to delete a game or wait for it, and an id answers neither question
+        // — who is in it and what state it is in do.
+        if !attached.is_empty() || !invited.is_empty() {
+            let mut lines = Vec::new();
             if !attached.is_empty() {
-                reasons.push(format!(
-                    "still has {} game(s): {}",
-                    attached.len(),
-                    attached.join(", "),
+                lines.push(format!(
+                    "That account is in {}:",
+                    count_of("game", attached.len())
                 ));
+                lines.extend(attached.iter().map(|game| describe_blocking_game(game)));
             }
-            if !invited_to.is_empty() {
-                reasons.push(format!(
-                    "has been invited to {} game(s) and not replied: {}",
-                    invited_to.len(),
-                    invited_to.join(", "),
+            if !invited.is_empty() {
+                lines.push(format!(
+                    "It has been invited to {} and not replied:",
+                    count_of("game", invited.len())
                 ));
+                lines.extend(invited.iter().map(|game| describe_blocking_game(game)));
             }
-            return Err(ApiProblem::bad_request(format!(
-                "That account {}. Delete those games first, or wait — a \
-                 completed game is removed a week after it ends.",
-                reasons.join(", and "),
-            )));
+            // The two need different advice, which is why they are separated
+            // above: a game is the administrator's to delete, an invitation is
+            // not — it clears when the invitee answers or when its game goes.
+            lines.push(String::new());
+            if !attached.is_empty() {
+                lines.push(
+                    "Delete those games first, or wait — a completed game goes a week \
+                     after it ends."
+                        .to_string(),
+                );
+            }
+            if !invited.is_empty() {
+                lines.push(
+                    "An invitation clears when the invitee answers it, or when the game \
+                     holding it goes."
+                        .to_string(),
+                );
+            }
+            return Err(ApiProblem::bad_request(lines.join("\n")));
         }
     }
 
