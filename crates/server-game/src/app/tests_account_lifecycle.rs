@@ -624,3 +624,129 @@ async fn hiding_a_game_does_not_make_its_players_deletable() {
     assert_deleted(app.clone(), &playing.alice.player_id).await;
     assert_deleted(app, &playing.bob.player_id).await;
 }
+
+// =================================== deleting when no game is in the way
+
+async fn count(state: &AppState, sql: &str, id: &str) -> i64 {
+    sqlx::query_scalar::<_, i64>(sql)
+        .bind(id)
+        .fetch_one(&state.db)
+        .await
+        .expect("counting should work")
+}
+
+async fn personal_rows(state: &AppState, player_id: &str) -> (i64, i64, i64, i64) {
+    (
+        count(state, "select count(*) from sessions where player_id = ?1", player_id).await,
+        count(
+            state,
+            "select count(*) from player_ratings where subject_kind = 'player' and subject_id = ?1",
+            player_id,
+        )
+        .await,
+        count(
+            state,
+            "select count(*) from rating_history where subject_kind = 'player' and subject_id = ?1",
+            player_id,
+        )
+        .await,
+        count(
+            state,
+            "select count(*) from game_invitations where invited_player_id = ?1 or inviting_player_id = ?1",
+            player_id,
+        )
+        .await,
+    )
+}
+
+/// ACC-3's second half. Rating history outlives the games it came from — that
+/// is what makes retention acceptable — and then goes with the account. The
+/// game is swept first so the account is unattached and the delete is about
+/// nothing but the personal data.
+#[tokio::test]
+async fn deleting_an_account_takes_everything_personal_and_nothing_else() {
+    let state = create_test_state(&test_database_url()).await;
+    let app = build_router(state.clone());
+
+    let playing = create_two_human_game(app.clone()).await;
+    resign(app.clone(), &playing.game.id, &playing.bob.session_token, 1).await;
+    sweep_away(
+        app.clone(),
+        &state,
+        &playing.game.id,
+        &playing.alice.session_token,
+    )
+    .await;
+
+    let (sessions, rating, history, invitations) =
+        personal_rows(&state, &playing.bob.player_id).await;
+    assert!(sessions > 0, "Bob should be signed in");
+    assert!(rating > 0, "playing a rated game should give Bob a rating");
+    assert!(history > 0, "and rating history, which outlived the game");
+    assert_eq!(
+        invitations, 0,
+        "the game took its invitations when it was swept (DEL-4), which is \
+         what stops one holding an account open forever"
+    );
+
+    assert_deleted(app.clone(), &playing.bob.player_id).await;
+
+    assert_eq!(
+        personal_rows(&state, &playing.bob.player_id).await,
+        (0, 0, 0, 0),
+        "sessions, rating and history should all go with him"
+    );
+
+    // His token stops working, rather than merely being unfindable.
+    let with_dead_token =
+        send_empty_auth(app.clone(), Method::GET, "/games", Some(&playing.bob.session_token)).await;
+    assert_eq!(
+        with_dead_token.status(),
+        StatusCode::UNAUTHORIZED,
+        "a deleted account's token should be rejected"
+    );
+
+    // Alice is untouched — the thing nothing else would notice.
+    let (alice_sessions, alice_rating, alice_history, _) =
+        personal_rows(&state, &playing.alice.player_id).await;
+    assert!(alice_sessions > 0, "Alice should still be signed in");
+    assert!(alice_rating > 0, "Alice should still have her rating");
+    assert!(alice_history > 0, "and her own rating history");
+}
+
+#[tokio::test]
+async fn deleting_an_unknown_account_is_not_found() {
+    let state = create_test_state(&test_database_url()).await;
+    let app = build_router(state.clone());
+
+    let response = delete_account(app, "no-such-player-id").await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "DEL-8: an account that never existed reads differently from one that \
+         exists and is refused"
+    );
+}
+
+/// DEL-3. The pair to `cannot_delete_a_player_with_an_unanswered_invitation`:
+/// same two players, same game, differing only in whether Bob answered.
+#[tokio::test]
+async fn declining_an_invitation_releases_the_account() {
+    let state = create_test_state(&test_database_url()).await;
+    let app = build_router(state.clone());
+
+    let (alice, bob, game) = alice_having_asked_bob(app.clone()).await;
+    let invitation = invitation_for(app.clone(), &game.id, &bob.session_token).await;
+    decline(app.clone(), &invitation, &bob.session_token).await;
+
+    assert_deleted(app.clone(), &bob.player_id).await;
+
+    // The game survives, and so does Alice — a delete that took the game with
+    // it would still have returned 204.
+    assert_eq!(
+        game_rows(&state, &game.id).await,
+        1,
+        "declining and leaving should not cost Alice her game"
+    );
+    assert_refused(app.clone(), &alice.player_id, &[&game.id]).await;
+}
