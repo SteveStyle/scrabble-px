@@ -524,6 +524,53 @@ async fn cannot_delete_a_player_with_an_unanswered_invitation() {
     assert_deleted(app, &bob.player_id).await;
 }
 
+/// Inviting somebody and then changing the roster is ordinary behaviour, and
+/// invitations are keyed on seat number — so this checks the invitation still
+/// refers to the invitee, and still holds their account, after the roster it
+/// was written against has moved underneath it.
+#[tokio::test]
+async fn adding_a_seat_leaves_an_earlier_invitation_holding_its_invitee() {
+    let state = create_test_state(&test_database_url()).await;
+    let app = build_router(state.clone());
+
+    let (alice, bob, game) = alice_having_asked_bob(app.clone()).await;
+
+    let added = send_json_auth(
+        app.clone(),
+        Method::POST,
+        &format!("/games/{}/seats", game.id),
+        Some(&alice.session_token),
+        &human("Third seat", Some(SeatClaim::Open)),
+    )
+    .await;
+    assert_eq!(added.status(), StatusCode::OK, "adding a seat should work");
+
+    // Bob keeps seat 1 — a seat is appended rather than inserted — so his
+    // invitation still points at the seat it was written for.
+    let after: GameStateDto = read_json(
+        send_empty_auth(
+            app.clone(),
+            Method::GET,
+            &format!("/games/{}", game.id),
+            Some(&alice.session_token),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(after.participants.len(), 3, "the roster should have grown");
+    assert_eq!(
+        after.participants[1].display_name, "Bob",
+        "an added seat should not renumber the seats before it"
+    );
+
+    assert_refused(app.clone(), &bob.player_id, &[&game.id]).await;
+
+    abort(app.clone(), &game.id, &alice.session_token).await;
+    sweep_away(app.clone(), &state, &game.id, &alice.session_token).await;
+
+    assert_deleted(app, &bob.player_id).await;
+}
+
 #[tokio::test]
 async fn hiding_a_game_does_not_make_its_players_deletable() {
     let state = create_test_state(&test_database_url()).await;
