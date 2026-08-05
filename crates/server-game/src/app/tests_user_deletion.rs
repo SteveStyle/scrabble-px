@@ -22,8 +22,7 @@ use super::tests::{
 };
 use super::*;
 use api::{
-    CreateSeatRequest, GameActionRequest, GameStateDto, InvitePlayerRequest, PlayerActionDto,
-    SeatClaim, SeatKind,
+    CreateSeatRequest, GameActionRequest, GameStateDto, PlayerActionDto, SeatClaim, SeatKind,
 };
 use axum::body::Body;
 use axum::http::Method;
