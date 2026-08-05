@@ -72,7 +72,10 @@ use serde::{Deserialize, Serialize};
 // a hash of the built bundle instead; see `watch_for_new_bundle` in
 // `tile-lite-elite-ui`, and docs/3.3's "Decide whether the API version
 // moves" for which changes bump this.
-pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 9 };
+pub const API_VERSION: ApiVersion = ApiVersion {
+    major: 2,
+    minor: 10,
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApiVersion {
@@ -503,9 +506,28 @@ pub enum GameEventDto {
     GameFinished { game: GameStateDto },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ApiError {
     pub message: String,
+    /// Games standing in the way of whatever was refused, for a client that
+    /// wants to show them rather than reprint a sentence about them. Empty
+    /// and omitted for every other error, so a client that ignores it sees
+    /// exactly what it saw before.
+    ///
+    /// The server sends the games; the client decides how to display them.
+    /// Formatting a terminal table server-side would put presentation in the
+    /// crate least able to know how it will be read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocking_games: Vec<BlockingGameDto>,
+}
+
+/// A game that is preventing something, and the reason it counts. The reason
+/// is the server's to decide — a client cannot tell "created it" from "holds
+/// a seat" without reimplementing the rule.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BlockingGameDto {
+    pub game: AdminGameSummaryDto,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

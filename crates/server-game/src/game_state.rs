@@ -358,6 +358,19 @@ impl GameSession {
     /// observable change strictly increases `version`. Over-bumping (e.g. a
     /// resignation that both records the exit and ends the game) is harmless —
     /// only monotonicity matters, not contiguity.
+    /// Record that something about this game changed, for a change the
+    /// session itself cannot see.
+    ///
+    /// A seat's invitation status lives in `game_invitations`, not on the
+    /// `GameSession`, so sending, accepting, declining or withdrawing an
+    /// invitation alters what a client displays without altering anything
+    /// here. `version` is what every client checks — an update whose version
+    /// has not moved is discarded, by broadcast and by explicit refresh
+    /// alike — so those handlers have to say so themselves.
+    pub fn touch(&mut self) {
+        self.mark_changed();
+    }
+
     fn mark_changed(&mut self) {
         self.version += 1;
     }

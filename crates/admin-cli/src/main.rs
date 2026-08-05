@@ -421,11 +421,35 @@ fn check_response(
         return Ok(response);
     }
     let status = response.status();
-    let message = response
-        .json::<api::ApiError>()
-        .map(|error| error.message)
-        .unwrap_or_else(|_| status.to_string());
-    Err(format!("{status}: {message}"))
+    let Ok(problem) = response.json::<api::ApiError>() else {
+        return Err(status.to_string());
+    };
+    // A refusal that names games gets the same table `games list` prints, so
+    // an operator does not have to translate between two descriptions of the
+    // same thing. Printed here rather than folded into the error string
+    // because it is output, not a reason — the reason follows it.
+    if !problem.blocking_games.is_empty() {
+        eprintln!("{status}: {}", problem.message);
+        eprintln!();
+        print_table(
+            &["ID", "STATUS", "LAST ACTIVITY (UTC)", "SEATS", "WHY"],
+            problem
+                .blocking_games
+                .iter()
+                .map(|blocking| {
+                    vec![
+                        blocking.game.id.clone(),
+                        format!("{:?}", blocking.game.status).to_lowercase(),
+                        format_timestamp(blocking.game.last_activity_at),
+                        api::describe_seats(blocking.game.status, &blocking.game.participants),
+                        blocking.reason.clone(),
+                    ]
+                })
+                .collect(),
+        );
+        std::process::exit(1);
+    }
+    Err(format!("{status}: {}", problem.message))
 }
 
 /// A 16-character password from a charset with visually-ambiguous
