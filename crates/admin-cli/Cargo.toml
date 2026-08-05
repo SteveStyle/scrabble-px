@@ -30,3 +30,13 @@ serde_json = "1"
 # and a CJK name occupies two columns per `char`. This crate knows the
 # difference; `chars().count()` cannot.
 unicode-width = "0.2"
+
+[dev-dependencies]
+# The CLI test hosts a real server and dials it over loopback TCP, which is
+# the one thing the in-process tests cannot cover: `require_loopback` reads
+# `ConnectInfo`, which Axum fills in only when the app is served with
+# `into_make_service_with_connect_info`.
+server-game = { path = "../server-game" }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+uuid = { version = "1", features = ["v4"] }
