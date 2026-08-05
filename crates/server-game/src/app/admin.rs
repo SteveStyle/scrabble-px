@@ -29,23 +29,62 @@ pub(crate) async fn admin_delete_user(
     State(state): State<AppState>,
     Path(player_id): Path<String>,
 ) -> Result<StatusCode, ApiProblem> {
-    // Refuse while the account is mid-game. An unclaimed seat cannot take its
-    // turn, so every other player waits until the move time limit retires it.
-    // Finish or abort the game first — or wait, since a game always times out
-    // eventually (see MAX_MOVE_TIME_LIMIT_SECONDS).
+    // Refuse while anything still refers to the account — a game it created,
+    // a seat it holds, or an invitation it has not answered
+    // (docs/1.0-rules.md, DEL-2).
+    //
+    // Deleting a user with games attached is what raises every awkward
+    // question: unclaimed seats, an unmanageable game whose creator is gone,
+    // another player's history half-owned by an account that no longer
+    // exists. Requiring the references to be gone first removes all of them.
+    //
+    // It is only reasonable because references expire on their own: a
+    // completed game is swept a week after it ends and takes its invitations
+    // with it, and an unstarted one runs a 30-day countdown unless its creator
+    // keeps answering to keep it — which a departing user will not. So the
+    // admin waits, or deletes the games explicitly first. Two ordered commands
+    // rather than one with cascading semantics.
     {
+        let invited_to = persistence::pending_invitation_game_ids(&state.db, &player_id)
+            .await
+            .map_err(ApiProblem::from_sqlx)?;
+
         let games = state.games.read().await;
-        let active: Vec<&str> = games
+        let attached: Vec<&str> = games
             .values()
-            .filter(|game| game.has_active_seat_for(&player_id))
+            .filter(|game| {
+                game.creator_player_id.as_deref() == Some(player_id.as_str())
+                    || game
+                        .participants
+                        .iter()
+                        .any(|seat| seat.player_id.as_deref() == Some(player_id.as_str()))
+            })
             .map(|game| game.id.as_str())
             .collect();
-        if !active.is_empty() {
+
+        // Named separately because the two need different advice. Games are
+        // the admin's to delete; an invitation is not — it clears when the
+        // invitee answers it or when the game holding it goes.
+        if !attached.is_empty() || !invited_to.is_empty() {
+            let mut reasons = Vec::new();
+            if !attached.is_empty() {
+                reasons.push(format!(
+                    "still has {} game(s): {}",
+                    attached.len(),
+                    attached.join(", "),
+                ));
+            }
+            if !invited_to.is_empty() {
+                reasons.push(format!(
+                    "has been invited to {} game(s) and not replied: {}",
+                    invited_to.len(),
+                    invited_to.join(", "),
+                ));
+            }
             return Err(ApiProblem::bad_request(format!(
-                "That account is playing in {} game(s) still under way ({}). \
-                 Finish or abort them first.",
-                active.len(),
-                active.join(", "),
+                "That account {}. Delete those games first, or wait — a \
+                 completed game is removed a week after it ends.",
+                reasons.join(", and "),
             )));
         }
     }

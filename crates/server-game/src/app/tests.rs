@@ -4670,92 +4670,6 @@ async fn admin_can_list_and_delete_users() {
 }
 
 #[tokio::test]
-async fn admin_deleting_a_user_unclaims_their_seat_but_keeps_the_game() {
-    let database_url = test_database_url();
-    let state = create_test_state(&database_url).await;
-    let app = build_router(state.clone());
-
-    let alice: PlayerSessionDto = read_json(
-        send_json(
-            app.clone(),
-            Method::POST,
-            "/auth/register",
-            &RegisterPlayerRequest {
-                display_name: "Alice".to_string(),
-                email: "alice@example.com".to_string(),
-                password: "correct horse battery staple".to_string(),
-                stay_logged_in: false,
-            },
-        )
-        .await,
-    )
-    .await;
-
-    let created: GameStateDto = read_json(
-        send_json_auth(
-            app.clone(),
-            Method::POST,
-            "/games",
-            Some(&alice.session_token),
-            &CreateGameRequest {
-                seats: vec![
-                    CreateSeatRequest {
-                        kind: SeatKind::Human,
-                        display_name: "Alice".to_string(),
-                        engine_id: None,
-                        claim: Some(SeatClaim::Creator),
-                    },
-                    CreateSeatRequest {
-                        kind: SeatKind::Engine,
-                        display_name: "Greedy".to_string(),
-                        engine_id: Some("greedy-v1".to_string()),
-                        claim: None,
-                    },
-                ],
-                seed: Some(7),
-                variant: None,
-                language: None,
-                board_layout: None,
-                move_time_limit_seconds: None,
-            },
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(
-        created.participants[0].player_id.as_deref(),
-        Some(alice.player_id.as_str())
-    );
-
-    let delete_response = send_admin::<()>(
-        app.clone(),
-        Method::DELETE,
-        &format!("/admin/users/{}", alice.player_id),
-        loopback_peer(),
-        None,
-    )
-    .await;
-    assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
-
-    // Alice's session was deleted along with her account, and nobody
-    // else is tied to this game (the seat is now unclaimed, and admin
-    // deletion doesn't touch `creator_player_id` — see its own doc
-    // comment), so there's no longer a legitimate caller who could
-    // fetch it through the normal player-facing endpoint. Assert
-    // directly on the in-memory state instead, which is also a more
-    // direct check of what this test actually cares about.
-    let games = state.games.read().await;
-    let fetched = games
-        .get(&created.id)
-        .expect("the game itself should survive");
-    assert_eq!(fetched.id, created.id);
-    assert_eq!(
-        fetched.participants[0].player_id, None,
-        "the seat should be unclaimed, not still pointing at a deleted player"
-    );
-}
-
-#[tokio::test]
 async fn admin_can_reset_a_password() {
     let database_url = test_database_url();
     let state = create_test_state(&database_url).await;
@@ -7376,4 +7290,66 @@ fn game_request_with_limit(move_time_limit_seconds: Option<u64>) -> CreateGameRe
         board_layout: None,
         move_time_limit_seconds,
     }
+}
+
+/// A user with any game attached cannot be deleted — seated or created,
+/// whatever its status.
+///
+/// Deleting a user with games attached is what raises the awkward questions:
+/// unclaimed seats, a game whose creator no longer exists, another player's
+/// history half-owned by nobody. Requiring the games to be gone first removes
+/// all of them, and is only reasonable because games do not last — a finished
+/// one is swept a week after it ends.
+#[tokio::test]
+async fn admin_refuses_to_delete_a_user_with_games() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    let alice = register_player(app.clone(), "Alice").await;
+
+    // A waiting game — not under way, so the old "is it active?" rule would
+    // have allowed the delete and orphaned it.
+    send_json_auth(
+        app.clone(),
+        Method::POST,
+        "/games",
+        Some(&alice.session_token),
+        &game_request_with_limit(None),
+    )
+    .await;
+
+    let refused = send_admin::<()>(
+        app.clone(),
+        Method::DELETE,
+        &format!("/admin/users/{}", alice.player_id),
+        loopback_peer(),
+        None,
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "a user with a waiting game must not be deletable"
+    );
+
+    // With the game gone, the delete succeeds.
+    let game_id = {
+        let games = state.games.read().await;
+        games.keys().next().expect("one game").clone()
+    };
+    persistence::delete_game(&state.db, &game_id)
+        .await
+        .expect("delete game");
+    state.games.write().await.remove(&game_id);
+
+    let allowed = send_admin::<()>(
+        app.clone(),
+        Method::DELETE,
+        &format!("/admin/users/{}", alice.player_id),
+        loopback_peer(),
+        None,
+    )
+    .await;
+    assert_eq!(allowed.status(), StatusCode::NO_CONTENT);
 }
