@@ -1311,6 +1311,28 @@ pub async fn get_invitations_for_player(
     Ok(rows.into_iter().map(invitation_from_row).collect())
 }
 
+/// The games where this player has been invited and has not replied — the
+/// third way an account can still be referred to, alongside creating a game
+/// and holding a seat in one (docs/1.0-rules.md, DEL-2).
+///
+/// Only `pending` counts. Declining answers the invitation and releases the
+/// account (DEL-3), and an accepted one has already become a seat, which the
+/// caller sees without asking here.
+pub async fn pending_invitation_game_ids(
+    pool: &Pool<Sqlite>,
+    player_id: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    let rows = sqlx::query_scalar::<_, String>(
+        "select distinct game_id from game_invitations
+         where invited_player_id = ?1 and status = 'pending'",
+    )
+    .bind(player_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
 /// Every invitation (any status) ever created for a game — used to compute
 /// each unclaimed seat's `api::SeatInvitationStatus` from its most recent
 /// row. Unlike `get_invitations_for_player`/`get_open_invitations`, this
