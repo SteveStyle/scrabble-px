@@ -278,7 +278,7 @@ fn run_games(
                             format!("{:?}", game.status).to_lowercase(),
                             format_timestamp(game.created_at),
                             format_timestamp(game.last_activity_at),
-                            describe_seats(game),
+                            api::describe_seats(game.status, &game.participants),
                         ]
                     })
                     .collect(),
@@ -317,40 +317,6 @@ fn run_games(
         }
     }
     Ok(())
-}
-
-/// One line describing who is in a game and how they're doing, for the
-/// listing's last column. Everything here comes from data the summary
-/// already carried and the old listing discarded — an unclaimed seat used
-/// to be indistinguishable from a player named "Open seat", a bot from a
-/// human, and a resigned seat from one still playing, which is precisely
-/// what an operator is looking at this listing to find out.
-///
-/// Scores are shown only once a game has started: every seat in a `Waiting`
-/// game reads `0`, which is a column of noise rather than information.
-fn describe_seats(game: &api::AdminGameSummaryDto) -> String {
-    let show_scores = game.status != api::GameStatus::Waiting;
-    let mut seats: Vec<&api::ParticipantDto> = game.participants.iter().collect();
-    seats.sort_by_key(|seat| seat.seat_number);
-    seats
-        .iter()
-        .map(|seat| {
-            let mut cell = seat.display_name.clone();
-            match seat.kind {
-                api::SeatKind::Engine => cell.push_str(" [bot]"),
-                api::SeatKind::Human if seat.player_id.is_none() => cell.push_str(" [unclaimed]"),
-                api::SeatKind::Human => {}
-            }
-            if seat.resigned {
-                cell.push_str(" [out]");
-            }
-            if show_scores {
-                cell.push_str(&format!(" {}", seat.score));
-            }
-            cell
-        })
-        .collect::<Vec<_>>()
-        .join(" vs ")
 }
 
 fn describe_final_scores(game: &api::GameStateDto) -> String {
@@ -455,11 +421,35 @@ fn check_response(
         return Ok(response);
     }
     let status = response.status();
-    let message = response
-        .json::<api::ApiError>()
-        .map(|error| error.message)
-        .unwrap_or_else(|_| status.to_string());
-    Err(format!("{status}: {message}"))
+    let Ok(problem) = response.json::<api::ApiError>() else {
+        return Err(status.to_string());
+    };
+    // A refusal that names games gets the same table `games list` prints, so
+    // an operator does not have to translate between two descriptions of the
+    // same thing. Printed here rather than folded into the error string
+    // because it is output, not a reason — the reason follows it.
+    if !problem.blocking_games.is_empty() {
+        eprintln!("{status}: {}", problem.message);
+        eprintln!();
+        print_table(
+            &["ID", "STATUS", "LAST ACTIVITY (UTC)", "SEATS", "WHY"],
+            problem
+                .blocking_games
+                .iter()
+                .map(|blocking| {
+                    vec![
+                        blocking.game.id.clone(),
+                        format!("{:?}", blocking.game.status).to_lowercase(),
+                        format_timestamp(blocking.game.last_activity_at),
+                        api::describe_seats(blocking.game.status, &blocking.game.participants),
+                        blocking.reason.clone(),
+                    ]
+                })
+                .collect(),
+        );
+        std::process::exit(1);
+    }
+    Err(format!("{status}: {}", problem.message))
 }
 
 /// A 16-character password from a charset with visually-ambiguous
@@ -513,43 +503,6 @@ fn generate_password() -> String {
 mod tests {
     use super::*;
 
-    fn seat(
-        seat_number: u8,
-        display_name: &str,
-        kind: api::SeatKind,
-        claimed: bool,
-        resigned: bool,
-        score: i32,
-    ) -> api::ParticipantDto {
-        api::ParticipantDto {
-            seat_number,
-            kind,
-            display_name: display_name.to_string(),
-            player_id: claimed.then(|| "player-id".to_string()),
-            engine_id: None,
-            score,
-            rating_before: None,
-            rating_after: None,
-            current_rating: None,
-            invitation_status: None,
-            invited_email: None,
-            resigned,
-        }
-    }
-
-    fn game(
-        status: api::GameStatus,
-        participants: Vec<api::ParticipantDto>,
-    ) -> api::AdminGameSummaryDto {
-        api::AdminGameSummaryDto {
-            id: "game-id".to_string(),
-            status,
-            created_at: 0,
-            last_activity_at: 0,
-            participants,
-        }
-    }
-
     #[test]
     fn formats_an_epoch_second_as_a_utc_date_time() {
         // 2026-07-26 13:52:02 UTC — the timestamp of commit 8975493.
@@ -574,55 +527,5 @@ mod tests {
     #[test]
     fn falls_back_to_the_raw_value_when_it_cannot_be_a_date() {
         assert_eq!(format_timestamp(i64::MAX), i64::MAX.to_string());
-    }
-
-    /// The distinctions the old name-only rendering threw away: a bot reads
-    /// as a bot, a seat nobody has claimed reads as unclaimed rather than as
-    /// a player who happens to be called "Open seat", and a seat that's left
-    /// the game reads as out.
-    #[test]
-    fn seat_summary_marks_bots_unclaimed_seats_and_resignations() {
-        let summary = describe_seats(&game(
-            api::GameStatus::Active,
-            vec![
-                seat(0, "Alice", api::SeatKind::Human, true, false, 130),
-                seat(1, "Bob", api::SeatKind::Human, true, true, 88),
-                seat(2, "Open seat", api::SeatKind::Human, false, false, 0),
-                seat(3, "Greedy", api::SeatKind::Engine, false, false, 155),
-            ],
-        ));
-        assert_eq!(
-            summary,
-            "Alice 130 vs Bob [out] 88 vs Open seat [unclaimed] 0 vs Greedy [bot] 155"
-        );
-    }
-
-    /// Every seat in a game that hasn't started scores zero, so the column
-    /// would be pure noise.
-    #[test]
-    fn seat_summary_omits_scores_before_a_game_starts() {
-        let summary = describe_seats(&game(
-            api::GameStatus::Waiting,
-            vec![
-                seat(0, "Alice", api::SeatKind::Human, true, false, 0),
-                seat(1, "Open seat", api::SeatKind::Human, false, false, 0),
-            ],
-        ));
-        assert_eq!(summary, "Alice vs Open seat [unclaimed]");
-    }
-
-    /// Seats render in turn order regardless of the order the server
-    /// happened to serialize them in.
-    #[test]
-    fn seat_summary_is_ordered_by_seat_number() {
-        let summary = describe_seats(&game(
-            api::GameStatus::Active,
-            vec![
-                seat(2, "Carol", api::SeatKind::Human, true, false, 3),
-                seat(0, "Alice", api::SeatKind::Human, true, false, 1),
-                seat(1, "Bob", api::SeatKind::Human, true, false, 2),
-            ],
-        ));
-        assert_eq!(summary, "Alice 1 vs Bob 2 vs Carol 3");
     }
 }

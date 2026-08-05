@@ -55,10 +55,14 @@ async fn delete_account(app: Router, player_id: &str) -> axum::http::Response<Bo
     .await
 }
 
-/// DEL-2 refused, and DEL-6 satisfied — the message has to name what is in
-/// the way. Asserted separately from the status because five different
+/// DEL-2 refused, and DEL-6 satisfied — the refusal has to name what is in
+/// the way. Asserted separately from the status because a dozen different
 /// attachments produce the same 400, and without this they would all pass on
 /// a refusal that told the operator nothing.
+///
+/// The games come back as data rather than in the sentence, so that the
+/// client can render them however suits it. This checks the data; the CLI
+/// test checks that they reach a terminal.
 async fn assert_refused(app: Router, player_id: &str, naming: &[&str]) {
     let response = delete_account(app, player_id).await;
     assert_eq!(
@@ -66,15 +70,17 @@ async fn assert_refused(app: Router, player_id: &str, naming: &[&str]) {
         StatusCode::BAD_REQUEST,
         "an attached account should not be deletable"
     );
-    let problem: serde_json::Value = read_json(response).await;
-    let message = problem["message"]
-        .as_str()
-        .expect("a problem response carries a message")
-        .to_string();
+    let problem: api::ApiError = read_json(response).await;
+    let named: Vec<&str> = problem
+        .blocking_games
+        .iter()
+        .map(|blocking| blocking.game.id.as_str())
+        .collect();
     for id in naming {
         assert!(
-            message.contains(id),
-            "the refusal should name {id}, said: {message}"
+            named.contains(id),
+            "the refusal should name {id}, named: {named:?} ({})",
+            problem.message
         );
     }
 }
@@ -761,10 +767,12 @@ async fn deleting_an_unknown_account_is_not_found() {
     );
 }
 
-/// DEL-3. The pair to `cannot_delete_a_player_with_an_unanswered_invitation`:
-/// same two players, same game, differing only in whether Bob answered.
+/// DEL-3. Declining answers the invitation but does not detach the invitee:
+/// the seat it was for still carries their name, so deleting them would leave
+/// the roster offering a seat to somebody who no longer exists. Found user
+/// testing on preview, where exactly that happened.
 #[tokio::test]
-async fn declining_an_invitation_releases_the_account() {
+async fn declining_an_invitation_does_not_release_the_account() {
     let state = create_test_state(&test_database_url()).await;
     let app = build_router(state.clone());
 
@@ -772,16 +780,15 @@ async fn declining_an_invitation_releases_the_account() {
     let invitation = invitation_for(app.clone(), &game.id, &bob.session_token).await;
     decline(app.clone(), &invitation, &bob.session_token).await;
 
-    assert_deleted(app.clone(), &bob.player_id).await;
+    assert_refused(app.clone(), &bob.player_id, &[&game.id]).await;
 
-    // The game survives, and so does Alice — a delete that took the game with
-    // it would still have returned 204.
-    assert_eq!(
-        game_rows(&state, &game.id).await,
-        1,
-        "declining and leaving should not cost Alice her game"
-    );
-    assert_refused(app.clone(), &alice.player_id, &[&game.id]).await;
+    // The game going is what clears it, for the invitee as much as for the
+    // players — there is nothing either of them can do to the roster.
+    abort(app.clone(), &game.id, &alice.session_token).await;
+    sweep_away(app.clone(), &state, &game.id, &alice.session_token).await;
+
+    assert_deleted(app.clone(), &bob.player_id).await;
+    assert_deleted(app, &alice.player_id).await;
 }
 
 // ================================================ retention on its own
@@ -1004,32 +1011,43 @@ async fn the_refusal_says_who_is_in_each_game_and_where_it_has_got_to() {
 
     let response = delete_account(app, &playing.alice.player_id).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let problem: serde_json::Value = read_json(response).await;
-    let message = problem["message"].as_str().expect("a message").to_string();
+    let problem: api::ApiError = read_json(response).await;
+
+    assert_eq!(problem.blocking_games.len(), 1, "one game is in the way");
+    let blocking = &problem.blocking_games[0];
+    assert_eq!(
+        blocking.game.id, playing.game.id,
+        "the id is what identifies the game to every other command"
+    );
+    assert_eq!(
+        blocking.reason, "created it, and holds a seat",
+        "a player can be attached two ways at once, and only one of them \
+         clears on its own"
+    );
+    assert_eq!(
+        blocking.game.status,
+        api::GameStatus::Active,
+        "what state it is in decides whether waiting is reasonable"
+    );
+    let seats = api::describe_seats(blocking.game.status, &blocking.game.participants);
+    assert!(
+        seats.contains("Alice") && seats.contains("Bob"),
+        "and who is in it decides whether it will move: {seats}"
+    );
+    assert!(
+        blocking.game.last_activity_at > 0,
+        "the listing shows last activity, so this must carry it too"
+    );
 
     assert!(
-        message.contains(&playing.game.id),
-        "the id is what goes into `games delete`: {message}"
+        problem.message.contains("1 game") && !problem.message.contains("game(s)"),
+        "the count is known, so it should read as English: {}",
+        problem.message
     );
     assert!(
-        message.contains("Alice vs Bob"),
-        "who is in it decides whether deleting it is reasonable: {message}"
-    );
-    assert!(
-        message.contains("playing"),
-        "and what state it is in decides whether waiting is: {message}"
-    );
-    assert!(
-        message.contains("they created it and hold a seat"),
-        "and why it counts, since a player can be attached two ways: {message}"
-    );
-    assert!(
-        message.contains("1 game") && !message.contains("game(s)"),
-        "the count is known, so it should read as English: {message}"
-    );
-    assert!(
-        message.contains("wait") && !message.contains("Delete those games"),
+        problem.message.contains("wait") && !problem.message.contains("Delete those games"),
         "waiting is the advice — deleting somebody else's game to hurry a \
-         cleanup along is not: {message}"
+         cleanup along is not: {}",
+        problem.message
     );
 }

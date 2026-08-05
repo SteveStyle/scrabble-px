@@ -35,30 +35,6 @@ fn count_of(noun: &str, n: usize) -> String {
     }
 }
 
-/// One line per game in the way: its id, who is in it, where it has got to,
-/// and why it holds the account. The id stays because it is what identifies
-/// the game anywhere else; the rest is what makes the line mean something to
-/// the person reading it.
-fn describe_blocking_game(game: &GameSession, reason: &str) -> String {
-    let who: Vec<&str> = game
-        .participants
-        .iter()
-        .map(|seat| seat.display_name.as_str())
-        .collect();
-    let state = match game.status {
-        api::GameStatus::Waiting => "not started",
-        api::GameStatus::Active => "playing",
-        api::GameStatus::Finished => "finished",
-        api::GameStatus::Aborted => "abandoned",
-    };
-    format!(
-        "  {}  {} — {}  ({reason})",
-        game.id,
-        who.join(" vs "),
-        state
-    )
-}
-
 pub(crate) async fn admin_delete_user(
     State(state): State<AppState>,
     Path(player_id): Path<String>,
@@ -79,7 +55,7 @@ pub(crate) async fn admin_delete_user(
     // admin waits, or deletes the games explicitly first. Two ordered commands
     // rather than one with cascading semantics.
     {
-        let invited_to = persistence::pending_invitation_game_ids(&state.db, &player_id)
+        let mentioned_by = persistence::game_ids_mentioning_player(&state.db, &player_id)
             .await
             .map_err(ApiProblem::from_sqlx)?;
 
@@ -94,56 +70,73 @@ pub(crate) async fn admin_delete_user(
                         .any(|seat| seat.player_id.as_deref() == Some(player_id.as_str()))
             })
             .collect();
-        let invited: Vec<&GameSession> = invited_to
+        // One row per game, whatever number of ways it refers to the account.
+        // A creator who invited somebody is both attached and mentioned, and
+        // listing their own game twice would read as two problems.
+        let mentioned: Vec<&GameSession> = mentioned_by
             .iter()
+            .filter(|game_id| !attached.iter().any(|game| &&game.id == game_id))
             .filter_map(|game_id| games.get(game_id))
             .collect();
 
-        // Listed rather than run into a sentence, described rather than named
-        // by id alone, and each with the reason it counts. Whoever reads this
-        // is being told to wait, so the useful thing is what they are waiting
-        // for — not an id, and not an instruction to go and delete somebody
-        // else's game to hurry it along.
-        let mut blocking: Vec<String> = Vec::new();
+        // Sent as data rather than written into the message. Whoever reads
+        // this is deciding whether to wait or to act, and that decision wants
+        // the same table they have just seen from `games list` — which the
+        // client is far better placed to draw than the server is.
+        let created_at = persistence::created_at_by_game(&state.db)
+            .await
+            .map_err(ApiProblem::from_sqlx)?;
+        let last_activity = persistence::last_activity_by_game(&state.db)
+            .await
+            .map_err(ApiProblem::from_sqlx)?;
+
+        let summarise = |game: &GameSession, reason: &str| api::BlockingGameDto {
+            game: api::AdminGameSummaryDto {
+                id: game.id.clone(),
+                status: game.status,
+                created_at: created_at.get(&game.id).copied().unwrap_or(0),
+                last_activity_at: last_activity.get(&game.id).copied().unwrap_or(0),
+                participants: game.to_dto().participants,
+            },
+            reason: reason.to_string(),
+        };
+
+        let mut blocking: Vec<api::BlockingGameDto> = Vec::new();
         for game in &attached {
             let created = game.creator_player_id.as_deref() == Some(player_id.as_str());
             let seated = game
                 .participants
                 .iter()
                 .any(|seat| seat.player_id.as_deref() == Some(player_id.as_str()));
+            // A player can be attached both ways at once, and only one of the
+            // reasons clears on its own, so they are not interchangeable.
             let reason = match (created, seated) {
-                (true, true) => "they created it and hold a seat",
-                (true, false) => "they created it",
-                _ => "they hold a seat",
+                (true, true) => "created it, and holds a seat",
+                (true, false) => "created it",
+                _ => "holds a seat",
             };
-            blocking.push(describe_blocking_game(game, reason));
+            blocking.push(summarise(game, reason));
         }
-        for game in &invited {
-            blocking.push(describe_blocking_game(
-                game,
-                "they were invited and have not replied",
-            ));
+        for game in &mentioned {
+            blocking.push(summarise(game, "still mentioned by it"));
         }
 
         if !blocking.is_empty() {
-            let mut lines = vec![format!(
-                "That account cannot be deleted yet — {} still {} to it:",
-                count_of("game", blocking.len()),
-                if blocking.len() == 1 {
-                    "refers"
-                } else {
-                    "refer"
-                },
-            )];
-            lines.extend(blocking);
-            lines.push(String::new());
-            lines.push(
-                "Please wait until those games are gone, then delete the account. A \
-                 completed game goes a week after it ends, and takes its invitations \
-                 with it."
-                    .to_string(),
-            );
-            return Err(ApiProblem::bad_request(lines.join("\n")));
+            return Err(ApiProblem::blocked_by_games(
+                format!(
+                    "That account cannot be deleted yet — {} still {} to it. Please \
+                     wait until they are gone, then delete the account. Games are \
+                     removed automatically from a week after their last activity, and \
+                     an invitation goes with the game holding it.",
+                    count_of("game", blocking.len()),
+                    if blocking.len() == 1 {
+                        "refers"
+                    } else {
+                        "refer"
+                    },
+                ),
+                blocking,
+            ));
         }
     }
 

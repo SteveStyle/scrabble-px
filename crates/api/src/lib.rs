@@ -72,7 +72,10 @@ use serde::{Deserialize, Serialize};
 // a hash of the built bundle instead; see `watch_for_new_bundle` in
 // `tile-lite-elite-ui`, and docs/3.3's "Decide whether the API version
 // moves" for which changes bump this.
-pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 9 };
+pub const API_VERSION: ApiVersion = ApiVersion {
+    major: 2,
+    minor: 10,
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApiVersion {
@@ -503,9 +506,28 @@ pub enum GameEventDto {
     GameFinished { game: GameStateDto },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ApiError {
     pub message: String,
+    /// Games standing in the way of whatever was refused, for a client that
+    /// wants to show them rather than reprint a sentence about them. Empty
+    /// and omitted for every other error, so a client that ignores it sees
+    /// exactly what it saw before.
+    ///
+    /// The server sends the games; the client decides how to display them.
+    /// Formatting a terminal table server-side would put presentation in the
+    /// crate least able to know how it will be read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocking_games: Vec<BlockingGameDto>,
+}
+
+/// A game that is preventing something, and the reason it counts. The reason
+/// is the server's to decide — a client cannot tell "created it" from "holds
+/// a seat" without reimplementing the rule.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BlockingGameDto {
+    pub game: AdminGameSummaryDto,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -748,4 +770,121 @@ pub struct RatingPointDto {
     pub game_id: String,
     pub rating_after: f64,
     pub created_at: i64,
+}
+
+/// One line describing who is in a game and how they are doing.
+///
+/// Shared rather than owned by whichever tool renders it: the admin listing's
+/// last column and the refusal an operator gets when an account still has
+/// games are the same question asked twice, and two copies of the answer
+/// would eventually disagree about what a bot or a departed seat looks like.
+///
+/// Everything here comes from data the caller already holds and a name-only
+/// rendering discards — an unclaimed seat used to be indistinguishable from a
+/// player named "Open seat", a bot from a human, and a seat that has left from
+/// one still playing, which is precisely what someone reads this to find out.
+///
+/// Scores appear only once a game has started: every seat in a `Waiting` game
+/// reads `0`, which is a column of noise rather than information.
+pub fn describe_seats(status: GameStatus, participants: &[ParticipantDto]) -> String {
+    let show_scores = status != GameStatus::Waiting;
+    let mut seats: Vec<&ParticipantDto> = participants.iter().collect();
+    seats.sort_by_key(|seat| seat.seat_number);
+    seats
+        .iter()
+        .map(|seat| {
+            let mut cell = seat.display_name.clone();
+            match seat.kind {
+                SeatKind::Engine => cell.push_str(" [bot]"),
+                SeatKind::Human if seat.player_id.is_none() => cell.push_str(" [unclaimed]"),
+                SeatKind::Human => {}
+            }
+            if seat.resigned {
+                cell.push_str(" [out]");
+            }
+            if show_scores {
+                cell.push_str(&format!(" {}", seat.score));
+            }
+            cell
+        })
+        .collect::<Vec<_>>()
+        .join(" vs ")
+}
+
+#[cfg(test)]
+mod describe_seats_tests {
+    use super::*;
+
+    fn seat(
+        seat_number: u8,
+        display_name: &str,
+        kind: SeatKind,
+        claimed: bool,
+        resigned: bool,
+        score: i32,
+    ) -> ParticipantDto {
+        ParticipantDto {
+            seat_number,
+            kind,
+            display_name: display_name.to_string(),
+            player_id: claimed.then(|| format!("player-{seat_number}")),
+            engine_id: None,
+            score,
+            invitation_status: None,
+            invited_email: None,
+            resigned,
+            current_rating: None,
+            rating_before: None,
+            rating_after: None,
+        }
+    }
+
+    /// The distinctions a name-only rendering throws away: a bot reads as a
+    /// bot, a seat nobody has claimed reads as unclaimed rather than as a
+    /// player who happens to be called "Open seat", and a seat that has left
+    /// the game reads as out.
+    #[test]
+    fn seat_summary_marks_bots_unclaimed_seats_and_resignations() {
+        let summary = describe_seats(
+            GameStatus::Active,
+            &[
+                seat(0, "Alice", SeatKind::Human, true, false, 130),
+                seat(1, "Bob", SeatKind::Human, true, true, 88),
+                seat(2, "Open seat", SeatKind::Human, false, false, 0),
+                seat(3, "Greedy", SeatKind::Engine, false, false, 155),
+            ],
+        );
+        assert_eq!(
+            summary,
+            "Alice 130 vs Bob [out] 88 vs Open seat [unclaimed] 0 vs Greedy [bot] 155"
+        );
+    }
+
+    /// Every seat in a game that has not started scores zero, so the column
+    /// would be pure noise.
+    #[test]
+    fn seat_summary_omits_scores_before_a_game_starts() {
+        let summary = describe_seats(
+            GameStatus::Waiting,
+            &[
+                seat(0, "Alice", SeatKind::Human, true, false, 0),
+                seat(1, "Open seat", SeatKind::Human, false, false, 0),
+            ],
+        );
+        assert_eq!(summary, "Alice vs Open seat [unclaimed]");
+    }
+
+    /// Seats render in turn order regardless of the order they arrived in.
+    #[test]
+    fn seat_summary_is_ordered_by_seat_number() {
+        let summary = describe_seats(
+            GameStatus::Active,
+            &[
+                seat(2, "Carol", SeatKind::Human, true, false, 3),
+                seat(0, "Alice", SeatKind::Human, true, false, 1),
+                seat(1, "Bob", SeatKind::Human, true, false, 2),
+            ],
+        );
+        assert_eq!(summary, "Alice 1 vs Bob 2 vs Carol 3");
+    }
 }
