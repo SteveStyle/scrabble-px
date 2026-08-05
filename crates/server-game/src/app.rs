@@ -51,7 +51,7 @@ mod sweeps;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod tests_user_deletion;
+mod tests_account_lifecycle;
 
 use self::admin::*;
 use self::auth::*;

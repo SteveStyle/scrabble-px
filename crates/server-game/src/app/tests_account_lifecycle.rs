@@ -1,20 +1,31 @@
-//! Deleting an account, and the retention that eventually allows it.
+//! An account through the whole life of its games — created, invited, seated,
+//! played, ended, swept, and only then deleted.
 //!
-//! Rules: `docs/1.0-rules.md`, DEL-1 to DEL-9 and RET-1 to RET-4. Test plan:
-//! issue #41.
+//! Rules: `docs/1.0-rules.md` — DEL-1 to DEL-9, GAME-1 and GAME-2, RET-1 to
+//! RET-4, TIME-1 to TIME-4. Test plan: issue #41.
 //!
-//! Most tests here are a walk rather than a single check — build the thing
-//! that attaches an account to a game, watch the delete refused, bring the
-//! game to an end, backdate it past the retention window, sweep, then watch
-//! the same delete succeed. A test that only proved the refusal would pass
-//! just as well against a guard that refused everything, and the second half
-//! is what pins the refusal to the attachment rather than to the account.
+//! It began as a test of deleting an account and grew into this, because the
+//! rule it started from is written in terms of the lifecycle: an account
+//! cannot be deleted while a game refers to it, and only the lifecycle clears
+//! that reference. Testing the rule means driving games through invitation,
+//! roster changes, play, resignation, abort, timeout and retention. Every
+//! defect these tests have found so far has been in that machinery rather
+//! than in the delete itself.
 //!
-//! It also puts the sweep under test. The middle of every walk is a real
-//! retention pass removing a real game, so a retention bug fails here rather
-//! than waiting to be noticed in production — which is how the last one was
-//! found.
-
+//! Most tests are a walk rather than a single check — build the thing that
+//! attaches an account to a game, watch the delete refused, bring the game to
+//! an end, backdate it past the retention window, sweep, then watch the same
+//! delete succeed. A test that only proved the refusal would pass just as well
+//! against a guard that refused everything, and the second half is what pins
+//! the refusal to the attachment rather than to the account.
+//!
+//! It also puts retention under test. The middle of every walk is a real sweep
+//! removing a real game, so a retention bug fails here rather than waiting to
+//! be noticed in production — which is how the last one was found.
+//!
+//! Sequences are what find things. Resign then abort, invite then add a seat:
+//! both were fine as states and broken as journeys, so prefer extending a walk
+//! over adding a point check.
 use super::tests::{
     create_test_state, create_three_human_game, create_two_human_game,
     create_two_human_game_waiting, loopback_peer, read_json, register_player, send_admin,
