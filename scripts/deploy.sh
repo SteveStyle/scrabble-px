@@ -578,9 +578,25 @@ else
   # and check-commit-stamp.sh validates the stamp against the commit's own
   # tree. An uncommitted edit to API_VERSION would otherwise produce a
   # stamp that fails its own check.
+  # Read the whole declaration, not one line of it. rustfmt wraps this
+  # across four lines once the numbers grow, which it did the first time a
+  # minor reached two digits — and the single-line grep then matched
+  # nothing, exited 1, and took the deploy down with it under
+  # `set -euo pipefail`, between `git add` and `git commit`. Production was
+  # already live and tagged; the bump, the push and the milestone closure
+  # simply never ran, and the failure was invisible to anyone piping this
+  # script into `tail`.
   BUMP_API="$(git -C "$REPO_DIR" show HEAD:crates/api/src/lib.rs \
-    | grep -m1 'API_VERSION: ApiVersion' \
-    | grep -o 'major: [0-9]*, minor: [0-9]*' | sed 's/major: //; s/, minor: /./')"
+    | tr '\n' ' ' \
+    | sed -nE 's/.*API_VERSION[^=]*=[^{]*\{[^}]*major: *([0-9]+)[^}]*minor: *([0-9]+).*/\1.\2/p' \
+    | head -1)"
+  # Refuse rather than write a stamp that check-commit-stamp.sh will reject
+  # for every future reader of the log.
+  if [[ -z "$BUMP_API" ]]; then
+    echo "    error: could not read API_VERSION from crates/api/src/lib.rs." >&2
+    echo "    Production is live and tagged; the version bump was not made." >&2
+    exit 1
+  fi
   git -C "$REPO_DIR" commit --quiet \
     -m "app $NEXT_VERSION api $BUMP_API: bump dev version following production release" \
     -m "Production now runs $DEPLOYED_VERSION+$TARGET_SHA."
