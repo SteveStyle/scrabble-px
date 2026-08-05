@@ -1020,7 +1020,16 @@ async fn the_refusal_says_who_is_in_each_game_and_where_it_has_got_to() {
         "and what state it is in decides whether waiting is: {message}"
     );
     assert!(
+        message.contains("they created it and hold a seat"),
+        "and why it counts, since a player can be attached two ways: {message}"
+    );
+    assert!(
         message.contains("1 game") && !message.contains("game(s)"),
         "the count is known, so it should read as English: {message}"
+    );
+    assert!(
+        message.contains("wait") && !message.contains("Delete those games"),
+        "waiting is the advice — deleting somebody else's game to hurry a \
+         cleanup along is not: {message}"
     );
 }

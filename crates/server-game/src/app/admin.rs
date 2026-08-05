@@ -35,10 +35,11 @@ fn count_of(noun: &str, n: usize) -> String {
     }
 }
 
-/// One line per game in the way: its id, who is in it, and where it has got
-/// to. The id is what the operator types into `games delete`, so it stays;
-/// the rest is what tells them whether to.
-fn describe_blocking_game(game: &GameSession) -> String {
+/// One line per game in the way: its id, who is in it, where it has got to,
+/// and why it holds the account. The id stays because it is what identifies
+/// the game anywhere else; the rest is what makes the line mean something to
+/// the person reading it.
+fn describe_blocking_game(game: &GameSession, reason: &str) -> String {
     let who: Vec<&str> = game
         .participants
         .iter()
@@ -50,7 +51,12 @@ fn describe_blocking_game(game: &GameSession) -> String {
         api::GameStatus::Finished => "finished",
         api::GameStatus::Aborted => "abandoned",
     };
-    format!("  {}  {} — {}", game.id, who.join(" vs "), state)
+    format!(
+        "  {}  {} — {}  ({reason})",
+        game.id,
+        who.join(" vs "),
+        state
+    )
 }
 
 pub(crate) async fn admin_delete_user(
@@ -93,44 +99,50 @@ pub(crate) async fn admin_delete_user(
             .filter_map(|game_id| games.get(game_id))
             .collect();
 
-        // Listed rather than run into a sentence, and described rather than
-        // named by id alone. An operator reading this has to decide whether
-        // to delete a game or wait for it, and an id answers neither question
-        // — who is in it and what state it is in do.
-        if !attached.is_empty() || !invited.is_empty() {
-            let mut lines = Vec::new();
-            if !attached.is_empty() {
-                lines.push(format!(
-                    "That account is in {}:",
-                    count_of("game", attached.len())
-                ));
-                lines.extend(attached.iter().map(|game| describe_blocking_game(game)));
-            }
-            if !invited.is_empty() {
-                lines.push(format!(
-                    "It has been invited to {} and not replied:",
-                    count_of("game", invited.len())
-                ));
-                lines.extend(invited.iter().map(|game| describe_blocking_game(game)));
-            }
-            // The two need different advice, which is why they are separated
-            // above: a game is the administrator's to delete, an invitation is
-            // not — it clears when the invitee answers or when its game goes.
+        // Listed rather than run into a sentence, described rather than named
+        // by id alone, and each with the reason it counts. Whoever reads this
+        // is being told to wait, so the useful thing is what they are waiting
+        // for — not an id, and not an instruction to go and delete somebody
+        // else's game to hurry it along.
+        let mut blocking: Vec<String> = Vec::new();
+        for game in &attached {
+            let created = game.creator_player_id.as_deref() == Some(player_id.as_str());
+            let seated = game
+                .participants
+                .iter()
+                .any(|seat| seat.player_id.as_deref() == Some(player_id.as_str()));
+            let reason = match (created, seated) {
+                (true, true) => "they created it and hold a seat",
+                (true, false) => "they created it",
+                _ => "they hold a seat",
+            };
+            blocking.push(describe_blocking_game(game, reason));
+        }
+        for game in &invited {
+            blocking.push(describe_blocking_game(
+                game,
+                "they were invited and have not replied",
+            ));
+        }
+
+        if !blocking.is_empty() {
+            let mut lines = vec![format!(
+                "That account cannot be deleted yet — {} still {} to it:",
+                count_of("game", blocking.len()),
+                if blocking.len() == 1 {
+                    "refers"
+                } else {
+                    "refer"
+                },
+            )];
+            lines.extend(blocking);
             lines.push(String::new());
-            if !attached.is_empty() {
-                lines.push(
-                    "Delete those games first, or wait — a completed game goes a week \
-                     after it ends."
-                        .to_string(),
-                );
-            }
-            if !invited.is_empty() {
-                lines.push(
-                    "An invitation clears when the invitee answers it, or when the game \
-                     holding it goes."
-                        .to_string(),
-                );
-            }
+            lines.push(
+                "Please wait until those games are gone, then delete the account. A \
+                 completed game goes a week after it ends, and takes its invitations \
+                 with it."
+                    .to_string(),
+            );
             return Err(ApiProblem::bad_request(lines.join("\n")));
         }
     }
