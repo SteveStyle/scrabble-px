@@ -50,6 +50,8 @@ mod roster;
 mod sweeps;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_user_deletion;
 
 use self::admin::*;
 use self::auth::*;

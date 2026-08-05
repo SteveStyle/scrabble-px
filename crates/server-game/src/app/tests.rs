@@ -30,7 +30,7 @@ fn build_id_appends_as_semver_build_metadata() {
     );
 }
 
-async fn create_test_state(database_url: &str) -> AppState {
+pub(super) async fn create_test_state(database_url: &str) -> AppState {
     AppState::new(
         database_url,
         "http://127.0.0.1:8080".to_string(),
@@ -43,7 +43,7 @@ async fn create_test_state(database_url: &str) -> AppState {
     .expect("test app state should initialize")
 }
 
-fn test_database_url() -> String {
+pub(super) fn test_database_url() -> String {
     let path = std::env::temp_dir().join(format!(
         "tile-lite-elite-server-test-{}.sqlite3",
         Uuid::new_v4()
@@ -52,7 +52,7 @@ fn test_database_url() -> String {
     format!("sqlite://{}", path.display())
 }
 
-async fn send_json<T: Serialize>(
+pub(super) async fn send_json<T: Serialize>(
     app: Router,
     method: Method,
     uri: &str,
@@ -72,7 +72,7 @@ async fn send_json<T: Serialize>(
     .expect("request should succeed")
 }
 
-async fn send_json_auth<T: Serialize>(
+pub(super) async fn send_json_auth<T: Serialize>(
     app: Router,
     method: Method,
     uri: &str,
@@ -97,7 +97,7 @@ async fn send_json_auth<T: Serialize>(
     .expect("request should succeed")
 }
 
-async fn send_empty(app: Router, method: Method, uri: &str) -> axum::http::Response<Body> {
+pub(super) async fn send_empty(app: Router, method: Method, uri: &str) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
             .method(method)
@@ -109,7 +109,7 @@ async fn send_empty(app: Router, method: Method, uri: &str) -> axum::http::Respo
     .expect("request should succeed")
 }
 
-async fn send_empty_auth(
+pub(super) async fn send_empty_auth(
     app: Router,
     method: Method,
     uri: &str,
@@ -129,15 +129,15 @@ async fn send_empty_auth(
 /// way it would be by `into_make_service_with_connect_info` in
 /// production — it has to be injected into the request's extensions by
 /// hand, exactly like axum's own connect-info middleware would.
-fn loopback_peer() -> SocketAddr {
+pub(super) fn loopback_peer() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 54321))
 }
 
-fn remote_peer() -> SocketAddr {
+pub(super) fn remote_peer() -> SocketAddr {
     SocketAddr::from(([203, 0, 113, 5], 54321))
 }
 
-async fn send_admin<T: Serialize>(
+pub(super) async fn send_admin<T: Serialize>(
     app: Router,
     method: Method,
     uri: &str,
@@ -158,7 +158,7 @@ async fn send_admin<T: Serialize>(
     app.oneshot(request).await.expect("request should succeed")
 }
 
-async fn read_json<T: DeserializeOwned>(response: axum::http::Response<Body>) -> T {
+pub(super) async fn read_json<T: DeserializeOwned>(response: axum::http::Response<Body>) -> T {
     let bytes = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("body should read");
@@ -1538,7 +1538,7 @@ async fn spanish_game_plays_carro_with_two_ordinary_r_tiles() {
     assert_eq!(updated.participants[0].score, (3 + 1 + 1 + 1 + 1) * 2);
 }
 
-async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {
+pub(super) async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {
     read_json(
         send_json(
             app,
@@ -1562,17 +1562,17 @@ async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {
 /// either of them starts it. Both sessions are returned since, under the
 /// per-seat ownership model, every action from here on needs the
 /// matching seat owner's token.
-struct TwoHumanGame {
-    game: GameStateDto,
-    alice: PlayerSessionDto,
-    bob: PlayerSessionDto,
+pub(super) struct TwoHumanGame {
+    pub(super) game: GameStateDto,
+    pub(super) alice: PlayerSessionDto,
+    pub(super) bob: PlayerSessionDto,
 }
 
 /// Everything `create_two_human_game` does, minus the final `/start` —
 /// both seats claimed, game still `Waiting`. Its own fixture since a
 /// couple of tests (seat reordering) specifically need that
 /// pre-start window.
-async fn create_two_human_game_waiting(app: Router) -> TwoHumanGame {
+pub(super) async fn create_two_human_game_waiting(app: Router) -> TwoHumanGame {
     let alice = register_player(app.clone(), "Alice").await;
     let bob = register_player(app.clone(), "Bob").await;
 
@@ -1639,7 +1639,7 @@ async fn create_two_human_game_waiting(app: Router) -> TwoHumanGame {
     }
 }
 
-async fn create_two_human_game(app: Router) -> TwoHumanGame {
+pub(super) async fn create_two_human_game(app: Router) -> TwoHumanGame {
     let waiting = create_two_human_game_waiting(app.clone()).await;
     let started: GameStateDto = read_json(
         send_json_auth(
@@ -1660,18 +1660,18 @@ async fn create_two_human_game(app: Router) -> TwoHumanGame {
     }
 }
 
-struct ThreeHumanGame {
-    game: GameStateDto,
-    alice: PlayerSessionDto,
-    bob: PlayerSessionDto,
-    carol: PlayerSessionDto,
+pub(super) struct ThreeHumanGame {
+    pub(super) game: GameStateDto,
+    pub(super) alice: PlayerSessionDto,
+    pub(super) bob: PlayerSessionDto,
+    pub(super) carol: PlayerSessionDto,
 }
 
 /// Same shape as `create_two_human_game`, one more seat — used by the
 /// multi-player continuation tests, which specifically need at least 3
 /// active seats to observe "one resigns, the other two keep playing"
 /// (with only 2 seats, any single exit always ends the game).
-async fn create_three_human_game(app: Router) -> ThreeHumanGame {
+pub(super) async fn create_three_human_game(app: Router) -> ThreeHumanGame {
     let alice = register_player(app.clone(), "Alice3").await;
     let bob = register_player(app.clone(), "Bob3").await;
     let carol = register_player(app.clone(), "Carol3").await;
