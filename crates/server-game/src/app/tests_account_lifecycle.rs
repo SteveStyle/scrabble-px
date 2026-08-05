@@ -196,9 +196,7 @@ async fn alice_with_an_open_seat(app: Router) -> (PlayerSessionDto, GameStateDto
 }
 
 /// Alice, having asked Bob by name for the second seat. He has not answered.
-async fn alice_having_asked_bob(
-    app: Router,
-) -> (PlayerSessionDto, PlayerSessionDto, GameStateDto) {
+async fn alice_having_asked_bob(app: Router) -> (PlayerSessionDto, PlayerSessionDto, GameStateDto) {
     let alice = register_player(app.clone(), "Alice").await;
     let bob = register_player(app.clone(), "Bob").await;
     let game = create_game(
@@ -240,7 +238,11 @@ async fn decline(app: Router, invitation_id: &str, token: &str) {
         Some(token),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK, "declining should succeed");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "declining should succeed"
+    );
 }
 
 async fn abort(app: Router, game_id: &str, token: &str) {
@@ -271,7 +273,11 @@ async fn resign(app: Router, game_id: &str, token: &str, seat: u8) {
         },
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK, "resigning should succeed");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "resigning should succeed"
+    );
 }
 
 async fn pass_turn(app: Router, game_id: &str, token: &str, seat: u8) {
@@ -385,7 +391,9 @@ async fn cannot_delete_a_player_seated_in_a_game_in_play() {
     let playing = create_two_human_game(app.clone()).await;
 
     // Bob holds a seat he did not create — the seat arm of DEL-2 on its own.
+    // Alice is refused too, holding both a seat and the game she made.
     assert_refused(app.clone(), &playing.bob.player_id, &[&playing.game.id]).await;
+    assert_refused(app.clone(), &playing.alice.player_id, &[&playing.game.id]).await;
 
     let force_end = send_admin::<()>(
         app.clone(),
@@ -415,10 +423,18 @@ async fn cannot_delete_a_player_until_their_finished_game_is_swept() {
 
     let playing = create_two_human_game(app.clone()).await;
     // Two seats, so one resignation leaves one player and finishes the game.
-    resign(app.clone(), &playing.game.id, &playing.alice.session_token, 0).await;
+    resign(
+        app.clone(),
+        &playing.game.id,
+        &playing.alice.session_token,
+        0,
+    )
+    .await;
 
-    // Finished, but inside the window — a game that has ended still refuses.
+    // Finished, but inside the window — a game that has ended still refuses,
+    // for the player who created it and for the one who merely sat in it.
     assert_refused(app.clone(), &playing.alice.player_id, &[&playing.game.id]).await;
+    assert_refused(app.clone(), &playing.bob.player_id, &[&playing.game.id]).await;
 
     sweep_away(
         app.clone(),
@@ -464,7 +480,13 @@ async fn cannot_delete_a_player_who_resigned_while_the_game_continued() {
     // the game unable to record another move (#62), so a walk that has to
     // reach an end state cannot use it — the game would be stuck rather than
     // swept, and this test would be asserting that bug instead of the rule.
-    pass_turn(app.clone(), &playing.game.id, &playing.alice.session_token, 0).await;
+    pass_turn(
+        app.clone(),
+        &playing.game.id,
+        &playing.alice.session_token,
+        0,
+    )
+    .await;
     resign(app.clone(), &playing.game.id, &playing.bob.session_token, 1).await;
 
     // Three seats, so Bob leaving does not end the game — and the seat he
@@ -588,7 +610,13 @@ async fn hiding_a_game_does_not_make_its_players_deletable() {
     let app = build_router(state.clone());
 
     let playing = create_two_human_game(app.clone()).await;
-    resign(app.clone(), &playing.game.id, &playing.alice.session_token, 0).await;
+    resign(
+        app.clone(),
+        &playing.game.id,
+        &playing.alice.session_token,
+        0,
+    )
+    .await;
 
     hide_from_my_list(app.clone(), &playing.game.id, &playing.alice.session_token).await;
     hide_from_my_list(app.clone(), &playing.game.id, &playing.bob.session_token).await;
@@ -698,8 +726,13 @@ async fn deleting_an_account_takes_everything_personal_and_nothing_else() {
     );
 
     // His token stops working, rather than merely being unfindable.
-    let with_dead_token =
-        send_empty_auth(app.clone(), Method::GET, "/games", Some(&playing.bob.session_token)).await;
+    let with_dead_token = send_empty_auth(
+        app.clone(),
+        Method::GET,
+        "/games",
+        Some(&playing.bob.session_token),
+    )
+    .await;
     assert_eq!(
         with_dead_token.status(),
         StatusCode::UNAUTHORIZED,
@@ -941,7 +974,10 @@ async fn a_timed_out_seat_leaves_the_others_playing() {
         );
     }
 
+    // Alice's seat is retired; Bob and Carol are still playing. All three are
+    // refused, by a given-up seat and by two held ones.
     assert_refused(app.clone(), &playing.alice.player_id, &[&playing.game.id]).await;
+    assert_refused(app.clone(), &playing.carol.player_id, &[&playing.game.id]).await;
 
     abort(app.clone(), &playing.game.id, &playing.alice.session_token).await;
     sweep_away(

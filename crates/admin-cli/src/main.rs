@@ -61,9 +61,12 @@ enum UsersAction {
     /// List all registered users, newest first, with their rating.
     List,
     /// Delete a user, along with their sessions, invitations, password-reset
-    /// tokens and rating history. Their past games are kept, with the seat
-    /// unclaimed rather than deleted, so game history and other players'
-    /// records survive.
+    /// tokens, rating and rating history.
+    ///
+    /// Refused while any game still refers to them — one they created, a seat
+    /// they hold, or an invitation they have not answered. Delete those games
+    /// first, or wait: a completed game is removed a week after it ends and
+    /// takes its invitations with it.
     Delete {
         /// Display name or account id. Names are unique, so either
         /// identifies exactly one account.

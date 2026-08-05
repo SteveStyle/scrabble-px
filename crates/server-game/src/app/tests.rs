@@ -97,7 +97,11 @@ pub(super) async fn send_json_auth<T: Serialize>(
     .expect("request should succeed")
 }
 
-pub(super) async fn send_empty(app: Router, method: Method, uri: &str) -> axum::http::Response<Body> {
+pub(super) async fn send_empty(
+    app: Router,
+    method: Method,
+    uri: &str,
+) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
             .method(method)

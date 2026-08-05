@@ -22,13 +22,17 @@ name = "admin-cli"
 version = "0.4.22"
 dependencies = [
  "api",
+ "axum",
  "chrono",
  "clap",
  "rand 0.8.5",
  "reqwest",
  "serde",
  "serde_json",
+ "server-game",
+ "tokio",
  "unicode-width",
+ "uuid",
 ]
 
 [[package]]
