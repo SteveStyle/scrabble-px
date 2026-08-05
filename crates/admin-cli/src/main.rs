@@ -479,43 +479,6 @@ fn generate_password() -> String {
 mod tests {
     use super::*;
 
-    fn seat(
-        seat_number: u8,
-        display_name: &str,
-        kind: api::SeatKind,
-        claimed: bool,
-        resigned: bool,
-        score: i32,
-    ) -> api::ParticipantDto {
-        api::ParticipantDto {
-            seat_number,
-            kind,
-            display_name: display_name.to_string(),
-            player_id: claimed.then(|| "player-id".to_string()),
-            engine_id: None,
-            score,
-            rating_before: None,
-            rating_after: None,
-            current_rating: None,
-            invitation_status: None,
-            invited_email: None,
-            resigned,
-        }
-    }
-
-    fn game(
-        status: api::GameStatus,
-        participants: Vec<api::ParticipantDto>,
-    ) -> api::AdminGameSummaryDto {
-        api::AdminGameSummaryDto {
-            id: "game-id".to_string(),
-            status,
-            created_at: 0,
-            last_activity_at: 0,
-            participants,
-        }
-    }
-
     #[test]
     fn formats_an_epoch_second_as_a_utc_date_time() {
         // 2026-07-26 13:52:02 UTC — the timestamp of commit 8975493.
