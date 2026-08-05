@@ -750,3 +750,206 @@ async fn declining_an_invitation_releases_the_account() {
     );
     assert_refused(app.clone(), &alice.player_id, &[&game.id]).await;
 }
+
+// ================================================ retention on its own
+
+/// RET-1 keeps what is inside the window and takes what is outside it. The
+/// unstarted game is here because RET-3's countdown is decided but not built,
+/// so it is kept by the absence of a rule rather than by one — this fails the
+/// day the keep prompt lands, which is the reminder to revisit it.
+#[tokio::test]
+async fn retention_sweeps_games_past_the_window_and_keeps_the_rest() {
+    let state = create_test_state(&test_database_url()).await;
+    let app = build_router(state.clone());
+
+    let alice = register_player(app.clone(), "Alice").await;
+    let mut ended = Vec::new();
+    for _ in 0..2 {
+        let game = create_game(
+            app.clone(),
+            &alice.session_token,
+            vec![
+                human("Alice", Some(SeatClaim::Creator)),
+                human("Second seat", Some(SeatClaim::Open)),
+            ],
+        )
+        .await;
+        abort(app.clone(), &game.id, &alice.session_token).await;
+        ended.push(game.id);
+    }
+    let unstarted = create_game(
+        app.clone(),
+        &alice.session_token,
+        vec![
+            human("Alice", Some(SeatClaim::Creator)),
+            human("Second seat", Some(SeatClaim::Open)),
+        ],
+    )
+    .await;
+
+    let now = now_unix_seconds();
+    for (game_id, ended_at) in [
+        (&ended[0], now - 8 * 24 * 60 * 60),
+        (&ended[1], now - 6 * 24 * 60 * 60),
+    ] {
+        sqlx::query("update games set ended_at = ?1 where id = ?2")
+            .bind(ended_at)
+            .bind(game_id)
+            .execute(&state.db)
+            .await
+            .expect("backdating should work");
+    }
+
+    trigger_sweeps(app, &alice.session_token).await;
+
+    assert_eq!(game_rows(&state, &ended[0]).await, 0, "8 days old: swept");
+    assert_eq!(game_rows(&state, &ended[1]).await, 1, "6 days old: kept");
+    assert_eq!(
+        game_rows(&state, &unstarted.id).await,
+        1,
+        "unstarted: kept, because RET-3 is not built yet"
+    );
+}
+
+/// The regression guard for the loss fixed in #54: retention took rating
+/// history with every game it swept, so a rating graph emptied itself a week
+/// after each game. ACC-3 says the history belongs to the player.
+#[tokio::test]
+async fn retention_keeps_rating_history_when_it_sweeps_a_game() {
+    let state = create_test_state(&test_database_url()).await;
+    let app = build_router(state.clone());
+
+    let playing = create_two_human_game(app.clone()).await;
+    resign(app.clone(), &playing.game.id, &playing.bob.session_token, 1).await;
+
+    let before = count(
+        &state,
+        "select count(*) from rating_history where game_id = ?1",
+        &playing.game.id,
+    )
+    .await;
+    assert!(before > 0, "a finished rated game should record history");
+
+    sweep_away(
+        app.clone(),
+        &state,
+        &playing.game.id,
+        &playing.alice.session_token,
+    )
+    .await;
+
+    let after = count(
+        &state,
+        "select count(*) from rating_history where game_id = ?1",
+        &playing.game.id,
+    )
+    .await;
+    assert_eq!(
+        after, before,
+        "every history row should outlive the game that produced it"
+    );
+}
+
+// ============================================== a game in play ends itself
+
+/// Push the seat on turn past its move time limit. `turn_started_at` lives on
+/// the loaded session and inside `snapshot_json` rather than in a column, so
+/// this sets it where the sweep reads it and then persists.
+async fn run_the_clock_out(state: &AppState, game_id: &str) {
+    let mut games = state.games.write().await;
+    let game = games.get_mut(game_id).expect("the game should be loaded");
+    game.turn_started_at = now_unix_seconds() - game.move_time_limit_seconds as i64 - 60;
+    persistence::save_game(&state.db, game)
+        .await
+        .expect("persisting the backdated turn should work");
+}
+
+/// Leaving a game in play out of retention rests entirely on this: every game
+/// carries a move time limit, a seat that overruns is retired, and the game
+/// finishes once one seat is left — so it becomes a completed game and RET-1
+/// takes it from there. Nobody resigns and nobody aborts here.
+#[tokio::test]
+async fn a_game_in_play_ends_itself_when_the_clock_runs_out() {
+    let state = create_test_state(&test_database_url()).await;
+    let app = build_router(state.clone());
+
+    let playing = create_two_human_game(app.clone()).await;
+    let bag_before = state
+        .games
+        .read()
+        .await
+        .get(&playing.game.id)
+        .expect("loaded")
+        .bag
+        .len();
+
+    run_the_clock_out(&state, &playing.game.id).await;
+    trigger_sweeps(app.clone(), &playing.alice.session_token).await;
+
+    {
+        let games = state.games.read().await;
+        let game = games.get(&playing.game.id).expect("still loaded");
+        assert!(
+            game.participants[0].resigned,
+            "the seat that ran out of time should be retired"
+        );
+        assert!(
+            game.bag.len() > bag_before,
+            "and the tiles it held should be back in the bag"
+        );
+        assert_eq!(
+            game.status,
+            api::GameStatus::Finished,
+            "two seats, so retiring one leaves one playing and ends the game"
+        );
+    }
+
+    assert_refused(app.clone(), &playing.alice.player_id, &[&playing.game.id]).await;
+    sweep_away(
+        app.clone(),
+        &state,
+        &playing.game.id,
+        &playing.bob.session_token,
+    )
+    .await;
+    assert_deleted(app, &playing.alice.player_id).await;
+}
+
+/// The same clock in a game that does not end because of it — and the seat it
+/// retires still refers to its player, exactly as a resigned one does.
+#[tokio::test]
+async fn a_timed_out_seat_leaves_the_others_playing() {
+    let state = create_test_state(&test_database_url()).await;
+    let app = build_router(state.clone());
+
+    let playing = create_three_human_game(app.clone()).await;
+
+    run_the_clock_out(&state, &playing.game.id).await;
+    trigger_sweeps(app.clone(), &playing.alice.session_token).await;
+
+    {
+        let games = state.games.read().await;
+        let game = games.get(&playing.game.id).expect("still loaded");
+        assert!(
+            game.participants[0].resigned,
+            "the seat on turn should be retired"
+        );
+        assert_eq!(
+            game.status,
+            api::GameStatus::Active,
+            "three seats, so the other two carry on"
+        );
+    }
+
+    assert_refused(app.clone(), &playing.alice.player_id, &[&playing.game.id]).await;
+
+    abort(app.clone(), &playing.game.id, &playing.alice.session_token).await;
+    sweep_away(
+        app.clone(),
+        &state,
+        &playing.game.id,
+        &playing.bob.session_token,
+    )
+    .await;
+    assert_deleted(app, &playing.alice.player_id).await;
+}
