@@ -9,6 +9,11 @@ use std::collections::HashMap;
 
 const DEFAULT_ENGINE_ID: &str = "greedy-v1";
 const DEFAULT_TIME_LIMIT_HOURS: u32 = 72;
+/// The server's own bounds on `move_time_limit_seconds`, in hours — one hour
+/// to forty days. Kept here so the form can refuse what the server would,
+/// rather than sending it and reporting the refusal afterwards.
+const MIN_TIME_LIMIT_HOURS: u32 = 1;
+const MAX_TIME_LIMIT_HOURS: u32 = 960;
 
 /// One-click starting shapes for the draft table below — each seeds
 /// `include_creator`/`additional_seats` with a starting roster that's still
@@ -31,6 +36,12 @@ enum NewGameKind {
 pub struct CustomGameSubmission {
     pub seats: Vec<CreateSeatRequest>,
     pub move_time_limit_seconds: Option<u64>,
+    /// The builder's own open flag, so the caller can close it once the
+    /// server has accepted the game and not before. Closing it on submit
+    /// dismissed the form whatever happened next, so a refusal surfaced as an
+    /// error against whichever game happened to be selected — and the values
+    /// that caused it were gone.
+    pub draft_open: Signal<bool>,
     /// The edition to create the game under (e.g. "official",
     /// "north_american") — `None` lets the server fall back to its own
     /// default ("official").
@@ -183,7 +194,7 @@ fn start_draft(
     mut include_creator: Signal<bool>,
     mut creator_position: Signal<usize>,
     mut additional_seats: Signal<Vec<AdditionalSeatDraft>>,
-    mut time_limit_hours: Signal<u32>,
+    mut time_limit_hours: Signal<String>,
     mut drafting: Signal<bool>,
     mut variant: Signal<String>,
 ) {
@@ -191,7 +202,7 @@ fn start_draft(
     include_creator.set(creator);
     creator_position.set(0);
     additional_seats.set(seats);
-    time_limit_hours.set(DEFAULT_TIME_LIMIT_HOURS);
+    time_limit_hours.set(DEFAULT_TIME_LIMIT_HOURS.to_string());
     variant.set("official".to_string());
     drafting.set(true);
 }
@@ -305,7 +316,10 @@ pub fn GamesPanel(
     let mut include_creator = use_signal(|| true);
     let mut creator_position = use_signal(|| 0usize);
     let mut additional_seats = use_signal(Vec::<AdditionalSeatDraft>::new);
-    let mut time_limit_hours = use_signal(|| DEFAULT_TIME_LIMIT_HOURS);
+    // Held as the text in the box rather than a parsed number, so what is
+    // shown is always what will be sent. Parsing on every keystroke and
+    // keeping the last good value meant a box reading 0 submitted 72.
+    let mut time_limit_hours = use_signal(|| DEFAULT_TIME_LIMIT_HOURS.to_string());
     let mut variant = use_signal(|| "official".to_string());
     // Owned here (see `player_table`/`add_seat_row`'s own doc comments on
     // why they can't create these themselves) — reset per `GamesPanel`
@@ -515,12 +529,19 @@ pub fn GamesPanel(
             }
         });
 
+    let time_limit_hours_value = time_limit_hours()
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|hours| (MIN_TIME_LIMIT_HOURS..=MAX_TIME_LIMIT_HOURS).contains(hours));
+
     let can_submit_builder = additional_seats().iter().all(|seat| {
         !matches!(
             seat.kind,
             AdditionalSeatKind::Named | AdditionalSeatKind::Email
         ) || !seat.name.trim().is_empty()
-    }) && (include_creator() || !additional_seats().is_empty());
+    }) && (include_creator() || !additional_seats().is_empty())
+        && time_limit_hours_value.is_some();
 
     // A draft with only engine seats (plus optionally you) has nobody left
     // to hear from — creating it lands straight on "Ready to start" with
@@ -644,15 +665,16 @@ pub fn GamesPanel(
                             label { "Time per move (hours): " }
                             input {
                                 r#type: "number",
-                                min: "1",
+                                min: "{MIN_TIME_LIMIT_HOURS}",
+                                max: "{MAX_TIME_LIMIT_HOURS}",
                                 class: "seat-draft-name-input",
                                 value: "{time_limit_hours()}",
-                                oninput: move |event| {
-                                    if let Ok(hours) = event.value().parse::<u32>()
-                                        && hours > 0 {
-                                            time_limit_hours.set(hours);
-                                        }
-                                },
+                                oninput: move |event| time_limit_hours.set(event.value()),
+                            }
+                            if time_limit_hours_value.is_none() {
+                                div { class: "seat-draft-hint",
+                                    "Between {MIN_TIME_LIMIT_HOURS} and {MAX_TIME_LIMIT_HOURS} hours ({MAX_TIME_LIMIT_HOURS / 24} days)."
+                                }
                             }
                         }
                         div { class: "game-builder-add-row",
@@ -663,11 +685,12 @@ pub fn GamesPanel(
                                     let seats = build_seats(include_creator(), creator_position(), &additional_seats(), my_display_name.as_deref());
                                     on_custom_new_game.call(CustomGameSubmission {
                                         seats,
-                                        move_time_limit_seconds: Some(time_limit_hours() as u64 * 3600),
+                                        move_time_limit_seconds: time_limit_hours_value
+                                            .map(|hours| hours as u64 * 3600),
+                                        draft_open: drafting,
                                         variant: Some(variant()),
                                         start_immediately: !needs_invitations,
                                     });
-                                    drafting.set(false);
                                 },
                                 "{submit_label}"
                             }
