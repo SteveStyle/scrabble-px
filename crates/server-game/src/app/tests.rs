@@ -5072,12 +5072,16 @@ async fn admin_deleting_a_user_removes_their_rating_rows_and_reset_tokens() {
     }
 }
 
-/// Each `rating_history` row carries the `game_id` it came from and
-/// `RatingPointDto` hands that id to the client, so an orphan left by a
-/// game delete makes the rating graph plot a point linking to a game
-/// nobody can open.
+/// ACC-3: a player's rating history belongs to them, not to the games that
+/// produced it. Every game is deleted eventually, so history that went with
+/// them would mean nobody kept one — which is what made retention quietly
+/// empty the rating graph a week after each game.
+///
+/// The cost is a broken link: each row carries its `game_id` and
+/// `RatingPointDto` hands that to the client, so a point can now link to a
+/// game nobody can open.
 #[tokio::test]
-async fn admin_deleting_a_game_removes_its_rating_history() {
+async fn admin_deleting_a_game_keeps_its_rating_history() {
     let database_url = test_database_url();
     let state = create_test_state(&database_url).await;
     let app = build_router(state.clone());
@@ -5110,15 +5114,15 @@ async fn admin_deleting_a_game_removes_its_rating_history() {
     .await;
     assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
 
-    let orphaned: i64 =
-        sqlx::query_scalar("select count(*) from rating_history where game_id = ?1")
-            .bind(&doomed.id)
-            .fetch_one(&state.db)
-            .await
-            .expect("count should succeed");
+    let kept: i64 = sqlx::query_scalar("select count(*) from rating_history where game_id = ?1")
+        .bind(&doomed.id)
+        .fetch_one(&state.db)
+        .await
+        .expect("count should succeed");
     assert_eq!(
-        orphaned, 0,
-        "a deleted game should leave no rating history behind"
+        kept, 1,
+        "rating history belongs to the player, not to the game that produced \
+         it (ACC-3), so deleting the game leaves it standing"
     );
 
     let survivor_points: i64 =

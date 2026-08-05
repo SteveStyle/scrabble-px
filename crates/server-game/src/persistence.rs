@@ -674,26 +674,30 @@ pub async fn delete_player(pool: &Pool<Sqlite>, player_id: &str) -> Result<bool,
 }
 
 /// Deletes a game and everything that belongs to it (participants, moves,
-/// chat, invitations, rating history). Doesn't touch player accounts.
-/// Caller is responsible for also dropping it from the in-memory
-/// `AppState.games` map — this only handles the database side.
+/// chat, invitations). Doesn't touch player accounts. Caller is responsible
+/// for also dropping it from the in-memory `AppState.games` map — this only
+/// handles the database side.
 ///
-/// `rating_history` is included because each row carries the `game_id` it
-/// came from and `RatingPointDto` hands that id to the client: an orphaned
-/// row leaves the rating graph plotting a point that links to a game
-/// nobody can open. What this deliberately does *not* do is unwind the
-/// rating itself — `player_ratings.rating` keeps the value this game moved
-/// it to. Recomputing every subsequent game's ELO to excise one result is
-/// far more than a delete should do, and the alternative (leaving the
-/// history row) would misreport which game produced the current rating
-/// either way. The graph loses a point; the current rating stays honest.
+/// **`rating_history` survives.** A player's rating history belongs to the
+/// player rather than to the games that produced it (docs/1.0-rules.md,
+/// ACC-3 and RET-2), and it is what makes deleting games acceptable at all —
+/// every game is deleted eventually, so history that went with them would
+/// mean nobody had one.
+///
+/// This did delete it, for a reason that turned out to cost more than it
+/// saved: each row carries the `game_id` it came from and `RatingPointDto`
+/// hands that id to the client, so a surviving row leaves the graph plotting
+/// a point that links to a game nobody can open. That is a broken link. The
+/// alternative was a rating graph that quietly emptied itself a week after
+/// each game, which is data loss.
+///
+/// What this still deliberately does *not* do is unwind the rating itself —
+/// `player_ratings.rating` keeps the value this game moved it to.
+/// Recomputing every subsequent game's ELO to excise one result is far more
+/// than a delete should do.
 pub async fn delete_game(pool: &Pool<Sqlite>, game_id: &str) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin().await?;
     sqlx::query("delete from game_moves where game_id = ?1")
-        .bind(game_id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("delete from rating_history where game_id = ?1")
         .bind(game_id)
         .execute(&mut *tx)
         .await?;
