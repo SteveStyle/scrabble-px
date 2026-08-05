@@ -138,9 +138,9 @@ pub(crate) async fn admin_delete_user(
             lines.extend(blocking);
             lines.push(String::new());
             lines.push(
-                "Please wait until those games are gone, then delete the account. A \
-                 completed game goes a week after it ends, and takes its invitations \
-                 with it."
+                "Please wait until those games are gone, then delete the account. \
+                 Games are removed automatically from a week after their last \
+                 activity, and an invitation goes with the game holding it."
                     .to_string(),
             );
             return Err(ApiProblem::bad_request(lines.join("\n")));
