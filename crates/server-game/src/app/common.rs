@@ -39,7 +39,7 @@ pub(crate) async fn game_dto_with_invitation_status(
         let invitations = persistence::get_invitations_for_game(&state.db, &game.id)
             .await
             .map_err(ApiProblem::from_sqlx)?;
-        attach_invitation_status(&mut dto, &invitations);
+        attach_invitation_status(&mut dto.participants, &invitations);
     }
     Ok(dto)
 }

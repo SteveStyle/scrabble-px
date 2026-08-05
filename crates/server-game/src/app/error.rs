@@ -11,7 +11,7 @@ pub struct ApiProblem {
     /// Games standing in the way, sent alongside the message so a client can
     /// render them however suits it. Empty for everything except the refusals
     /// that have some to name.
-    blocking_games: Vec<api::BlockingGameDto>,
+    blocking_games: Vec<api::AdminGameSummaryDto>,
     /// Seconds for a `Retry-After` header, set only on 503. A client that
     /// is told to come back should be told when — without it, a well-behaved
     /// client has to guess, and guessing usually means retrying immediately,
@@ -33,7 +33,7 @@ impl ApiProblem {
     /// stands on its own, for a client that does not read the list.
     pub(crate) fn blocked_by_games(
         message: impl Into<String>,
-        blocking_games: Vec<api::BlockingGameDto>,
+        blocking_games: Vec<api::AdminGameSummaryDto>,
     ) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
