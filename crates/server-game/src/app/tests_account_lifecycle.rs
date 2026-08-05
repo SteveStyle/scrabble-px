@@ -74,7 +74,7 @@ async fn assert_refused(app: Router, player_id: &str, naming: &[&str]) {
     let named: Vec<&str> = problem
         .blocking_games
         .iter()
-        .map(|blocking| blocking.game.id.as_str())
+        .map(|game| game.id.as_str())
         .collect();
     for id in naming {
         assert!(
@@ -1016,32 +1016,29 @@ async fn the_refusal_says_who_is_in_each_game_and_where_it_has_got_to() {
     assert_eq!(problem.blocking_games.len(), 1, "one game is in the way");
     let blocking = &problem.blocking_games[0];
     assert_eq!(
-        blocking.game.id, playing.game.id,
+        blocking.id, playing.game.id,
         "the id is what identifies the game to every other command"
     );
     assert_eq!(
-        blocking.reason, "created it, and holds a seat",
-        "a player can be attached two ways at once, and only one of them \
-         clears on its own"
-    );
-    assert_eq!(
-        blocking.game.status,
+        blocking.status,
         api::GameStatus::Active,
         "what state it is in decides whether waiting is reasonable"
     );
-    let seats = api::describe_seats(blocking.game.status, &blocking.game.participants);
+    let seats = api::describe_seats(blocking.status, &blocking.participants);
     assert!(
         seats.contains("Alice") && seats.contains("Bob"),
         "and who is in it decides whether it will move: {seats}"
     );
     assert!(
-        blocking.game.last_activity_at > 0,
+        blocking.last_activity_at > 0,
         "the listing shows last activity, so this must carry it too"
     );
 
+    // Free of counts and agreement — the list carries the detail, and there
+    // may be one game or a dozen in any mix of states.
     assert!(
-        problem.message.contains("1 game") && !problem.message.contains("game(s)"),
-        "the count is known, so it should read as English: {}",
+        !problem.message.contains("game(s)") && !problem.message.contains("1 game"),
+        "the sentence should not try to count what the table shows: {}",
         problem.message
     );
     assert!(

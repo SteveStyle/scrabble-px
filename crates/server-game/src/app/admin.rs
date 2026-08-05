@@ -25,16 +25,6 @@ pub(crate) async fn admin_list_users(
     Ok(Json(players))
 }
 
-/// "1 game" or "3 games" — the count is always known here, so `game(s)` only
-/// ever made the reader do the work.
-fn count_of(noun: &str, n: usize) -> String {
-    if n == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{n} {noun}s")
-    }
-}
-
 pub(crate) async fn admin_delete_user(
     State(state): State<AppState>,
     Path(player_id): Path<String>,
@@ -90,51 +80,37 @@ pub(crate) async fn admin_delete_user(
             .await
             .map_err(ApiProblem::from_sqlx)?;
 
-        let summarise = |game: &GameSession, reason: &str| api::BlockingGameDto {
-            game: api::AdminGameSummaryDto {
+        let mut blocking: Vec<api::AdminGameSummaryDto> = Vec::new();
+        for game in attached.iter().chain(mentioned.iter()) {
+            // Each seat's invitation status comes from the invitations table,
+            // not the session, so it has to be filled in — without it every
+            // empty seat reads "unclaimed", and a seat somebody turned down
+            // looks like one nobody was ever asked about.
+            let mut dto = game.to_dto();
+            let invitations = persistence::get_invitations_for_game(&state.db, &game.id)
+                .await
+                .map_err(ApiProblem::from_sqlx)?;
+            crate::game_state::attach_invitation_status(&mut dto.participants, &invitations);
+            blocking.push(api::AdminGameSummaryDto {
                 id: game.id.clone(),
                 status: game.status,
                 created_at: created_at.get(&game.id).copied().unwrap_or(0),
                 last_activity_at: last_activity.get(&game.id).copied().unwrap_or(0),
-                participants: game.to_dto().participants,
-            },
-            reason: reason.to_string(),
-        };
-
-        let mut blocking: Vec<api::BlockingGameDto> = Vec::new();
-        for game in &attached {
-            let created = game.creator_player_id.as_deref() == Some(player_id.as_str());
-            let seated = game
-                .participants
-                .iter()
-                .any(|seat| seat.player_id.as_deref() == Some(player_id.as_str()));
-            // A player can be attached both ways at once, and only one of the
-            // reasons clears on its own, so they are not interchangeable.
-            let reason = match (created, seated) {
-                (true, true) => "created it, and holds a seat",
-                (true, false) => "created it",
-                _ => "holds a seat",
-            };
-            blocking.push(summarise(game, reason));
-        }
-        for game in &mentioned {
-            blocking.push(summarise(game, "still mentioned by it"));
+                participants: dto.participants,
+            });
         }
 
         if !blocking.is_empty() {
+            // No counts and no agreement. The list below may hold one game or
+            // a dozen, in any mix of states, and a sentence that tries to
+            // describe them ends up either wrong or written three ways — while
+            // the rows say all of it already, including why each one counts:
+            // the account is visible in the seats.
             return Err(ApiProblem::blocked_by_games(
-                format!(
-                    "That account cannot be deleted yet — {} still {} to it. Please \
-                     wait until they are gone, then delete the account. Games are \
-                     removed automatically from a week after their last activity, and \
-                     an invitation goes with the game holding it.",
-                    count_of("game", blocking.len()),
-                    if blocking.len() == 1 {
-                        "refers"
-                    } else {
-                        "refer"
-                    },
-                ),
+                "That account cannot be deleted yet. The games below still refer to \
+                 it. Please wait until they are gone, then delete the account. Games \
+                 are removed automatically from a week after their last activity, and \
+                 an invitation goes with the game holding it.",
                 blocking,
             ));
         }
@@ -262,7 +238,7 @@ pub(crate) async fn admin_list_games(
                     player_id: participant.player_id.clone(),
                     engine_id: participant.engine_id.clone(),
                     score: participant.score,
-                    // Not meaningful in an admin summary view.
+                    // Filled in below, per game.
                     invitation_status: None,
                     invited_email: participant.invited_email.clone(),
                     rating_before: None,
@@ -273,6 +249,16 @@ pub(crate) async fn admin_list_games(
                 .collect(),
         })
         .collect();
+    // Each seat's invitation status lives in its own table, so it has to be
+    // filled in per game. Left out while this column showed names only; now
+    // that an empty seat says which kind of empty it is, leaving it out made
+    // a declined seat look like one nobody had been asked about.
+    for summary in &mut summaries {
+        let invitations = persistence::get_invitations_for_game(&state.db, &summary.id)
+            .await
+            .map_err(ApiProblem::from_sqlx)?;
+        crate::game_state::attach_invitation_status(&mut summary.participants, &invitations);
+    }
     summaries.sort_by_key(|s| std::cmp::Reverse(s.created_at));
 
     Ok(Json(summaries))

@@ -518,16 +518,7 @@ pub struct ApiError {
     /// Formatting a terminal table server-side would put presentation in the
     /// crate least able to know how it will be read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocking_games: Vec<BlockingGameDto>,
-}
-
-/// A game that is preventing something, and the reason it counts. The reason
-/// is the server's to decide — a client cannot tell "created it" from "holds
-/// a seat" without reimplementing the rule.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BlockingGameDto {
-    pub game: AdminGameSummaryDto,
-    pub reason: String,
+    pub blocking_games: Vec<AdminGameSummaryDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -796,7 +787,17 @@ pub fn describe_seats(status: GameStatus, participants: &[ParticipantDto]) -> St
             let mut cell = seat.display_name.clone();
             match seat.kind {
                 SeatKind::Engine => cell.push_str(" [bot]"),
-                SeatKind::Human if seat.player_id.is_none() => cell.push_str(" [unclaimed]"),
+                // An empty seat is not one thing. Somebody asked and is
+                // waiting, somebody asked and was turned down, or nobody has
+                // asked — and an operator deciding whether a game will ever
+                // start needs to know which.
+                SeatKind::Human if seat.player_id.is_none() => {
+                    cell.push_str(match seat.invitation_status {
+                        Some(SeatInvitationStatus::Pending) => " [invited]",
+                        Some(SeatInvitationStatus::Rejected) => " [declined]",
+                        _ => " [unclaimed]",
+                    })
+                }
                 SeatKind::Human => {}
             }
             if seat.resigned {
@@ -872,6 +873,30 @@ mod describe_seats_tests {
             ],
         );
         assert_eq!(summary, "Alice vs Open seat [unclaimed]");
+    }
+
+    /// An empty seat says which kind of empty it is, so a game nobody will
+    /// ever join reads differently from one still waiting on an answer.
+    #[test]
+    fn seat_summary_tells_the_kinds_of_empty_apart() {
+        let mut invited = seat(1, "Bob", SeatKind::Human, false, false, 0);
+        invited.invitation_status = Some(SeatInvitationStatus::Pending);
+        let mut declined = seat(2, "Carol", SeatKind::Human, false, false, 0);
+        declined.invitation_status = Some(SeatInvitationStatus::Rejected);
+
+        let summary = describe_seats(
+            GameStatus::Waiting,
+            &[
+                seat(0, "Alice", SeatKind::Human, true, false, 0),
+                invited,
+                declined,
+                seat(3, "Open seat", SeatKind::Human, false, false, 0),
+            ],
+        );
+        assert_eq!(
+            summary,
+            "Alice vs Bob [invited] vs Carol [declined] vs Open seat [unclaimed]"
+        );
     }
 
     /// Seats render in turn order regardless of the order they arrived in.

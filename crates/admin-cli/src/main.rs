@@ -432,17 +432,16 @@ fn check_response(
         eprintln!("{status}: {}", problem.message);
         eprintln!();
         print_table(
-            &["ID", "STATUS", "LAST ACTIVITY (UTC)", "SEATS", "WHY"],
+            &["ID", "STATUS", "LAST ACTIVITY (UTC)", "SEATS"],
             problem
                 .blocking_games
                 .iter()
-                .map(|blocking| {
+                .map(|game| {
                     vec![
-                        blocking.game.id.clone(),
-                        format!("{:?}", blocking.game.status).to_lowercase(),
-                        format_timestamp(blocking.game.last_activity_at),
-                        api::describe_seats(blocking.game.status, &blocking.game.participants),
-                        blocking.reason.clone(),
+                        game.id.clone(),
+                        format!("{:?}", game.status).to_lowercase(),
+                        format_timestamp(game.last_activity_at),
+                        api::describe_seats(game.status, &game.participants),
                     ]
                 })
                 .collect(),

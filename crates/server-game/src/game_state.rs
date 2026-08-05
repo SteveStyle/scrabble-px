@@ -167,8 +167,11 @@ pub fn redact_game_state(mut dto: GameStateDto, access: &ViewerAccess) -> GameSt
 /// every seat is already claimed by the time it matters (`start_game`
 /// requires full seating), so `invitation_status: None` from `to_dto()`
 /// is already correct and this call is skipped entirely.
-pub fn attach_invitation_status(dto: &mut GameStateDto, invitations: &[InvitationRecord]) {
-    for participant in &mut dto.participants {
+pub fn attach_invitation_status(
+    participants: &mut [api::ParticipantDto],
+    invitations: &[InvitationRecord],
+) {
+    for participant in participants.iter_mut() {
         if participant.kind != SeatKind::Human || participant.player_id.is_some() {
             continue;
         }
