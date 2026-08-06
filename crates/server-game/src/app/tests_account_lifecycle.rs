@@ -1048,3 +1048,164 @@ async fn the_refusal_says_who_is_in_each_game_and_where_it_has_got_to() {
         problem.message
     );
 }
+
+// ====================================== a game can always record what happens
+
+async fn force_resign(app: Router, game_id: &str, seat: u8, token: &str) {
+    let response = send_json_auth(
+        app,
+        Method::POST,
+        &format!("/games/{game_id}/seats/{seat}/force-resign"),
+        Some(token),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the creator should be able to retire a seat"
+    );
+}
+
+/// Whatever the players were shown, a restart must agree with it.
+///
+/// Every handler changes the loaded session first and writes afterwards, so a
+/// failed write leaves memory holding something the database does not — and
+/// memory answers every read until the server restarts. Reloading is the only
+/// way a test can tell the difference.
+async fn status_after_reload(database_url: &str, game_id: &str) -> api::GameStatus {
+    let reloaded = create_test_state(database_url).await;
+    let games = reloaded.games.read().await;
+    games
+        .get(game_id)
+        .expect("the game should reload from the database")
+        .status
+}
+
+/// Retiring a seat that is not the one on turn records something without the
+/// game moving on. Anything recorded next must still be able to take a number
+/// of its own — this used to collide, the write rolled back, and the players
+/// were shown an abort the database never received.
+#[tokio::test]
+async fn a_game_can_be_aborted_after_a_seat_is_retired_off_turn() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    let playing = create_three_human_game(app.clone()).await;
+
+    // Seat 0 is on turn, so retiring seat 1 does not advance the game.
+    force_resign(
+        app.clone(),
+        &playing.game.id,
+        1,
+        &playing.alice.session_token,
+    )
+    .await;
+    abort(app.clone(), &playing.game.id, &playing.alice.session_token).await;
+
+    assert_eq!(
+        status_after_reload(&database_url, &playing.game.id).await,
+        api::GameStatus::Aborted,
+        "the abort the players saw must be the abort the database holds"
+    );
+}
+
+/// The same collision reached by the other door: a player resigning when it is
+/// not their turn, and then the game carrying on.
+#[tokio::test]
+async fn play_continues_after_a_player_resigns_off_turn() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    let playing = create_three_human_game(app.clone()).await;
+
+    // Bob is seat 1 and it is seat 0's turn.
+    resign(app.clone(), &playing.game.id, &playing.bob.session_token, 1).await;
+    pass_turn(
+        app.clone(),
+        &playing.game.id,
+        &playing.alice.session_token,
+        0,
+    )
+    .await;
+
+    assert_eq!(
+        status_after_reload(&database_url, &playing.game.id).await,
+        api::GameStatus::Active,
+        "two seats are still playing, and the pass must have persisted"
+    );
+}
+
+/// Two retirements in a row, neither of them the seat on turn — the case that
+/// needs the record number to be a sequence rather than the turn, since the
+/// turn never moves across either of them.
+#[tokio::test]
+async fn two_seats_can_be_retired_off_turn_in_a_row() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    let playing = create_three_human_game(app.clone()).await;
+
+    force_resign(
+        app.clone(),
+        &playing.game.id,
+        1,
+        &playing.alice.session_token,
+    )
+    .await;
+    force_resign(
+        app.clone(),
+        &playing.game.id,
+        2,
+        &playing.alice.session_token,
+    )
+    .await;
+
+    // One seat left playing, so the game finishes itself (GAME-2).
+    assert_eq!(
+        status_after_reload(&database_url, &playing.game.id).await,
+        api::GameStatus::Finished,
+        "retiring the last two opponents should end the game, and persist"
+    );
+}
+
+/// Records are numbered in the order they happened, with no repeats. Rating
+/// leans on that order to rank resigners against each other (`stats.rs`), and
+/// persistence derives each row's id from the number.
+#[tokio::test]
+async fn every_record_takes_its_own_number_in_order() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    let playing = create_three_human_game(app.clone()).await;
+    resign(app.clone(), &playing.game.id, &playing.bob.session_token, 1).await;
+    pass_turn(
+        app.clone(),
+        &playing.game.id,
+        &playing.alice.session_token,
+        0,
+    )
+    .await;
+    abort(app.clone(), &playing.game.id, &playing.alice.session_token).await;
+
+    let numbers: Vec<i64> = sqlx::query_scalar(
+        "select move_number from game_moves where game_id = ?1 order by move_number",
+    )
+    .bind(&playing.game.id)
+    .fetch_all(&state.db)
+    .await
+    .expect("reading the records should work");
+
+    assert!(numbers.len() >= 3, "three things happened: {numbers:?}");
+    let mut unique = numbers.clone();
+    unique.dedup();
+    assert_eq!(unique, numbers, "no number is used twice: {numbers:?}");
+    assert!(
+        numbers.windows(2).all(|pair| pair[0] < pair[1]),
+        "and they only go up: {numbers:?}"
+    );
+}
