@@ -601,6 +601,12 @@ impl GameSession {
     /// Taken as the highest number so far rather than the count, because a
     /// database written by the old code may hold gaps, and a count would walk
     /// straight into one.
+    ///
+    /// **The name no longer describes it.** It numbers events, and a
+    /// resignation, a retirement, an abort and a timeout are not moves. It is
+    /// a per-game event sequence — which is the third counter of that shape
+    /// here, alongside `version`, and whether they should be one is part of
+    /// the design note on how a client knows a game changed.
     fn next_move_number(&self) -> i64 {
         self.moves
             .iter()
