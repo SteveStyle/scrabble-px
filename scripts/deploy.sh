@@ -578,9 +578,13 @@ else
   # and check-commit-stamp.sh validates the stamp against the commit's own
   # tree. An uncommitted edit to API_VERSION would otherwise produce a
   # stamp that fails its own check.
+  # One parser, shared with check-commit-stamp.sh and tested in
+  # scripts/tests/ — rustfmt wraps this declaration once the numbers grow,
+  # and both readers assumed one line. It exits non-zero rather than
+  # printing nothing, so a version that cannot be read stops the bump
+  # instead of writing a stamp its own checker would reject.
   BUMP_API="$(git -C "$REPO_DIR" show HEAD:crates/api/src/lib.rs \
-    | grep -m1 'API_VERSION: ApiVersion' \
-    | grep -o 'major: [0-9]*, minor: [0-9]*' | sed 's/major: //; s/, minor: /./')"
+    | "$(dirname "$0")/read-api-version.sh")"
   git -C "$REPO_DIR" commit --quiet \
     -m "app $NEXT_VERSION api $BUMP_API: bump dev version following production release" \
     -m "Production now runs $DEPLOYED_VERSION+$TARGET_SHA."

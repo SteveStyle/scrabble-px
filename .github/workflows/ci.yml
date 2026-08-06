@@ -50,6 +50,14 @@ jobs:
           -p server-game -p admin-cli -p tile-lite-elite-ui
           --check
 
+      # The release scripts have one piece of parsing that both deploy.sh and
+      # check-commit-stamp.sh depend on, and it has failed twice — once loudly,
+      # taking a production deploy down between two commands, and once quietly,
+      # by returning nothing so the stamp check skipped itself. Cheap to run,
+      # and the only test in the repo that covers a script.
+      - name: Shell script tests
+        run: ./scripts/tests/read-api-version.test.sh
+
       # -D warnings makes any clippy or rustc warning fail the build. Scoped to
       # this repo's crates (old-crates carry many pre-existing warnings we don't
       # maintain), but across all targets so tests and examples are linted too.
