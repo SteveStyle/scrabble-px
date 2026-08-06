@@ -1209,3 +1209,60 @@ async fn every_record_takes_its_own_number_in_order() {
         "and they only go up: {numbers:?}"
     );
 }
+
+// ================================ what a timeout tells the players who remain
+
+/// A clock running out retires the seat on turn. Whether that ends the *game*
+/// depends on how many seats are left playing, and the announcement has to say
+/// which happened — telling the remaining players a game is over while they
+/// are still in it is worse than telling them nothing.
+#[tokio::test]
+async fn a_timeout_announces_a_finish_only_when_the_game_finishes() {
+    let state = create_test_state(&test_database_url()).await;
+    let app = build_router(state.clone());
+
+    // Three seats: retiring one leaves two playing, so the game carries on.
+    let three = create_three_human_game(app.clone()).await;
+    let mut events = state.events.subscribe();
+    run_the_clock_out(&state, &three.game.id).await;
+    trigger_sweeps(app.clone(), &three.alice.session_token).await;
+
+    let mut announced_finished = false;
+    let mut announced_update = false;
+    while let Ok(event) = events.try_recv() {
+        match event {
+            GameEventDto::GameFinished { game } if game.id == three.game.id => {
+                announced_finished = true;
+            }
+            GameEventDto::StateUpdated { game } if game.id == three.game.id => {
+                announced_update = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        announced_update,
+        "the seat going should reach the two still playing"
+    );
+    assert!(
+        !announced_finished,
+        "but not as a finish — they are still in the game"
+    );
+
+    // Two seats: retiring one leaves one, so the game really does end.
+    let two = create_two_human_game(app.clone()).await;
+    let mut events = state.events.subscribe();
+    run_the_clock_out(&state, &two.game.id).await;
+    trigger_sweeps(app.clone(), &two.alice.session_token).await;
+
+    let mut finished_dto = None;
+    while let Ok(event) = events.try_recv() {
+        if let GameEventDto::GameFinished { game } = event
+            && game.id == two.game.id
+        {
+            finished_dto = Some(game);
+        }
+    }
+    let finished = finished_dto.expect("the last seat standing should end the game");
+    assert_eq!(finished.status, api::GameStatus::Finished);
+}
