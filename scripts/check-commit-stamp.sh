@@ -67,10 +67,13 @@ for sha in $COMMITS; do
   # a stamp is a claim about its own tree.
   actual_app="$(git show "$sha:Cargo.toml" 2>/dev/null \
     | grep -m1 '^version' | cut -d'"' -f2 || true)"
+  # `|| true` because a commit predating the api crate has none to read. It
+  # does mean an unreadable version skips the check below rather than failing
+  # it — which is what happened when the constant wrapped onto four lines and
+  # this quietly stopped verifying anything. One parser now, with its own
+  # tests, so the shape cannot drift away from the reader again.
   actual_api="$(git show "$sha:crates/api/src/lib.rs" 2>/dev/null \
-    | grep -m1 'API_VERSION: ApiVersion' \
-    | grep -o 'major: [0-9]*, minor: [0-9]*' \
-    | sed 's/major: //; s/, minor: /./' || true)"
+    | "$(dirname "$0")/read-api-version.sh" 2>/dev/null || true)"
 
   if [[ -n "$actual_app" && "$claimed_app" != "$actual_app" ]]; then
     echo "FAIL $short: subject says app $claimed_app, Cargo.toml says $actual_app"
@@ -101,9 +104,7 @@ for sha in $COMMITS; do
     | grep -qE '^crates/api/src/|^crates/rules-shared/src/model\.rs$' && touched_wire=1
   if (( touched_wire == 1 )); then
     parent_api="$(git show "$sha~1:crates/api/src/lib.rs" 2>/dev/null \
-      | grep -m1 'API_VERSION: ApiVersion' \
-      | grep -o 'major: [0-9]*, minor: [0-9]*' \
-      | sed 's/major: //; s/, minor: /./' || true)"
+      | "$(dirname "$0")/read-api-version.sh" 2>/dev/null || true)"
     if [[ -n "$parent_api" && "$parent_api" == "$actual_api" ]]; then
       echo "warn $short: touched the wire surface but left api at $actual_api"
       echo "     $subject"
