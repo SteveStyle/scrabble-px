@@ -36,11 +36,27 @@ use tower_governor::{GovernorError, GovernorLayer};
 use super::AppState;
 use axum::Router;
 
-/// Requests per period, and how long the period is, read from the
-/// environment so the numbers can be retuned on the rehearsal host without a
-/// rebuild. The defaults are a first guess sized for a 2 vCPU, 954 MB box —
-/// see docs/3.3 for how to check them under load.
+/// Requests a minute, read from the environment so the numbers can be retuned
+/// on the rehearsal host without a rebuild. The defaults are a first guess for
+/// a 2 vCPU, 954 MB box.
+///
+/// An *empty* value falls back to the default as an unset one does, which
+/// matters because Compose passes `${VAR:-}` through as an empty string rather
+/// than omitting it. Caddy's `{$VAR:default}` does the opposite and took a
+/// deploy down over it; the parse here fails on an empty string, so both cases
+/// land on the default.
 fn limit_from_env(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+/// The burst allowed on top of the rate, tunable for the same reason: it is
+/// what decides whether an ordinary caller ever meets the limit at all. A
+/// rate without a burst refuses the second of two clicks.
+fn burst_from_env(name: &str, default: u32) -> u32 {
     std::env::var(name)
         .ok()
         .and_then(|raw| raw.parse().ok())
@@ -186,7 +202,7 @@ pub fn registration(router: Router<AppState>) -> Router<AppState> {
         router,
         ClientAddress,
         limit_from_env("TILE_LITE_ELITE_LIMIT_REGISTER_PER_MIN", 2),
-        3,
+        burst_from_env("TILE_LITE_ELITE_LIMIT_REGISTER_BURST", 3),
     )
 }
 
@@ -199,7 +215,7 @@ pub fn heavy_auth(router: Router<AppState>) -> Router<AppState> {
         router,
         ClientAddress,
         limit_from_env("TILE_LITE_ELITE_LIMIT_AUTH_PER_MIN", 10),
-        10,
+        burst_from_env("TILE_LITE_ELITE_LIMIT_AUTH_BURST", 10),
     )
 }
 
@@ -211,7 +227,7 @@ pub fn authenticated(router: Router<AppState>) -> Router<AppState> {
         router,
         SessionOrAddress,
         limit_from_env("TILE_LITE_ELITE_LIMIT_SESSION_PER_MIN", 240),
-        60,
+        burst_from_env("TILE_LITE_ELITE_LIMIT_SESSION_BURST", 60),
     )
 }
 
@@ -223,7 +239,7 @@ pub fn global(router: Router<AppState>) -> Router<AppState> {
         router,
         Everything,
         limit_from_env("TILE_LITE_ELITE_LIMIT_GLOBAL_PER_MIN", 1_200),
-        200,
+        burst_from_env("TILE_LITE_ELITE_LIMIT_GLOBAL_BURST", 200),
     )
 }
 
