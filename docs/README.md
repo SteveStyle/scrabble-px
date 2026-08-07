@@ -19,6 +19,7 @@ This folder collects the design notes and operating guides for Tile Lite Elite, 
 - [2.5 Authentication](2.5-authentication.md)
 - [2.6 Authentication Examples](2.6-authentication-examples.md) — worked request/response walkthroughs
 - [2.7 Authentication and Invitations](2.7-authentication-and-invitations.md)
+- [2.8 One Game Model](2.8-one-game-model.md) — one version per game, seat state on the seat, DTOs invisible, the engine as a client
 
 ## 3.x — Lifecycle
 
