@@ -216,6 +216,13 @@ seat for somebody who does not exist should fail there, not two clicks later.
 It is a change from today, where `add_seat` takes a display name and does not
 look it up.
 
+The client picking the name from a list of registered players is what stops
+anybody meeting that error in normal use, and it is where a typo should be
+caught — but it is help, not enforcement. The server resolves the name itself,
+because a client is not the only thing that can call it, and an unresolvable
+name has to be refused wherever it comes from. The list is currently not
+appearing, which is its own defect rather than a reason to soften this.
+
 **`None` starts at `Claimed`.** The creator's own seat and a bot's are filled
 on the spot, so they have no invitation and never pass through `Unsent`. The
 `Option` says so once, instead of every caller checking for a seat kind.
