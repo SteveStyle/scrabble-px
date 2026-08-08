@@ -152,20 +152,29 @@ assume a game is in a single "invitation phase".
 pub struct Seat {
     pub number: u8,
     pub name: String,          // a label until claimed, the player's name after
-    pub claim: SeatClaim,      // how this seat is to be filled
     pub state: SeatState,
 }
 
 pub enum SeatState {
-    Unsent,                                                     // configured, nothing sent yet
+    // Configured, nothing sent yet.
+    UnsentToName  { display_name: String },
+    UnsentToEmail { email: String },
+    UnsentOpen,
+
+    // Sent. Each carries what sending produced.
     InvitedByName  { player: PlayerId, invitation: InvitationId },
     InvitedByEmail { email: String,    invitation: InvitationId },
-    Open           { invitation: InvitationId },                // anyone signed in may claim it
+    Open           { invitation: InvitationId },
+
     Declined { player: PlayerId },                              // declining needs a sign-in
-    Claimed  { player: PlayerId },                              // taken, awaiting start
+    Claimed  { player: PlayerId, filled: Filled },              // taken, awaiting start
     Playing  { player: PlayerId, rack: SeatRack, score: i32 },  // dealt in
     Departed { player: PlayerId, score: i32, how: Departure },
 }
+
+/// How a claimed seat came to be filled — the only thing a seat has to
+/// remember about its own past, and only for as long as it is filled.
+pub enum Filled { ByCreator, ByBot, FromName, FromEmail, FromOpen }
 
 pub enum Departure { Resigned, ForceResigned, TimedOut }
 
@@ -181,29 +190,47 @@ things to remember and become things the type will not let you write:
 
 - `Departed` has no rack, because TIME-3 returns the tiles to the bag.
 - `Claimed` has neither rack nor score, because the deal has not happened.
-- `Unsent` has no invitation id, because no invitation exists yet.
+- The unsent states have no invitation id, because none exists yet.
 - `InvitedByEmail` has no `PlayerId`, because it may be waiting for somebody
   who has not registered yet.
 
 **There is no empty seat.** A seat is added as one of five kinds — the
 creator's own, a bot, by name, by email, or open — and a human seat without a
 claim is refused outright: *"A human seat needs a claim: named, open, or
-email."* So `claim` sits on the seat itself, beside the state, because it is
-settled the moment the seat exists and it is what the seat is *for*.
+email."*
 
 **But adding a seat does not send anything.** That is deliberate — the creator
 can stage several additions and send them together — and it means a seat spends
-real time knowing exactly who it is for while nothing has gone out. `Unsent` is
-that state. It is not "not invited": the name or the address is already on it.
+real time knowing exactly who it is for while nothing has gone out. That is
+not "not invited": the name or the address is already on it.
+
+**And it is three states, not one.** They hold different things — a display
+name, an email address, nothing at all — and each sends to exactly one
+destination:
+
+| | send produces |
+| --- | --- |
+| `UnsentToName` | `InvitedByName` |
+| `UnsentToEmail` | `InvitedByEmail` |
+| `UnsentOpen` | `Open` |
+
+A single `Unsent` with a kind field would put a three-way branch inside the
+send handler, decided by data the state was carrying but not committing to.
+Split, sending is one transition per state and the destination is not a
+choice.
+
+That removes the seat-level `claim` field an earlier draft had. With the
+unsent states carrying what the creator typed, a `claim` beside them would be
+a second copy of it, and the two could disagree.
 
 This was visible before it was modelled. A creator looking at a staged seat
 sees "an invitation that hasn't been sent", and pressing Send changed the
 status without the game's version moving, so the screen did not update. The
 state was always there; only the seat had nowhere to record it.
 
-Structurally, `Unsent` is the one state with no `InvitationId`, which is what
-it means: the invitation has not been created, so there is nothing to address
-an acceptance to.
+Structurally, the unsent states are the ones with no `InvitationId`, which is
+what unsent means: no invitation has been created, so there is nothing to
+address an acceptance to.
 
 **A pending seat is waiting for one of three different things, and they are
 three states rather than one with a label.** `SeatClaim` in the API already
@@ -298,7 +325,7 @@ ask are answered from it:
 
 ```rust
 game.seats()                                   // Iterator<Item = &Seat>
-game.any_seat_is(Unsent)                       // → offer Send
+game.any_seat_unsent()                         // → offer Send
 game.count_of(Declined)
 game.can_start()                               // every seat Claimed
 ```
@@ -331,18 +358,22 @@ stateDiagram-v2
 
     state "Game: Not Started" as NotStarted {
         [*] --> Claimed: add the creator's seat, or a bot
-        [*] --> Unsent: add a seat for somebody
-        Unsent --> InvitedByName: send, named
-        Unsent --> InvitedByEmail: send, by email
-        Unsent --> Open: post it, open to anyone
+        [*] --> UnsentToName: add a seat for a player
+        [*] --> UnsentToEmail: add a seat for an address
+        [*] --> UnsentOpen: add a seat for anyone
+        UnsentToName --> InvitedByName: send
+        UnsentToEmail --> InvitedByEmail: send
+        UnsentOpen --> Open: post
         InvitedByEmail --> InvitedByEmail: send the link again
         InvitedByName --> Claimed: accept
         InvitedByEmail --> Claimed: register or sign in, then accept
         Open --> Claimed: first to accept
         InvitedByName --> Declined: decline
         InvitedByEmail --> Declined: decline
-        Declined --> Unsent: ask somebody else
-        Claimed --> Unsent: withdraw
+        Declined --> UnsentToName: ask somebody else
+        Claimed --> UnsentToName: withdraw
+        Claimed --> UnsentToEmail: withdraw
+        Claimed --> UnsentOpen: withdraw
     }
 
     state "Game: Active" as Active {
@@ -629,27 +660,35 @@ out. A seat that was *open* was never offered to anybody in particular, so
 next person. Today `withdraw_from_seat` marks the invitation rejected either
 way, quietly closing a seat the creator meant to leave open.
 
-Once accepted, a seat is about a `player_id` — the email, the link and the
-openness have done their job and drop out. **`Claimed { player }` therefore
-forgets how the seat was filled**, which is correct for everything except
-undoing it.
+Once accepted, a seat is about a `player_id` — the display name, the email and
+the openness have done their job and drop out. So a claimed seat cannot say
+how it came to be filled, and withdrawal has nowhere to put it back to.
 
-`claim` on the seat answers it. It says what the seat is for, it outlives every
-state the seat passes through, and withdrawal reads it. So withdrawing returns
-the seat to `Unsent` with its claim intact, and the creator sends again,
-changes who it is for, or removes the seat.
+`Filled` on `Claimed` answers it, and it is the only memory any seat keeps.
+Five values, because withdrawal has to work for all five entry paths —
+including the creator's own seat, which anyone may withdraw from since the
+guard is only "do you hold this seat".
 
-(An earlier draft put the invitation id on `Claimed` instead. That does not
-work: the creator's own seat and a bot seat are claimed without any invitation
-ever existing, so the field would be empty for exactly the seats that are
-filled first.)
+| withdrawing from | returns the seat to |
+| --- | --- |
+| `FromName` | `UnsentToName`, the same person |
+| `FromEmail` | `UnsentToEmail`, the same address |
+| `FromOpen` | `UnsentOpen` |
+| `ByCreator` | `UnsentOpen`, for the creator to re-take or re-aim |
+| `ByBot` | — a bot does not withdraw |
+
+Two earlier attempts at this were worse. The invitation id on `Claimed` fails
+for the creator's seat and a bot's, which are claimed with no invitation ever
+existing. A `claim` field on the seat works but duplicates what the unsent
+states already hold. `Filled` lives only where it is needed and holds only
+what cannot be recovered.
 
 **What is still undecided is whether an open seat should re-post itself.**
-Withdrawing leaves it `Unsent` with `claim: Open`, so nothing is lost and the
-creator presses Send. Returning it straight to `Open` would save them the
-step, at the cost of a seat quietly becoming available to strangers again
-without anybody asking. Uniform is the safer default and is what is drawn;
-worth a decision rather than a default.
+Withdrawing leaves it `UnsentOpen`, so nothing is lost and the creator presses
+Send. Going straight back to `Open` saves them the step, at the cost of a seat
+quietly becoming available to strangers again without anybody asking. Uniform
+is the safer default and is what is drawn; worth a decision rather than a
+default.
 
 **The log is for undo, and undo is parked.** Current state stays
 authoritative; behaviour never reads the log. When it arrives it holds the
