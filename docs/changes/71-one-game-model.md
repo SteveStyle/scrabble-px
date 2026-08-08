@@ -159,7 +159,7 @@ pub enum SeatState {
     NotInvited,
     Open,                                                       // anyone signed in may claim it
     Invited  { invitee: Invitee, invitation: InvitationId },
-    Declined { invitee: Invitee },
+    Declined { player: PlayerId },                              // declining needs a sign-in
     Claimed  { player: PlayerId },                              // taken, awaiting start
     Playing  { player: PlayerId, rack: SeatRack, score: i32 },  // dealt in
     Departed { player: PlayerId, score: i32, how: Departure },
@@ -201,6 +201,43 @@ is the consequence, because who may accept is a rule and not a label:
   rather than an `Invitee::Anyone`, because an open seat cannot be *declined*:
   nobody was asked. Keeping it separate means `Declined` is reachable only
   from `Invited`, which is true, instead of representable from both.
+
+**An emailed invitation never becomes a named one.** The recipient does have
+to register before they can accept, but registering is not accepting — they
+may sign up and leave the seat alone for a week, and until they use the link
+there is nothing to say which account is theirs. The **link is the credential,
+not the address**: whoever holds it may accept, under whatever address they
+registered with. Converting the invitation on registration would silently
+narrow who may accept, and would lock out the intended person the moment they
+signed up under a different address than the one that was written down.
+
+What happens instead is that accepting moves the seat to `Claimed { player }`,
+which carries the `PlayerId` because that is what a claimed seat *is*. The
+`Invitee` only has to answer "who may take this seat", and once somebody has,
+the question is over.
+
+That removes a piece of the current schema rather than reshaping it. Accepting
+today runs
+
+```sql
+invited_player_id = coalesce(invited_player_id, ?claimant)
+```
+
+backfilling the row, because one row has to serve as both *who we asked* and
+*who took it*. Those are different states here, holding different data, so
+there is nothing to backfill.
+
+**And `Declined` carries a plain `PlayerId`, not an `Invitee`.** Declining
+requires signing in, so whoever declined is always a known account — including
+the person who followed an emailed link, registered, and then thought better
+of it. An invitation nobody ever answers is not `Declined`; it stays
+`Invited` until the game is swept.
+
+This matters for DEL-2, which blocks deleting an account that a game still
+refers to. `Declined { player }` refers to one, and so does every state after
+it. `Invited { Email }` refers to no account at all, which is correct: there
+is nothing to protect, and the link keeps working whether or not anybody has
+registered.
 
 Seat number and name stay on the struct rather than repeating through six
 variants: they are true of every seat, and duplicating them would mean six
