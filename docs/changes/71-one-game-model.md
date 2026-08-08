@@ -174,7 +174,7 @@ pub enum SeatState {
 
 /// How a claimed seat came to be filled — the only thing a seat has to
 /// remember about its own past, and only for as long as it is filled.
-pub enum Filled { ByCreator, ByBot, FromName, FromEmail, FromOpen }
+pub enum Filled { ForPlayer, ForAnyone, ByCreator, ByBot }
 
 pub enum Departure { Resigned, ForceResigned, TimedOut }
 
@@ -272,19 +272,42 @@ The extra complexity of accepting by email lands in the client's journey
 rather than in the seat: register or sign in, then confirm. The seat passes
 straight from `InvitedByEmail` to `Claimed` when that finishes.
 
-**An emailed invitation never becomes a named one.** The recipient does have
-to register before they can accept, but registering is not accepting — they
-may sign up and leave the seat alone for a week, and until they use the link
-there is nothing to say which account is theirs. The **link is the credential,
-not the address**: whoever holds it may accept, under whatever address they
-registered with. Converting the invitation on registration would silently
-narrow who may accept, and would lock out the intended person the moment they
-signed up under a different address than the one that was written down.
+**An emailed invitation binds to an account when it is accepted, and not
+before.** The email route exists to reach somebody who has no account, or
+whose name the creator does not know; tying the seat to an account as soon as
+one is known is right, and accepting is the first moment one is known *for
+certain*.
 
-What happens instead is that accepting moves the seat straight from
-`InvitedByEmail` to `Claimed`, which carries the `PlayerId` because that is
-what a claimed seat *is*. The invited states only have to answer "who may take
-this seat", and once somebody has, the question is over.
+Accepting moves the seat straight from `InvitedByEmail` to `Claimed`, which
+carries the `PlayerId` because that is what a claimed seat *is*. From then on
+the seat is about a player: if they withdraw it goes back to `UnsentToName`
+for the same person, not to another email.
+
+**Binding earlier — when they follow the link and sign in — is tempting and I
+would not.** It would put the invitation in their list before they accept,
+which is a real benefit for somebody who registers and gets distracted. But
+the window it covers is usually seconds, because accepting is one click away
+on the page they have just signed in on, and it trades a recoverable mistake
+for an unrecoverable one.
+
+**The address invited need not be the address the account uses.** Somebody
+invited at a work address may already have an account under a personal one, or
+register with whichever they prefer. So an email cannot be resolved to an
+account by looking it up — not at send time, and not at sign-in either. The
+only moment the two are reliably connected is when somebody holding the link
+says "this seat is mine".
+
+Signing in as the wrong account — a shared machine, a forwarded email, two
+accounts in one household — is recoverable today: sign in properly and click
+again, because the **link is the credential, not the address** and whoever
+holds it may accept. The code is explicit that there is no proof the confirmer
+is the emailed person. Bind at sign-in and that same slip fixes the seat to an
+account that cannot then accept it, and only the creator can undo it.
+
+A middle option exists — record the account as a hint that does not constrain
+who may accept — and it buys the listing without the lock-in, at the cost of a
+field and a rule about when a hint is honoured. Not obviously worth it, but
+it is the version to reach for if the listing turns out to matter.
 
 That removes a piece of the current schema rather than reshaping it. Accepting
 today runs
@@ -371,9 +394,8 @@ stateDiagram-v2
         InvitedByName --> Declined: decline
         InvitedByEmail --> Declined: decline
         Declined --> UnsentToName: ask somebody else
-        Claimed --> UnsentToName: withdraw
-        Claimed --> UnsentToEmail: withdraw
-        Claimed --> UnsentOpen: withdraw
+        Claimed --> UnsentToName: withdraw, if for a person
+        Claimed --> UnsentOpen: withdraw, if open
     }
 
     state "Game: Active" as Active {
@@ -665,16 +687,26 @@ the openness have done their job and drop out. So a claimed seat cannot say
 how it came to be filled, and withdrawal has nowhere to put it back to.
 
 `Filled` on `Claimed` answers it, and it is the only memory any seat keeps.
-Five values, because withdrawal has to work for all five entry paths —
-including the creator's own seat, which anyone may withdraw from since the
-guard is only "do you hold this seat".
+
+It does not distinguish a seat that was named from one that was emailed,
+because **the difference has stopped mattering by then**. The email route
+exists to reach somebody with no account, or whose name the creator does not
+know; the moment they accept, they have an account and we know it. Sending
+them a second link would be worse than useless — they are in the app, and an
+invitation by name lands in their list. So both return to `UnsentToName`, and
+`Filled` only has to record whether the seat was for a *particular person* or
+for *anyone*.
+
+The creator's own seat is its own value because withdrawing from it means the
+creator has left their own game — the guard is only "do you hold this seat" —
+and returning it to `UnsentToName` for them would be an invitation to
+themselves.
 
 | withdrawing from | returns the seat to |
 | --- | --- |
-| `FromName` | `UnsentToName`, the same person |
-| `FromEmail` | `UnsentToEmail`, the same address |
-| `FromOpen` | `UnsentOpen` |
-| `ByCreator` | `UnsentOpen`, for the creator to re-take or re-aim |
+| `ForPlayer` | `UnsentToName`, that same person |
+| `ForAnyone` | `UnsentOpen` |
+| `ByCreator` | `UnsentOpen`, the creator having left |
 | `ByBot` | — a bot does not withdraw |
 
 Two earlier attempts at this were worse. The invitation id on `Claimed` fails
