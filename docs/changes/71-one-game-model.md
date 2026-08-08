@@ -149,30 +149,61 @@ waiting, one asked and refused, and one never asked, all at once. Nothing may
 assume a game is in a single "invitation phase".
 
 ```rust
+pub struct Seat {
+    pub number: u8,
+    pub name: String,          // a label until claimed, the player's name after
+    pub state: SeatState,
+}
+
 pub enum SeatState {
     NotInvited,
-    Invited,
-    Declined,
-    Claimed,
-    GivenUp,
-    Ready,   // an engine seat, which starts here
+    Invited  { player: PlayerId, invitation: InvitationId },
+    Declined { player: PlayerId },
+    Claimed  { player: PlayerId },                              // taken, awaiting start
+    Playing  { player: PlayerId, rack: SeatRack, score: i32 },  // dealt in
+    Departed { player: PlayerId, score: i32, how: Departure },
+}
+
+pub enum Departure { Resigned, ForceResigned, TimedOut }
+
+pub enum SeatRack {
+    Visible(Rack),   // the viewer's own seat
+    Hidden(u8),      // everyone else's: how many tiles, not which
 }
 ```
 
-A game exposes an iterator over its seats' states, and the questions callers
-actually ask are answered from it:
+**The state carries the data that only exists in that state**, so iterating
+the roster yields the details and not merely a label. Three rules stop being
+things to remember and become things the type will not let you write:
+
+- `Departed` has no rack, because TIME-3 returns the tiles to the bag.
+- `Claimed` has neither rack nor score, because the deal has not happened.
+- `NotInvited` has no player.
+
+Seat number and name stay on the struct rather than repeating through six
+variants: they are true of every seat, and duplicating them would mean six
+places to keep in step and a `match` to read either one.
+
+**Whose turn it is stays an integer on the game**, not a flag on the seat.
+Marking the seat would mean every seat changing on every turn, all of them
+having to agree, and no fact recorded that `current_seat` does not already
+hold. "Is it mine" is a comparison.
+
+A game exposes an iterator over its seats, and the questions callers actually
+ask are answered from it:
 
 ```rust
-game.seats()                                  // Iterator<Item = SeatState>
-game.any_seat_is(SeatState::NotInvited)       // → offer Invite
-game.count_of(SeatState::Declined)
-game.can_start()                              // every seat Claimed or Ready
+game.seats()                                   // Iterator<Item = &Seat>
+game.any_seat_is(NotInvited)                   // → offer Invite
+game.count_of(Declined)
+game.can_start()                               // every seat Claimed
 ```
 
 **Bots are users.** A bot has an account like anyone else, and a seat it holds
-is `Claimed` — so `SeatKind::Engine`, `engine_id` on the seat, and the `Ready`
-variant all go. What engine a bot runs is a fact about that user, not about
-the seat.
+is `Claimed` then `Playing` — so `SeatKind::Engine`, `engine_id` on the seat,
+and any separate "engine is ready" state all go. What engine a bot runs is a
+fact about that user, not about the seat, and `can_start` stops special-casing
+them.
 
 One account per engine, so a rating stays what it is now: today the rated
 subject is the `engine_id`, and "Greedy 1" and "Greedy 2" are seat labels
@@ -183,6 +214,66 @@ same shape as a person doing it, per GAME-3, rather than a case of its own.
 
 Without that, every caller writes `kind == Human && player_id.is_none()` and
 remembers that engines are exempt.
+
+### The two lifecycles together
+
+Seat states are not free of the game's. Each one belongs inside a particular
+game state, which is why they are drawn nested rather than side by side.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> NotStarted: create
+
+    state "Game: Not Started" as NotStarted {
+        [*] --> NotInvited: add seat
+        NotInvited --> Invited: invite
+        Invited --> Claimed: accept
+        Invited --> Declined: decline
+        Declined --> Invited: invite again
+        Claimed --> Declined: withdraw
+    }
+
+    state "Game: Active" as Active {
+        Playing --> Departed: resign, force-resign, time out
+    }
+
+    state "Game: Finished or Aborted<br/>seats frozen as they stand" as Over
+
+    Claimed --> Playing: start, deal racks
+    NotStarted --> Over: creator aborts
+    Active --> Over: a seat goes out, or creator aborts
+    NotStarted --> [*]: RET-3, 30 days
+    Over --> [*]: RET-1, 7 days
+```
+
+Two simplifications, both deliberate. **Finished and Aborted share a box**
+because they do not differ in seat terms — either way the seats stop where
+they are, and this diagram is about seats. Where they differ is rating, which
+is below. And **removing a seat before the start is not drawn**: the seat
+ceases to exist rather than reaching a state.
+
+Aborting gives up every seat, so an aborted game's seats all end `Departed`;
+a game also finishes when only one seat is left `Playing`.
+
+Three things are worth reading off it.
+
+**One arrow crosses the boundary.** `can_start` requires every seat `Claimed`,
+so at the moment the game starts there is nothing else for a seat to be — no
+half-invited roster to carry across. Starting deals the racks, which is the
+same event as `Claimed → Playing`, and that is why the two are one arrow and
+not two facts that have to agree.
+
+**The invitation states exist only before the start**, and `Playing` and
+`Departed` only after it. A seat cannot be invited into a game in progress:
+adding a player mid-game is not a small extension of this model but a
+different one, and the diagram is where that shows up.
+
+**Finished and Aborted freeze the seats** rather than giving them states of
+their own. Which seats are `Playing` and which are `Departed` when the game
+ends is exactly what RATE-2 and RATE-3 turn on — who played to the end, and
+who left early — so the final seat states are the game's result, not
+bookkeeping to be cleared away.
 
 **State is derived from what is there, never from the history.** The log
 exists for undo and audit; behaviour reads the current state. This is the rule
@@ -233,6 +324,14 @@ pub enum SeatRack {
 
 An engine still gets what it needs: the board, its own rack, the rules. What it
 must not get is a confident wrong answer about somebody else's.
+
+**The count is UI work, not just a data fix.** How many tiles each opponent
+holds is public information in this game and players use it — it is how you
+know the bag is empty, who is about to go out, and whether an endgame is worth
+blocking. The board currently cannot show it because the server does not send
+it. Once it does, the seat list has somewhere to put it, and the change is
+worth listing as its own piece of work rather than assumed to fall out of the
+type: a number nobody displays is the same as no number.
 
 **Access is a set of seats, not a tier.** `ViewerAccess` is currently
 `Rejected | Creator | Participant { seat_number }` — one seat, found with
@@ -344,6 +443,34 @@ This is a **breaking wire change**, so the api major version moves: an old
 client cannot read the new shapes, and should be told to update rather than
 left to fail.
 
+### So that this is the last deletion
+
+`snapshot_json` gains a **schema version**: a small integer naming the shape
+of the blob, written by whatever wrote it and read before anything tries to
+interpret it.
+
+It is deliberately not the `version` already in there. That one counts state
+changes within a game and answers "is this snapshot newer than the one I am
+showing". This one identifies the *shape*, changes only when we change it, and
+answers "can this reader understand this blob at all".
+
+Without it, a reader meeting an old blob has no way to know that is what
+happened — it deserializes into something plausible and wrong, or fails with
+an error about a missing field that says nothing about the real cause. With
+it, a future change can branch on the number and convert, so the games survive
+the change instead of being thrown away.
+
+Which is the point: this deletion is licensed because nobody else is mid-game
+today, and that will not be true forever. Adding the field costs a line now
+and is impossible to add retrospectively — an unversioned blob stays
+unversioned, and version 1 can only be declared while we are already
+rewriting every row.
+
+The habit exists in a weaker form already: 4.4 records `#[serde(default)]` on
+fields added since, which recovers a single missing field but cannot express
+a change of shape, and gives a reader no way to tell an old blob from a new
+one with a field omitted.
+
 ## Open questions
 
 **The log is for undo, and undo is parked.** Current state stays
@@ -365,15 +492,24 @@ identity. `current_rating` is neither — it is the player's standing now, read
 from another table and joined in for display. That is a projection, and a game
 object should not carry it at all.
 
-**A bot proxy stands between the server and the bots**, holding whatever
-number of them are playing and driving each when its turn comes. It answers
-the reloaded-game question — a game whose bot is on turn is picked up by the
-proxy rather than by whoever happens to touch the game next, which is what
-covers it today by accident.
+**The harness runs the bots — there is no proxy.** An earlier draft of this
+note put a "bot proxy" between the server and the bots. That was a mistake in
+its own terms: if the DTOs are invisible and the environment is the same
+wherever an engine runs, then nothing mediates, and naming a layer implies one
+this design specifically removes. The harness is a process that runs one or
+more bot clients, each a client in its own right.
+
+Running several in one process is an operational convenience — one thing to
+start, one place for logs — and not a tier in the architecture. A bot run
+singly from somebody's laptop is the same bot.
+
+It answers the reloaded-game question, though: a game whose bot is on turn is
+picked up by the harness rather than by whoever happens to touch the game
+next, which is what covers it today by accident.
 
 It learns of a turn the way any client does — from the message carrying the
 previous move, or the game starting. Polling is for starting up: a game left
-waiting for a bot while the proxy was down is picked up on the first sweep,
+waiting for a bot while the harness was down is picked up on the first sweep,
 and not otherwise. Polling as the normal path would make bots slower than they
 are today, since they currently move inside the triggering request.
 
@@ -409,8 +545,128 @@ client. A bot account is an ordinary account with an owner and an engine, so
 you revoke.
 
 Open: a session lasts ten days at most and ends after forty-eight hours unused
-(ACC-1), so a long-running proxy logs in again as routine, or bot accounts are
-exempt. Worth deciding rather than discovering when the bots go quiet.
+(ACC-1), so a long-running harness logs in again as routine, or bot accounts
+are exempt. Worth deciding rather than discovering when the bots go quiet.
+
+## Documents this changes
+
+Each of these is edited on this branch, in the commit that makes it true, so
+no commit describes a system that does not exist. The two diagrams below are
+the exception the change-note convention allows: they are the agreed design
+before there is code, and they move into 1.2 as it lands.
+
+### 1.2 — the move sequence
+
+Today's diagram has the engine's turn happening *inside* the human's request,
+which is the arrangement this change exists to undo. The bot's move is no
+longer part of anybody else's request:
+
+```mermaid
+sequenceDiagram
+  participant P as Player Client
+  participant S as Server API
+  participant G as Game Service
+  participant RS as Rules (server's own copy)
+  participant B as Bot Client
+  participant RB as Rules (bot's own copy)
+
+  P->>S: submit move
+  S->>G: forward request
+  G->>RS: revalidate and score
+  RS-->>G: legal / score
+  G->>G: apply, bump to version N
+  G-->>S: updated state
+  S-->>P: confirmed at version N
+
+  Note over S,B: the request is over — the bot's turn is not part of it
+
+  G--)B: broadcast version N, redacted
+  B->>RB: search, holding no lock
+  B->>S: submit move
+  S->>G: revalidate — the game may have moved meanwhile
+  G->>G: apply, bump to version N+1
+  G--)P: broadcast version N+1
+```
+
+The confirmation to `P` matters as much as the broadcast: a client that has
+submitted a move waits for its own answer before submitting another, which is
+what makes concurrent submissions from one client a non-question.
+
+### 1.2 — the component diagram
+
+`Engine Proxy` goes. An engine reaches the game through the API like anything
+else, whether it is in the harness, on somebody's laptop, or in the server
+process skipping the socket:
+
+```mermaid
+flowchart LR
+  subgraph Clients
+    Web[Web Client]
+    Desktop[Desktop Client]
+    Cli[CLI Client]
+    Mobile[Mobile Client]
+    Bot[Bot Client<br/>— alone or in the harness]
+  end
+
+  subgraph Server
+    Api[Transport API]
+    Game[Game Service]
+    Rules[Authoritative Rules Engine]
+    InProc[In-process Bot<br/>— a client without the socket]
+    Registry[Engine Registry]
+    Store[Game Store]
+  end
+
+  subgraph Shared Logic
+    SharedRulesClient[Shared Rules Library<br/>— compiled into each client]
+    SharedRulesServer[Shared Rules Library<br/>— compiled into the server]
+  end
+
+  Web --> Api
+  Desktop --> Api
+  Cli --> Api
+  Mobile --> Api
+  Bot --> Api
+  InProc --> Api
+
+  Api --> Game
+  Game --> Store
+  Game --> Rules
+  InProc --> Registry
+  Rules --> SharedRulesServer
+  InProc --> SharedRulesServer
+  Web --> SharedRulesClient
+  Desktop --> SharedRulesClient
+  Cli --> SharedRulesClient
+  Mobile --> SharedRulesClient
+  Bot --> SharedRulesClient
+```
+
+The registry stays, resolving which engine an account runs, but it is reached
+from the in-process bot rather than sitting between the game and the engines.
+
+### The reference documents
+
+| Document | What changes |
+| --- | --- |
+| [4.2 Database Schema](../4.2-database-schema.md) | seat state columns; `game_invitations` reduced to the record of who was asked; `player_ratings.subject_kind` removed; `game_moves` |
+| [4.3 API Schema](../4.3-api-schema.md) | the seat and rack DTOs, `ViewerAccess`, the api major version |
+| [4.4 snapshot_json](../4.4-snapshot-json-schema.md) | the schema version field, seat shape, the event log |
+| [4.5 Data Dictionary](../4.5-data-dictionary.md) | every game field that moves between snapshot, DB and DTO |
+
+Each carries a freshness stamp, so each needs re-verifying against the code
+rather than editing from this note — the note says what was agreed, and the
+stamp claims what was checked.
+
+Two design documents describe the current arrangement and will contradict this
+one until they are revised: [2.4 Persistence](../2.4-persistence.md) on how
+game state is written, and
+[2.7 Authentication and Invitations](../2.7-authentication-and-invitations.md)
+on invitations as their own lifecycle.
+
+And [1.0 Rules](../1.0-rules.md) gains what this settles: bots hold accounts,
+a client authenticates as a person before assuming a bot, and opponents' tile
+counts are public. Undo's rules wait for the undo work itself.
 
 ## What does not change
 
