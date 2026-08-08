@@ -289,10 +289,34 @@ It also keeps what a creator wants to see. A seat reading "Bob declined" or
 "Carol withdrew" says what happened; one that quietly reverted to unsent does
 not.
 
-Two consequences, both already true of declining today. **A spent seat blocks
-the start**, because *"Every seat must be filled before the game can start"* —
-so the creator removes it and adds a replacement. And **a replacement lands at
-the end of the turn order**, until `reorder-seats` moves it.
+**Starting clears the spent seats.** A game begins with only the seats that
+are going to play, so `Declined` and `Withdrawn` are dropped rather than
+blocking the start or waiting for the creator to tidy them away. Adding a
+replacement stays optional: a creator short of a player can add a seat and
+invite somebody, or start with fewer.
+
+That makes `can_start` a statement about what is still *pending* rather than
+about every seat: no seat may be `Unsent` or `Invited`, because those might
+still be filled, and everything that is not spent must be `Claimed`. Spent and
+pending stop being the same thing — one is never coming, the other might.
+
+**Start is the last moment renumbering is free.** Dropping seats renumbers the
+ones that remain, and seat numbers are the turn order. Before the start no
+move has been recorded against a seat number, so nothing refers to the old
+ones; a moment later the log does, and the same tidy-up would be a rewrite.
+
+It follows that **the minimum player count is checked here**, not only at
+creation — a game whose roster has thinned below two people has to be refused
+at the point it would otherwise begin.
+
+Who declined is not lost. `game_invitations` keeps the record of who was asked
+and what they said, which is what DEL-2 reads: an account that turned down a
+game still cannot be deleted while that game exists, even though the seat has
+gone.
+
+And the diagram stops approximating. `Declined` and `Withdrawn` are drawn
+inside **Game: Not Started**, which was true of where they can be *reached*;
+with this rule it is true of where they can *exist*.
 
 **Whose turn it is stays an integer on the game**, not a flag on the seat.
 Marking the seat would mean every seat changing on every turn, all of them
@@ -312,7 +336,7 @@ ask are answered from it:
 game.seats()                                   // Iterator<Item = &Seat>
 game.any_seat_is(Unsent)                       // → offer Send
 game.count_of(Declined)
-game.can_start()                               // every seat Claimed
+game.can_start()                               // nothing pending, two seats left
 ```
 
 **Bots are users.** A bot has an account like anyone else, and a seat it holds
@@ -367,19 +391,20 @@ stateDiagram-v2
 Two simplifications, both deliberate. **Finished and Aborted share a box**
 because they do not differ in seat terms — either way the seats stop where
 they are, and this diagram is about seats. Where they differ is rating, which
-is below. And **removing a seat before the start is not drawn**: the seat
-ceases to exist rather than reaching a state.
+is below. And **seats leaving the roster are not drawn** — removed by the
+creator, or dropped as spent when the game starts. They cease to exist rather
+than reaching a state.
 
 Aborting gives up every seat, so an aborted game's seats all end `Departed`;
 a game also finishes when only one seat is left `Playing`.
 
 Three things are worth reading off it.
 
-**One arrow crosses the boundary.** `can_start` requires every seat `Claimed`,
-so at the moment the game starts there is nothing else for a seat to be — no
-half-invited roster to carry across. Starting deals the racks, which is the
-same event as `Claimed → Playing`, and that is why the two are one arrow and
-not two facts that have to agree.
+**One arrow crosses the boundary.** Starting refuses while any seat is still
+pending and drops the spent ones, so at the moment a game begins every seat
+left is `Claimed` and there is nothing else to carry across. Starting deals
+the racks, which is the same event as `Claimed → Playing`, and that is why the
+two are one arrow rather than two facts that have to agree.
 
 **The invitation states exist only before the start**, and `Playing` and
 `Departed` only after it. A seat cannot be invited into a game in progress:
