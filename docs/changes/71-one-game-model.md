@@ -151,28 +151,27 @@ assume a game is in a single "invitation phase".
 ```rust
 pub struct Seat {
     pub number: u8,
-    pub name: String,          // a label until claimed, the player's name after
+    pub name: String,                    // a label until claimed, the player's name after
+    pub invitation: Option<Invitation>,  // fixed when the seat is created
     pub state: SeatState,
 }
 
+/// How this seat is to be filled. `None` for the creator's own seat and for a
+/// bot's — they are filled on the spot and never invited.
+pub enum Invitation {
+    ByName  { player: PlayerId },
+    ByEmail { email: String },
+    Open,
+}
+
 pub enum SeatState {
-    // Configured, nothing sent yet.
-    UnsentToName  { display_name: String },
-    UnsentToEmail { email: String },
-    UnsentOpen,
-
-    // Sent. Each carries what sending produced.
-    InvitedByName  { player: PlayerId, invitation: InvitationId },
-    InvitedByEmail { email: String,    invitation: InvitationId },
-    Open           { invitation: InvitationId },
-
-    // Both terminal: the seat is spent, and a replacement is a new seat.
-    Declined  { player: PlayerId },                             // asked, said no
-    Withdrawn { player: PlayerId },                             // took it, then left
-
-    Claimed  { player: PlayerId },                              // taken, awaiting start
-    Playing  { player: PlayerId, rack: SeatRack, score: i32 },  // dealt in
-    Departed { player: PlayerId, score: i32, how: Departure },
+    Unsent,                                                     // staged, nothing sent
+    Invited   { id: InvitationId },
+    Claimed   { player: PlayerId },
+    Declined  { player: PlayerId },                             // terminal
+    Withdrawn { player: PlayerId },                             // terminal
+    Playing   { player: PlayerId, rack: SeatRack, score: i32 },
+    Departed  { player: PlayerId, score: i32, how: Departure },
 }
 
 pub enum Departure { Resigned, ForceResigned, TimedOut }
@@ -183,171 +182,128 @@ pub enum SeatRack {
 }
 ```
 
-**The state carries the data that only exists in that state**, so iterating
-the roster yields the details and not merely a label. Three rules stop being
-things to remember and become things the type will not let you write:
+**One lifecycle, three ways of filling a seat.** Send, accept, decline are the
+same three transitions whether the seat was aimed at a player, at an address,
+or at anyone. Only the mechanics differ — what "send" does, and who is allowed
+to accept — so the difference is a field the states are read against, not a
+set of states.
 
+An earlier draft of this note split them: `UnsentToName → InvitedByName`,
+`UnsentToEmail → InvitedByEmail`, `UnsentOpen → Open`. Drawn out, those are
+three parallel lanes that never touch, which is the signature of a dimension
+that wants factoring out rather than three lifecycles. The three things that
+looked like they justified separate states are all predicates on the field:
+
+| | is a |
+| --- | --- |
+| who may accept — that player, whoever holds the link, anyone | guard |
+| which invitations appear in your list — `ByName { you }` | query |
+| which may be re-sent — `ByEmail` | guard |
+| declining an open seat, which nobody was asked for | guard |
+
+None of them is a transition. The test for a separate state is whether the
+legal *moves* differ, and they do not.
+
+**Immutable is what makes the field safe.** The objection to a field like this
+before was that it would be a second copy of what the state already held, free
+to disagree with it. Fixed at creation it cannot: the seat's purpose is
+settled when the seat exists, and a seat aimed somewhere else is a different
+seat — which is exactly what "a spent seat is spent" already established.
+
+That does mean **a name is resolved to a player when the seat is added**,
+rather than when the invitation is sent. Better feedback anyway: staging a
+seat for somebody who does not exist should fail there, not two clicks later.
+It is a change from today, where `add_seat` takes a display name and does not
+look it up.
+
+**`None` starts at `Claimed`.** The creator's own seat and a bot's are filled
+on the spot, so they have no invitation and never pass through `Unsent`. The
+`Option` says so once, instead of every caller checking for a seat kind.
+
+### What each state carries, and what it cannot
+
+- `Unsent` has no invitation id, because no invitation exists yet — it is the
+  one state before there is anything to address an acceptance to.
 - `Departed` has no rack, because TIME-3 returns the tiles to the bag.
 - `Claimed` has neither rack nor score, because the deal has not happened.
-- The unsent states have no invitation id, because none exists yet.
-- `InvitedByEmail` has no `PlayerId`, because it may be waiting for somebody
-  who has not registered yet.
 
 **There is no empty seat.** A seat is added as one of five kinds — the
-creator's own, a bot, by name, by email, or open — and a human seat without a
-claim is refused outright: *"A human seat needs a claim: named, open, or
+creator's own, a bot, by name, by email, or open — and a human seat without
+one is refused outright: *"A human seat needs a claim: named, open, or
 email."*
 
 **But adding a seat does not send anything.** That is deliberate — the creator
 can stage several additions and send them together — and it means a seat spends
-real time knowing exactly who it is for while nothing has gone out. That is
-not "not invited": the name or the address is already on it.
-
-**And it is three states, not one.** They hold different things — a display
-name, an email address, nothing at all — and each sends to exactly one
-destination:
-
-| | send produces |
-| --- | --- |
-| `UnsentToName` | `InvitedByName` |
-| `UnsentToEmail` | `InvitedByEmail` |
-| `UnsentOpen` | `Open` |
-
-A single `Unsent` with a kind field would put a three-way branch inside the
-send handler, decided by data the state was carrying but not committing to.
-Split, sending is one transition per state and the destination is not a
-choice.
-
-That removes the seat-level `claim` field an earlier draft had. With the
-unsent states carrying what the creator typed, a `claim` beside them would be
-a second copy of it, and the two could disagree.
+real time knowing exactly who it is for while nothing has gone out. `Unsent`
+is that state. It is not "not invited": the name or the address is already on
+the seat.
 
 This was visible before it was modelled. A creator looking at a staged seat
 sees "an invitation that hasn't been sent", and pressing Send changed the
-status without the game's version moving, so the screen did not update. The
-state was always there; only the seat had nowhere to record it.
-
-Structurally, the unsent states are the ones with no `InvitationId`, which is
-what unsent means: no invitation has been created, so there is nothing to
-address an acceptance to.
-
-**A pending seat is waiting for one of three different things, and they are
-three states rather than one with a label.** `SeatClaim` in the API already
-names them — `Creator`, `Named`, `Open`, `Emailed` — and it is right where it
-is: it records *how a seat was set up*, which is a separate question from
-where the seat has got to. What the state has to carry is the consequence,
-because who may accept, and how, is a rule:
-
-- **`InvitedByName`** — that player, and nobody else.
-- **`InvitedByEmail`** — whoever holds the link, who need not have an account.
-- **`Open`** — any signed-in player, first to accept.
-
-Folding these into one state with an "invitee" field would be neater to write
-and wrong in three places, all of which are the difference between being asked
-by name and being sent a link:
-
-**Accepting is a different act.** A named invitation is accepted by a caller
-who is already signed in, and the guard is "are you that player". An emailed
-one is accepted by a caller who may have to register first, and the guard is
-"do you hold the link". That is why `/invitations/{id}/preview` exists
-unauthenticated at all — a landing page for somebody with no account yet — and
-it serves only this one state.
-
-**Only one of them can be listed.** "Your invitations" is a query for a
-`player_id`. An emailed invitation to somebody with no account cannot appear
-in anybody's list, because there is nobody to list it for; the link is the
-only way to it. A single `Invited` state hides that a whole feature applies to
-half of it.
-
-**Only one of them can be re-sent.** Re-sending a join link is a real
-operation on `InvitedByEmail`. There is no equivalent for a named invitation,
-which is simply sitting in the invitee's list.
-
-And **`Open` cannot be declined**, because nobody was asked — so `Declined` is
-reachable only from the two invited states, which is true, rather than
-representable from all three.
-
-The extra complexity of accepting by email lands in the client's journey
-rather than in the seat: register or sign in, then confirm. The seat passes
-straight from `InvitedByEmail` to `Claimed` when that finishes.
+status without the game's version moving, so the screen did not update.
 
 **An emailed invitation binds to an account when it is accepted, and not
 before.** The email route exists to reach somebody who has no account, or
-whose name the creator does not know; tying the seat to an account as soon as
-one is known is right, and accepting is the first moment one is known *for
-certain*.
+whose name the creator does not know; accepting is the first moment an account
+is known for certain. From then on the seat is about a player and the address
+is finished with.
 
-Accepting moves the seat straight from `InvitedByEmail` to `Claimed`, which
-carries the `PlayerId` because that is what a claimed seat *is*. From then on
-the seat is about a player and the address is finished with — if they later
-withdraw, the seat records *them*, not the address they were reached at.
+**The address invited need not be the address the account uses.** Somebody
+invited at a work address may already have an account under a personal one. So
+an email cannot be resolved to an account by looking it up — not at send time,
+and not when they sign in either.
 
 **Binding earlier — when they follow the link and sign in — is tempting and I
 would not.** It would put the invitation in their list before they accept,
-which is a real benefit for somebody who registers and gets distracted. But
-the window it covers is usually seconds, because accepting is one click away
-on the page they have just signed in on, and it trades a recoverable mistake
-for an unrecoverable one.
-
-**The address invited need not be the address the account uses.** Somebody
-invited at a work address may already have an account under a personal one, or
-register with whichever they prefer. So an email cannot be resolved to an
-account by looking it up — not at send time, and not at sign-in either. The
-only moment the two are reliably connected is when somebody holding the link
-says "this seat is mine".
-
-Signing in as the wrong account — a shared machine, a forwarded email, two
-accounts in one household — is recoverable today: sign in properly and click
-again, because the **link is the credential, not the address** and whoever
-holds it may accept. The code is explicit that there is no proof the confirmer
-is the emailed person. Bind at sign-in and that same slip fixes the seat to an
-account that cannot then accept it, and only the creator can undo it.
+which helps somebody who registers and gets distracted. But the window is
+usually seconds, because accepting is one click away on the page they have
+just signed in on, and it trades a recoverable mistake for an unrecoverable
+one: signing in as the wrong account is fixable today by signing in properly
+and clicking again, because the **link is the credential, not the address**.
+Bind at sign-in and the same slip fixes the seat to an account that cannot
+then accept it, and only the creator can undo it.
 
 A middle option exists — record the account as a hint that does not constrain
-who may accept — and it buys the listing without the lock-in, at the cost of a
-field and a rule about when a hint is honoured. Not obviously worth it, but
-it is the version to reach for if the listing turns out to matter.
+who may accept — which buys the listing without the lock-in, at the cost of a
+field and a rule about when a hint is honoured. The version to reach for if
+the listing turns out to matter.
 
-That removes a piece of the current schema rather than reshaping it. Accepting
-today runs
+**A spent seat is spent.** Declining and withdrawing are both terminal: the
+seat keeps the name of whoever said no or walked away, and nothing re-invites
+it. A creator who wants somebody else adds a seat for them.
 
-```sql
-invited_player_id = coalesce(invited_player_id, ?claimant)
-```
+That is what lets `Claimed` carry nothing but the player. Three earlier
+attempts at this section were answers to "where does a withdrawn seat go back
+to" — an invitation id on `Claimed`, a `claim` field, a `Filled` enum. The
+question was wrong. Nothing goes back, so nothing has to be remembered, and
+**the pre-start lifecycle is acyclic**: a seat only ever moves forward.
 
-backfilling the row, because one row has to serve as both *who we asked* and
-*who took it*. Those are different states here, holding different data, so
-there is nothing to backfill.
+It also keeps what a creator wants to see. A seat reading "Bob declined" or
+"Carol withdrew" says what happened; one that quietly reverted to unsent does
+not.
 
-**And `Declined` carries a plain `PlayerId`, whichever state it came from.**
-Declining requires signing in, so whoever declined is always a known account —
-including the person who followed an emailed link, registered, and then
-thought better of it. This is the one place the two invited states converge.
-An invitation nobody ever answers is not `Declined`; it stays pending until
-the game is swept.
-
-This matters for DEL-2, which blocks deleting an account that a game still
-refers to. `Declined { player }` refers to one, and so does every state after
-it. `InvitedByEmail` refers to no account at all, which is correct: there is
-nothing to protect, and the link keeps working whether or not anybody has
-registered. Splitting the states makes that a property of the type rather
-than a case to remember.
-
-Seat number and name stay on the struct rather than repeating through six
-variants: they are true of every seat, and duplicating them would mean six
-places to keep in step and a `match` to read either one.
+Two consequences, both already true of declining today. **A spent seat blocks
+the start**, because *"Every seat must be filled before the game can start"* —
+so the creator removes it and adds a replacement. And **a replacement lands at
+the end of the turn order**, until `reorder-seats` moves it.
 
 **Whose turn it is stays an integer on the game**, not a flag on the seat.
 Marking the seat would mean every seat changing on every turn, all of them
 having to agree, and no fact recorded that `current_seat` does not already
 hold. "Is it mine" is a comparison.
 
+**This all matters for DEL-2**, which blocks deleting an account a game still
+refers to. `Declined`, `Withdrawn` and every state from `Claimed` on name a
+player. `Invitation::ByEmail` names no account at all, which is correct: there
+is nothing to protect, and the link keeps working whether or not anybody has
+registered.
+
 A game exposes an iterator over its seats, and the questions callers actually
 ask are answered from it:
 
 ```rust
 game.seats()                                   // Iterator<Item = &Seat>
-game.any_seat_unsent()                         // → offer Send
+game.any_seat_is(Unsent)                       // → offer Send
 game.count_of(Declined)
 game.can_start()                               // every seat Claimed
 ```
@@ -379,19 +335,12 @@ stateDiagram-v2
     [*] --> NotStarted: create
 
     state "Game: Not Started" as NotStarted {
-        [*] --> Claimed: add the creator's seat, or a bot
-        [*] --> UnsentToName: add a seat for a player
-        [*] --> UnsentToEmail: add a seat for an address
-        [*] --> UnsentOpen: add a seat for anyone
-        UnsentToName --> InvitedByName: send
-        UnsentToEmail --> InvitedByEmail: send
-        UnsentOpen --> Open: post
-        InvitedByEmail --> InvitedByEmail: send the link again
-        InvitedByName --> Claimed: accept
-        InvitedByEmail --> Claimed: register or sign in, then accept
-        Open --> Claimed: first to accept
-        InvitedByName --> Declined: decline
-        InvitedByEmail --> Declined: decline
+        [*] --> Claimed: the creator's seat, or a bot
+        [*] --> Unsent: a seat with an invitation
+        Unsent --> Invited: send
+        Invited --> Invited: send the link again
+        Invited --> Claimed: accept
+        Invited --> Declined: decline
         Claimed --> Withdrawn: withdraw
     }
 
@@ -442,7 +391,7 @@ No, and it is worth being precise about how they fail to, because two of the
 four mismatches are the reason this note exists.
 
 **One command, several arrows.** Creating a game sets up every seat at once,
-and each may land in a different state depending on its `SeatClaim`. Starting
+and each may land in a different state depending on its invitation. Starting
 moves every `Claimed` seat to `Playing`. Aborting departs every seat. A
 command is not an arrow; it is a set of them.
 
@@ -671,40 +620,6 @@ a change of shape, and gives a reader no way to tell an old blob from a new
 one with a field omitted.
 
 ## Open questions
-
-**What does withdrawing from an open seat do?** Withdrawing from a seat you
-accepted by name sends it to `Declined` — that person was asked and is now
-out. A seat that was *open* was never offered to anybody in particular, so
-`Declined` is wrong there: it should go back to `Open` and be claimable by the
-next person. Today `withdraw_from_seat` marks the invitation rejected either
-way, quietly closing a seat the creator meant to leave open.
-
-**A spent seat is spent.** Declining and withdrawing are both terminal: the
-seat keeps the name of whoever said no or walked away, and nothing re-invites
-it. A creator who wants somebody else adds a seat for them.
-
-That is what lets `Claimed` carry nothing but the player. Every earlier
-attempt at this section was an answer to "where does a withdrawn seat go
-back to" — the invitation id on `Claimed`, then a `claim` field on the seat,
-then a `Filled` enum. The question turns out to be the wrong one. Nothing
-goes back, so nothing has to be remembered, and **the whole pre-start
-lifecycle becomes acyclic**: a seat only ever moves forward.
-
-It also keeps what a creator actually wants to see. A seat reading "Bob
-declined" or "Carol withdrew" says what happened; a seat that quietly
-reverted to unsent, or vanished, does not.
-
-Two consequences, both already true of declining today:
-
-**A spent seat blocks the start**, because *"Every seat must be filled before
-the game can start"*. So the creator removes it — `remove_seat_from_game`
-exists — and adds a replacement. Two actions where re-inviting was one, in a
-situation that is uncommon and where the creator has a decision to make
-anyway.
-
-**A replacement seat lands at the end of the turn order**, since that is where
-a new seat goes. `reorder-seats` puts it back if the order mattered. Worth
-knowing rather than discovering.
 
 **The log is for undo, and undo is parked.** Current state stays
 authoritative; behaviour never reads the log. When it arrives it holds the
