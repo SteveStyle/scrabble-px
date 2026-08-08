@@ -844,9 +844,17 @@ game state is written, and
 [2.7 Authentication and Invitations](../2.7-authentication-and-invitations.md)
 on invitations as their own lifecycle.
 
-And [1.0 Rules](../1.0-rules.md) gains what this settles: bots hold accounts,
-a client authenticates as a person before assuming a bot, and opponents' tile
-counts are public. Undo's rules wait for the undo work itself.
+And [1.0 Rules](../1.0-rules.md) gains what this settles:
+
+- a seat invited by name must name a registered account, checked when the seat
+  is added rather than when the invitation is sent
+- declining and withdrawing are final for that seat, and starting the game
+  clears them
+- bots hold accounts, and a client authenticates as a person before assuming
+  a bot
+- how many tiles each opponent holds is public
+
+Undo's rules wait for the undo work itself.
 
 ## What does not change
 
