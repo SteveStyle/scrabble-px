@@ -157,11 +157,17 @@ pub struct Seat {
 
 pub enum SeatState {
     NotInvited,
-    Invited  { player: PlayerId, invitation: InvitationId },
-    Declined { player: PlayerId },
+    Open,                                                       // anyone signed in may claim it
+    Invited  { invitee: Invitee, invitation: InvitationId },
+    Declined { invitee: Invitee },
     Claimed  { player: PlayerId },                              // taken, awaiting start
     Playing  { player: PlayerId, rack: SeatRack, score: i32 },  // dealt in
     Departed { player: PlayerId, score: i32, how: Departure },
+}
+
+pub enum Invitee {
+    Player(PlayerId),   // asked by display name
+    Email(String),      // emailed join link — no account need exist yet
 }
 
 pub enum Departure { Resigned, ForceResigned, TimedOut }
@@ -179,6 +185,22 @@ things to remember and become things the type will not let you write:
 - `Departed` has no rack, because TIME-3 returns the tiles to the bag.
 - `Claimed` has neither rack nor score, because the deal has not happened.
 - `NotInvited` has no player.
+- `Invited` has no `PlayerId`, because an emailed seat may be waiting for
+  somebody who has not registered yet.
+
+**An invitation names who may claim the seat, and that differs three ways.**
+`SeatClaim` in the API already says so — `Creator`, `Named`, `Open`, `Emailed`
+— and it is right where it is: it records *how a seat was set up*, which is a
+separate question from where the seat has got to. What the state has to carry
+is the consequence, because who may accept is a rule and not a label:
+
+- **Named** — that player, and nobody else.
+- **Emailed** — whoever holds the link, who need not have an account. This is
+  why `Invited` cannot key on `PlayerId`.
+- **Open** — any signed-in player, first to accept. It gets a state of its own
+  rather than an `Invitee::Anyone`, because an open seat cannot be *declined*:
+  nobody was asked. Keeping it separate means `Declined` is reachable only
+  from `Invited`, which is true, instead of representable from both.
 
 Seat number and name stay on the struct rather than repeating through six
 variants: they are true of every seat, and duplicating them would mean six
@@ -226,9 +248,14 @@ stateDiagram-v2
     [*] --> NotStarted: create
 
     state "Game: Not Started" as NotStarted {
-        [*] --> NotInvited: add seat
-        NotInvited --> Invited: invite
+        [*] --> Claimed: the creator's own seat, or a bot
+        [*] --> Invited: created naming somebody, or emailing them
+        [*] --> Open: created open to anyone
+        [*] --> NotInvited: seat added afterwards
+        NotInvited --> Invited: invite by name or email
+        NotInvited --> Open: open it to anyone
         Invited --> Claimed: accept
+        Open --> Claimed: first to accept
         Invited --> Declined: decline
         Declined --> Invited: invite again
         Claimed --> Declined: withdraw
@@ -274,6 +301,44 @@ their own. Which seats are `Playing` and which are `Departed` when the game
 ends is exactly what RATE-2 and RATE-3 turn on — who played to the end, and
 who left early — so the final seat states are the game's result, not
 bookkeeping to be cleared away.
+
+### Do the arrows match the messages?
+
+No, and it is worth being precise about how they fail to, because two of the
+four mismatches are the reason this note exists.
+
+**One command, several arrows.** Creating a game sets up every seat at once,
+and each may land in a different state depending on its `SeatClaim`. Starting
+moves every `Claimed` seat to `Playing`. Aborting departs every seat. A
+command is not an arrow; it is a set of them.
+
+**Several commands, one arrow.** Resigning through `/actions`, being
+force-resigned through its own route, and timing out through no command at all
+are one arrow, `Playing → Departed`. They differ only in `how`, which is
+exactly why `Departure` is a field rather than three states.
+
+**Commands with no arrow at all.** Placing, passing, exchanging, reordering
+seats, chatting. These change the game — the board, the racks, the scores —
+without moving any seat between states. **This is the class of change that was
+invisible to clients**, because change was tied to writing a seat or
+invitation row. It is the defect the whole note is about, and the diagram is
+where it becomes obvious: most of what happens in a game is not on it.
+
+**Arrows with no command.** Timing out and being swept away are the clock, not
+a caller. Any design built on "state changes because somebody asked" gets
+these wrong — which is why the sweeps have to bump the version and broadcast
+through the same path a request does, rather than quietly writing a row.
+
+So the alignment worth having is not arrow-to-message. It is one level up, and
+it is the only invariant that covers all four cases:
+
+> Everything that changes a game — command, sweep or clock — bumps the one
+> version and publishes the result.
+
+**One arrow does align exactly, and it is the one to watch.** `Invited →
+Claimed` is a single command changing a single seat, and it is the case that
+has been wrong in production twice: the seat changed, the game's version did
+not, and nobody heard.
 
 **State is derived from what is there, never from the history.** The log
 exists for undo and audit; behaviour reads the current state. This is the rule
@@ -472,6 +537,18 @@ a change of shape, and gives a reader no way to tell an old blob from a new
 one with a field omitted.
 
 ## Open questions
+
+**What does withdrawing from an open seat do?** Drawing the seat states
+exposed this and it is not decided. Withdrawing from a seat you accepted by
+name sends it to `Declined` — the person was asked and is now out. But a seat
+that was *open* was never offered to anybody in particular, so sending it to
+`Declined` is wrong: it should go back to `Open` and be claimable again by the
+next person. Today `withdraw_from_seat` marks the invitation rejected either
+way, which quietly closes a seat the creator meant to leave open.
+
+The state needs to remember how the seat was filled to answer this, which is
+the one place `SeatClaim` genuinely belongs in the state rather than beside it.
+Worth settling before the code, because it changes the enum.
 
 **The log is for undo, and undo is parked.** Current state stays
 authoritative; behaviour never reads the log. When it arrives it holds the
