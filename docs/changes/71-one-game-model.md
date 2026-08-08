@@ -575,17 +575,32 @@ one with a field omitted.
 
 ## Open questions
 
-**What does withdrawing from an open seat do?** Drawing the seat states
-exposed this and it is not decided. Withdrawing from a seat you accepted by
-name sends it to `Declined` — the person was asked and is now out. But a seat
-that was *open* was never offered to anybody in particular, so sending it to
-`Declined` is wrong: it should go back to `Open` and be claimable again by the
+**What does withdrawing from an open seat do?** Withdrawing from a seat you
+accepted by name sends it to `Declined` — that person was asked and is now
+out. A seat that was *open* was never offered to anybody in particular, so
+`Declined` is wrong there: it should go back to `Open` and be claimable by the
 next person. Today `withdraw_from_seat` marks the invitation rejected either
-way, which quietly closes a seat the creator meant to leave open.
+way, quietly closing a seat the creator meant to leave open.
 
-The state needs to remember how the seat was filled to answer this, which is
-the one place `SeatClaim` genuinely belongs in the state rather than beside it.
-Worth settling before the code, because it changes the enum.
+The difficulty is a consequence of the model being right elsewhere. Once
+accepted, a seat is about a `player_id` — the email, the link and the openness
+have done their job and drop out. **`Claimed { player }` therefore forgets how
+the seat was filled**, which is correct for everything except undoing it.
+
+The answer is to keep the invitation id on the claimed seat:
+
+```rust
+Claimed { player: PlayerId, invitation: InvitationId },
+```
+
+The invitation record survives by design as the record of who was asked, and
+it already says whether the seat was open, named or emailed. Withdrawal reads
+it and returns the seat to `Open` or to `Declined` accordingly.
+
+That is one field rather than a second copy of the seat's history, and it does
+not reintroduce deriving state from the log — the invitation is a row that is
+looked up, not a sequence that is folded. **Proposed rather than decided**: it
+changes the enum, so it should be settled before the code.
 
 **The log is for undo, and undo is parked.** Current state stays
 authoritative; behaviour never reads the log. When it arrives it holds the
