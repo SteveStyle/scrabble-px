@@ -166,15 +166,14 @@ pub enum SeatState {
     InvitedByEmail { email: String,    invitation: InvitationId },
     Open           { invitation: InvitationId },
 
-    Declined { player: PlayerId },                              // declining needs a sign-in
-    Claimed  { player: PlayerId, filled: Filled },              // taken, awaiting start
+    // Both terminal: the seat is spent, and a replacement is a new seat.
+    Declined  { player: PlayerId },                             // asked, said no
+    Withdrawn { player: PlayerId },                             // took it, then left
+
+    Claimed  { player: PlayerId },                              // taken, awaiting start
     Playing  { player: PlayerId, rack: SeatRack, score: i32 },  // dealt in
     Departed { player: PlayerId, score: i32, how: Departure },
 }
-
-/// How a claimed seat came to be filled — the only thing a seat has to
-/// remember about its own past, and only for as long as it is filled.
-pub enum Filled { ForPlayer, ForAnyone, ByCreator, ByBot }
 
 pub enum Departure { Resigned, ForceResigned, TimedOut }
 
@@ -280,8 +279,8 @@ certain*.
 
 Accepting moves the seat straight from `InvitedByEmail` to `Claimed`, which
 carries the `PlayerId` because that is what a claimed seat *is*. From then on
-the seat is about a player: if they withdraw it goes back to `UnsentToName`
-for the same person, not to another email.
+the seat is about a player and the address is finished with — if they later
+withdraw, the seat records *them*, not the address they were reached at.
 
 **Binding earlier — when they follow the link and sign in — is tempting and I
 would not.** It would put the invitation in their list before they accept,
@@ -393,9 +392,7 @@ stateDiagram-v2
         Open --> Claimed: first to accept
         InvitedByName --> Declined: decline
         InvitedByEmail --> Declined: decline
-        Declined --> UnsentToName: ask somebody else
-        Claimed --> UnsentToName: withdraw, if for a person
-        Claimed --> UnsentOpen: withdraw, if open
+        Claimed --> Withdrawn: withdraw
     }
 
     state "Game: Active" as Active {
@@ -682,45 +679,32 @@ out. A seat that was *open* was never offered to anybody in particular, so
 next person. Today `withdraw_from_seat` marks the invitation rejected either
 way, quietly closing a seat the creator meant to leave open.
 
-Once accepted, a seat is about a `player_id` — the display name, the email and
-the openness have done their job and drop out. So a claimed seat cannot say
-how it came to be filled, and withdrawal has nowhere to put it back to.
+**A spent seat is spent.** Declining and withdrawing are both terminal: the
+seat keeps the name of whoever said no or walked away, and nothing re-invites
+it. A creator who wants somebody else adds a seat for them.
 
-`Filled` on `Claimed` answers it, and it is the only memory any seat keeps.
+That is what lets `Claimed` carry nothing but the player. Every earlier
+attempt at this section was an answer to "where does a withdrawn seat go
+back to" — the invitation id on `Claimed`, then a `claim` field on the seat,
+then a `Filled` enum. The question turns out to be the wrong one. Nothing
+goes back, so nothing has to be remembered, and **the whole pre-start
+lifecycle becomes acyclic**: a seat only ever moves forward.
 
-It does not distinguish a seat that was named from one that was emailed,
-because **the difference has stopped mattering by then**. The email route
-exists to reach somebody with no account, or whose name the creator does not
-know; the moment they accept, they have an account and we know it. Sending
-them a second link would be worse than useless — they are in the app, and an
-invitation by name lands in their list. So both return to `UnsentToName`, and
-`Filled` only has to record whether the seat was for a *particular person* or
-for *anyone*.
+It also keeps what a creator actually wants to see. A seat reading "Bob
+declined" or "Carol withdrew" says what happened; a seat that quietly
+reverted to unsent, or vanished, does not.
 
-The creator's own seat is its own value because withdrawing from it means the
-creator has left their own game — the guard is only "do you hold this seat" —
-and returning it to `UnsentToName` for them would be an invitation to
-themselves.
+Two consequences, both already true of declining today:
 
-| withdrawing from | returns the seat to |
-| --- | --- |
-| `ForPlayer` | `UnsentToName`, that same person |
-| `ForAnyone` | `UnsentOpen` |
-| `ByCreator` | `UnsentOpen`, the creator having left |
-| `ByBot` | — a bot does not withdraw |
+**A spent seat blocks the start**, because *"Every seat must be filled before
+the game can start"*. So the creator removes it — `remove_seat_from_game`
+exists — and adds a replacement. Two actions where re-inviting was one, in a
+situation that is uncommon and where the creator has a decision to make
+anyway.
 
-Two earlier attempts at this were worse. The invitation id on `Claimed` fails
-for the creator's seat and a bot's, which are claimed with no invitation ever
-existing. A `claim` field on the seat works but duplicates what the unsent
-states already hold. `Filled` lives only where it is needed and holds only
-what cannot be recovered.
-
-**What is still undecided is whether an open seat should re-post itself.**
-Withdrawing leaves it `UnsentOpen`, so nothing is lost and the creator presses
-Send. Going straight back to `Open` saves them the step, at the cost of a seat
-quietly becoming available to strangers again without anybody asking. Uniform
-is the safer default and is what is drawn; worth a decision rather than a
-default.
+**A replacement seat lands at the end of the turn order**, since that is where
+a new seat goes. `reorder-seats` puts it back if the order mattered. Worth
+knowing rather than discovering.
 
 **The log is for undo, and undo is parked.** Current state stays
 authoritative; behaviour never reads the log. When it arrives it holds the
