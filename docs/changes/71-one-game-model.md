@@ -305,9 +305,17 @@ ones that remain, and seat numbers are the turn order. Before the start no
 move has been recorded against a seat number, so nothing refers to the old
 ones; a moment later the log does, and the same tidy-up would be a rewrite.
 
-It follows that **the minimum player count is checked here**, not only at
-creation — a game whose roster has thinned below two people has to be refused
-at the point it would otherwise begin.
+It follows that **a game must still have a seat left**. One is enough — a
+game may have a single seat, and `create_game` refuses only an empty roster —
+so the check at start is the same one: something to play with. A roster whose
+every seat turned out to be spent has nothing.
+
+That a one-seat game is legal matters for the finish condition too. Today a
+game ends as soon as one seat or fewer is unresigned, which is true of a solo
+game from its first turn — it finishes after one pass, and records that seat
+as the winner. The rule is about a seat *departing* and leaving one behind,
+not about one merely being there. Raised separately as it is current
+behaviour, not something this change introduces.
 
 Who declined is not lost. `game_invitations` keeps the record of who was asked
 and what they said, which is what DEL-2 reads: an account that turned down a
@@ -336,7 +344,7 @@ ask are answered from it:
 game.seats()                                   // Iterator<Item = &Seat>
 game.any_seat_is(Unsent)                       // → offer Send
 game.count_of(Declined)
-game.can_start()                               // nothing pending, two seats left
+game.can_start()                               // nothing pending, a seat left
 ```
 
 **Bots are users.** A bot has an account like anyone else, and a seat it holds
