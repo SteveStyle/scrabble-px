@@ -213,8 +213,11 @@ seat — which is exactly what "a spent seat is spent" already established.
 That does mean **a name is resolved to a player when the seat is added**,
 rather than when the invitation is sent. Better feedback anyway: staging a
 seat for somebody who does not exist should fail there, not two clicks later.
-It is a change from today, where `add_seat` takes a display name and does not
-look it up.
+`create_game` already does this — it resolves every named invitee up front,
+*"so a typo'd name fails cleanly instead of leaving a half-built game
+behind"* — so the change is to make `add_seat_to_game` agree with it rather
+than to introduce a check. That the two disagree today is the sort of gap this
+note exists to close.
 
 The client picking the name from a list of registered players is what stops
 anybody meeting that error in normal use, and it is where a typo should be
@@ -357,7 +360,7 @@ One account per engine, so a rating stays what it is now: today the rated
 subject is the `engine_id`, and "Greedy 1" and "Greedy 2" are seat labels
 sharing one rating row. Keeping one account per engine preserves that meaning
 exactly, and makes a bot-versus-bot game one account holding two seats — the
-same shape as a person doing it, per GAME-3, rather than a case of its own.
+same shape as a person doing it, per GAME-4, rather than a case of its own.
 `player_ratings.subject_kind` then has one kind and can go.
 
 Without that, every caller writes `kind == Human && player_id.is_none()` and
@@ -527,7 +530,7 @@ type: a number nobody displays is the same as no number.
 and has the other hidden from them, which is a live defect and the reason this
 has to be modelled rather than patched.
 
-GAME-3 says a player may hold more than one seat, so what a viewer may see is
+GAME-4 says a player may hold more than one seat, so what a viewer may see is
 the union of what their seats may see, plus whether they created the game.
 Creator stops being a rank below participant: somebody can be the creator and
 hold two seats at once.
