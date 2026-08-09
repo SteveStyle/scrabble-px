@@ -65,10 +65,94 @@ version_of() {
     | grep -o '"app_version":"[^"]*"' 2>/dev/null | cut -d'"' -f4 || true
 }
 
+# How far behind `main` an environment is, in commits. Answers "is this stale,
+# and by how much" without having to compare two hashes by eye. `--` guards a
+# build id that is not a commit this checkout knows.
+behind_main() {
+  local version="$1" sha
+  sha="${version#*+}"
+  [[ -z "$version" || "$sha" == "$version" ]] && { echo ""; return; }
+  git rev-parse -q --verify "$sha^{commit}" > /dev/null 2>&1 || { echo "unknown commit"; return; }
+  local n
+  n="$(git rev-list --count "$sha..origin/main" 2>/dev/null || true)"
+  case "$n" in
+    "" ) echo "" ;;
+    0  ) echo "up to date with main" ;;
+    1  ) echo "1 commit behind main" ;;
+    *  ) echo "$n commits behind main" ;;
+  esac
+}
+
 echo "==> Environments"
-printf '    %-12s %-18s %s\n' "production" "$(v=$(version_of "$PROD_URL"); echo "${v:-unreachable}")" "what users have"
-printf '    %-12s %-18s %s\n' "rehearsal" "$(v=$(version_of "$REHEARSAL_URL"); echo "${v:-not running}")" "what the release gate checks"
-printf '    %-12s %-18s %s\n' "preview" "$(v=$(version_of "$PREVIEW_URL"); echo "${v:-not running}")" "what you last looked at"
+PROD_V="$(version_of "$PROD_URL")"
+REHEARSAL_V="$(version_of "$REHEARSAL_URL")"
+PREVIEW_V="$(version_of "$PREVIEW_URL")"
+printf '    %-12s %-18s %-28s %s\n' "production" "${PROD_V:-unreachable}" "$(behind_main "$PROD_V")" "what users have"
+printf '    %-12s %-18s %-28s %s\n' "rehearsal" "${REHEARSAL_V:-not running}" "$(behind_main "$REHEARSAL_V")" "what the release gate checks"
+printf '    %-12s %-18s %-28s %s\n' "preview" "${PREVIEW_V:-not running}" "$(behind_main "$PREVIEW_V")" "what you last looked at"
+echo
+
+# What a release from `main` would put out, right now.
+#
+# `Open changes` below answers "where is each change"; this answers the other
+# question, which is the one asked immediately before deciding to ship: *what
+# am I about to release, and is it the right kind of version?* Scanning thirty
+# rows for "merged, awaiting release" is not the same thing, and it misses the
+# commits that carry no issue at all — docs, tooling, the version bump — which
+# is most of what usually sits in main.
+echo "==> A release from main would ship"
+MAIN_VERSION="$(git show origin/main:Cargo.toml 2>/dev/null | grep -m1 '^version' | cut -d'"' -f2 || true)"
+LAST_PROD_TAG="$(git tag --list 'prod-[0-9]*' 2>/dev/null \
+  | sed 's/^prod-//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 || true)"
+
+if [[ -z "$LAST_PROD_TAG" ]]; then
+  printf '    %s\n' "no prod-* tag yet, so there is nothing to compare against"
+else
+  RANGE="prod-$LAST_PROD_TAG..origin/main"
+  COMMIT_COUNT="$(git rev-list --count --no-merges "$RANGE" 2>/dev/null || echo 0)"
+  printf '    %-12s %s\n' "version" "$MAIN_VERSION  (production has $LAST_PROD_TAG)"
+  printf '    %-12s %s\n' "commits" "$COMMIT_COUNT on main since prod-$LAST_PROD_TAG"
+
+  # Issues referenced by those commits, in the order they were merged.
+  SHIPPING="$(git log "$RANGE" --no-merges -E --format=%s 2>/dev/null \
+    | grep -oE 'Refs #[0-9]+' 2>/dev/null | grep -oE '[0-9]+' | sort -un || true)"
+  # `Refs` lives in the body as often as the subject, so look there too.
+  SHIPPING="$(printf '%s\n%s' "$SHIPPING" "$(git log "$RANGE" --no-merges --format=%b 2>/dev/null \
+    | grep -oE 'Refs #[0-9]+' 2>/dev/null | grep -oE '[0-9]+' || true)" | sort -un | grep . || true)"
+
+  if [[ -z "$SHIPPING" ]]; then
+    printf '    %-12s %s\n' "issues" "none — nothing on main references an issue"
+  else
+    FUNCTIONAL=""
+    while read -r num; do
+      [[ -z "$num" ]] && continue
+      meta="$(gh issue view "$num" --json title,labels \
+        --jq '"\(.title)\t\([.labels[].name] | join(","))"' 2>/dev/null || true)"
+      title="${meta%%$'\t'*}"
+      labels="${meta#*$'\t'}"
+      [[ -z "$meta" ]] && { title="(could not read issue)"; labels=""; }
+      # Not everything on main reaches users at a release. Documentation and
+      # non-production tooling run from the working tree or the repo, so they
+      # were live the moment they merged — listing them as "ships" would
+      # overstate what a deploy is actually putting out.
+      case "$labels" in
+        *documentation*|*non-prod-tooling*) reach="live at merge" ;;
+        *prod-tooling*)                     reach="live at merge, unless it is admin-cli" ;;
+        *)                                  reach="reaches users" ;;
+      esac
+      printf '    %-12s #%-4s %-40s %-16s %s\n' \
+        "ships" "$num" "$(printf '%.40s' "$title")" "$labels" "$reach"
+      case "$labels" in *major-function*|*minor-function*) FUNCTIONAL="yes" ;; esac
+    done <<< "$SHIPPING"
+
+    # The same judgement check-release-version.sh makes at deploy time, made
+    # here instead — before the work of a preview and a rehearsal, rather than
+    # after it.
+    if [[ -n "$FUNCTIONAL" && "${MAIN_VERSION%.*}" == "${LAST_PROD_TAG%.*}" ]]; then
+      printf '    %-12s %s\n' "warning" "functional change in a patch bump — see docs/3.3, \"Releases are branches\""
+    fi
+  fi
+fi
 echo
 
 # The branch for an issue, preferring a local one (that is what you are
