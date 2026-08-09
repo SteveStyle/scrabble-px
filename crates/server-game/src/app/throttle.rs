@@ -33,6 +33,10 @@ use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::KeyExtractor;
 use tower_governor::{GovernorError, GovernorLayer};
 
+use axum::response::IntoResponse;
+
+use super::error::ApiProblem;
+
 use super::AppState;
 use axum::Router;
 
@@ -186,12 +190,42 @@ where
     }
 
     let config = GovernorConfigBuilder::default()
-        .period(std::time::Duration::from_millis(60_000 / per_minute.max(1)))
+        .period(period_for(per_minute))
         .burst_size(burst)
         .key_extractor(key)
         .finish()
         .expect("a positive period and burst make a valid governor config");
-    router.layer(GovernorLayer::new(std::sync::Arc::new(config)))
+    router.layer(
+        GovernorLayer::new(std::sync::Arc::new(config)).error_handler(|error| {
+            refusal(error, |wait| {
+                ApiProblem::too_many_requests("You are asking too often — please slow down.", wait)
+            })
+        }),
+    )
+}
+
+/// Both families answer in the shape every other error uses: an `ApiError`
+/// body and a `Retry-After`. Left to itself `tower_governor` writes its own
+/// plain-text body, which a client parsing `ApiError` cannot read — so a limit
+/// would arrive as "something went wrong" rather than as the one thing the
+/// caller could act on.
+fn refusal(error: GovernorError, problem: impl Fn(u32) -> ApiProblem) -> axum::response::Response {
+    match error {
+        GovernorError::TooManyRequests { wait_time, .. } => {
+            // Zero would invite an immediate retry, which is the one thing a
+            // limited caller should not do.
+            problem(u32::try_from(wait_time).unwrap_or(u32::MAX).max(1)).into_response()
+        }
+        other => ApiProblem::internal(format!("rate limiting failed: {other}")).into_response(),
+    }
+}
+
+/// One permit every this often. Shared so the keyed tiers and the global floor
+/// cannot drift apart in how they read their numbers — the config itself is
+/// built twice because naming its type would mean depending on `governor`
+/// directly for one type name.
+fn period_for(per_minute: u64) -> std::time::Duration {
+    std::time::Duration::from_millis(60_000 / per_minute.max(1))
 }
 
 /// Creating accounts, keyed by address. The tightest of the four: a throwaway
@@ -234,12 +268,33 @@ pub fn authenticated(router: Router<AppState>) -> Router<AppState> {
 /// A floor under the service as a whole, after the keyed limits have had
 /// their say. Catches what spreads across addresses and accounts, which the
 /// others by construction cannot.
+///
+/// **Refuses with 503, not 429**, unlike the three keyed tiers. A caller who
+/// meets this one has done nothing wrong — everybody together is asking for
+/// more than there is room for — and the two answers mean different things to
+/// whoever reads them. `ApiProblem::unavailable` makes the same distinction
+/// for the hashing semaphore, and a log that cannot tell an attack from a
+/// capacity shortfall is worth less than one that can.
 pub fn global(router: Router<AppState>) -> Router<AppState> {
-    apply(
-        router,
-        Everything,
-        limit_from_env("TILE_LITE_ELITE_LIMIT_GLOBAL_PER_MIN", 1_200),
-        burst_from_env("TILE_LITE_ELITE_LIMIT_GLOBAL_BURST", 200),
+    let per_minute = limit_from_env("TILE_LITE_ELITE_LIMIT_GLOBAL_PER_MIN", 1_200);
+    let burst = burst_from_env("TILE_LITE_ELITE_LIMIT_GLOBAL_BURST", 200);
+
+    if cfg!(test) {
+        return router;
+    }
+
+    let config = GovernorConfigBuilder::default()
+        .period(period_for(per_minute))
+        .burst_size(burst)
+        .key_extractor(Everything)
+        .finish()
+        .expect("a positive period and burst make a valid governor config");
+    router.layer(
+        GovernorLayer::new(std::sync::Arc::new(config)).error_handler(|error| {
+            refusal(error, |wait| {
+                ApiProblem::unavailable("The server is busy — please try again.", wait)
+            })
+        }),
     )
 }
 
@@ -345,6 +400,85 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             "the fourth is over it, and is told so rather than made to wait: {statuses:?}"
         );
+    }
+
+    /// Being over the limit slows a caller; it does not shut them out for the
+    /// rest of a window. `governor` replenishes one permit per period, so a
+    /// caller who waits one out is served again — which is what makes the
+    /// limits safe to set low enough to matter. A fixed-window limiter would
+    /// pass every other test here and fail this one.
+    #[tokio::test]
+    async fn a_refused_caller_recovers_after_one_period() {
+        // 20ms per permit, so the wait is a test's worth of time rather than a
+        // minute's. The behaviour under test is the replenishment, not the rate.
+        let config = GovernorConfigBuilder::default()
+            .period(std::time::Duration::from_millis(20))
+            .burst_size(1)
+            .key_extractor(ClientAddress)
+            .finish()
+            .expect("a valid config");
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(GovernorLayer::new(std::sync::Arc::new(config)));
+
+        let call = async |app: Router| {
+            app.oneshot(forwarded("203.0.113.7"))
+                .await
+                .expect("the router should answer")
+                .status()
+        };
+
+        assert_eq!(call(app.clone()).await, StatusCode::OK, "the burst");
+        assert_eq!(
+            call(app.clone()).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "and immediately over it"
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+
+        assert_eq!(
+            call(app).await,
+            StatusCode::OK,
+            "a permit replenishes, so the caller is slowed rather than locked out"
+        );
+    }
+
+    /// The limits are read from the environment so they can be retuned on the
+    /// rehearsal host without a rebuild. Every way of not setting one has to
+    /// land on the default, and the case that matters most is the empty
+    /// string: Compose passes `${VAR:-}` through as `""` rather than omitting
+    /// it, which is the opposite of Caddy's `{$VAR:default}` and has already
+    /// taken a deploy down once.
+    #[test]
+    fn an_unusable_limit_falls_back_to_the_default() {
+        // Named for this test alone: the process environment is shared with
+        // every other test in the binary.
+        let name = "TILE_LITE_ELITE_TEST_LIMIT_FALLBACK";
+        let cases = [
+            (None, "unset"),
+            (Some(""), "empty, as Compose passes an unset variable"),
+            (Some("   "), "whitespace"),
+            (Some("not-a-number"), "not a number"),
+            (Some("0"), "zero, which would refuse everything"),
+            (Some("-5"), "negative"),
+        ];
+        for (value, why) in cases {
+            match value {
+                // SAFETY: single-threaded test, and the variable is unique to it.
+                Some(raw) => unsafe { std::env::set_var(name, raw) },
+                None => unsafe { std::env::remove_var(name) },
+            }
+            assert_eq!(limit_from_env(name, 7), 7, "{why} should give the default");
+            assert_eq!(burst_from_env(name, 3), 3, "{why} should give the default");
+        }
+
+        // SAFETY: as above.
+        unsafe { std::env::set_var(name, "42") };
+        assert_eq!(limit_from_env(name, 7), 42, "a real number is used");
+        assert_eq!(burst_from_env(name, 3), 42, "and so is a real burst");
+        // SAFETY: as above.
+        unsafe { std::env::remove_var(name) };
     }
 
     /// One caller's allowance is their own — a busy neighbour must not be

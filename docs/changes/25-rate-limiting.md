@@ -78,6 +78,51 @@ Limits tuned to stop an attacker would refuse ordinary players; limits tuned so
 ordinary players never meet them will not stop a determined attacker. The
 second is the right failure.
 
+## What each refusal means, and where it comes from
+
+Two answers, and keeping them apart is the point. **"You are asking too
+often"** is the caller's own doing and is fixed by slowing down. **"The
+service is not available"** is not their fault at all, and is fixed by
+waiting — it covers busy, down, and unreachable, which a caller cannot tell
+apart and does not need to.
+
+The contract lives in [4.3 API Schema](../4.3-api-schema.md#status-codes-what-each-one-means-and-what-a-caller-does),
+because both ends are written against it. What follows is the same table from
+the server's side: which component produces each code, and on what condition.
+
+| Code | Originates in | Condition |
+| --- | --- | --- |
+| `429` | `throttle::registration` | more than 2 registrations a minute from one address |
+| `429` | `throttle::heavy_auth` | more than 10 logins or password resets a minute from one address |
+| `429` | `throttle::authenticated` | more than 240 requests a minute from one session |
+| `503` | `throttle::global` | more than 1200 requests a minute across everybody |
+| `503` | `with_hash_permit` | all four hashing permits taken, and none freed within the wait |
+| `502` | Caddy | the `server` container is not answering — mid-deploy, crashed, or starting |
+| `504` | Caddy | the server accepted the connection and did not answer in time |
+| *(none)* | the network | no response at all; the client treats it as `502` |
+
+Every one of them carries `Retry-After` and an `ApiError` body, so a caller
+gets the same shape whatever refused them.
+
+That last point took a change to get right. `tower_governor` writes its own
+plain-text body by default, which a client parsing `ApiError` cannot read — a
+limit would have arrived as "something went wrong" rather than as the one
+thing the caller could act on. Both families now go through
+`ApiProblem`, via the layer's `error_handler`.
+
+**Why the global floor is `503` and the keyed tiers are `429`.** A caller who
+trips a keyed tier has personally asked too often; one who trips the floor may
+have made a single request and been unlucky. Telling the second to slow down
+would blame them for somebody else's traffic, and would hide a capacity
+problem inside a log that looks full of abusers. `ApiProblem::unavailable`
+already drew this line for the hashing semaphore; the floor joins it.
+
+**One gap this leaves.** The client classifies `502`–`504` as unreachable and
+has nothing at all for `429` — it has never seen one, because nothing has ever
+produced one. Shipping this without a message for it means a rate-limited
+player sees a generic failure. Raised separately; the server contract is what
+this change settles.
+
 ## Four tiers
 
 Applied outermost first, each answering a different question:
@@ -189,11 +234,14 @@ a router built for the purpose — but the consequence is real: **no test
 exercises the wiring in `build_router`**, only the layer it applies. A tier
 attached to the wrong routes would pass CI.
 
-**Nothing tests replenishment.** "Slowed rather than locked out" is a claim
-made here and in the code and asserted nowhere; a config that locked a caller
-out for a full window would pass everything.
+**Nothing tested replenishment, or the environment parsing.** Both closed:
+`a_refused_caller_recovers_after_one_period` would fail against a fixed-window
+limiter, and `an_unusable_limit_falls_back_to_the_default` covers every way of
+not setting a limit — including the empty string Compose passes for an unset
+variable, which has already taken a deploy down once.
 
-**Nothing tests the global tier**, which is the one that cannot be checked by
-a caller looking at their own traffic.
+**The global tier is not tested in-process**, being the one tier a caller
+cannot detect from their own traffic. It is covered by the load test in #28
+instead, which can generate the traffic needed to reach it.
 
-The test plan records these as gaps rather than quietly leaving them out.
+The test plan records what remains rather than quietly leaving it out.

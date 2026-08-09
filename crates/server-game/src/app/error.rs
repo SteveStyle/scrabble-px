@@ -101,6 +101,19 @@ impl ApiProblem {
     /// "everyone together is asking for more expensive work than there is
     /// room for". Keeping them distinct is what lets a log tell an attack
     /// from a genuine capacity shortfall.
+    /// The caller is asking too often — their fault, and fixable by them,
+    /// which is the whole difference from `unavailable`. Both carry
+    /// `Retry-After`, because "wait, then try again" is the useful part of
+    /// either answer.
+    pub(crate) fn too_many_requests(message: impl Into<String>, retry_after_secs: u32) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: message.into(),
+            blocking_games: Vec::new(),
+            retry_after: Some(retry_after_secs),
+        }
+    }
+
     pub(crate) fn unavailable(message: impl Into<String>, retry_after_secs: u32) -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
