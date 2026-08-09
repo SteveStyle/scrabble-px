@@ -9,6 +9,10 @@
     --sky: #9dc6d8;
     --moss: #8aa07b;
     --rose: #d98f8b;
+    /* Deliberately outside the board's warm range: everything else here is
+       paper, oak, clay, gold. Used to mark what just changed, where reading
+       as "not part of the board" is the whole point. */
+    --mark: #0d222b;
     --panel: rgba(255, 251, 243, 0.82);
     --shadow: 0 24px 60px rgba(50, 29, 8, 0.15);
 }
@@ -451,6 +455,8 @@ button:disabled {
        just at two discrete values, not a continuously shrinking one.
     */
     border-radius: 28%;
+    /* Anchors `::before`/`::after` on `.board-cell-last-move`. */
+    position: relative;
     /* Lets `.tile-face` below size its font off *this* element's actual
        rendered width (cqw) instead of viewport width -- a cell's own
        size already varies continuously with viewport (see below), and
@@ -525,18 +531,57 @@ button:disabled {
 
 /* Marks the squares the most recent move placed a tile on — cleared the
    moment a pass/exchange happens (see `last_move_board_indices` in
-   home.rs), since nothing changed on the board that turn. Deliberately
-   placed after `.board-cell-filled` above (equal specificity, so source
-   order decides) so this actually wins instead of being silently
-   overridden by it — and before the `.premium-*` rules below, so a
-   last-move tile landing on a colored premium square still shows that
-   color through the background, the same look a staged (not-yet-submitted)
-   tile already has on a premium square. */
-.board-cell-last-move {
-    background: linear-gradient(160deg, rgba(212, 162, 58, 0.62), rgba(244, 228, 188, 0.92));
-    box-shadow:
-        inset 0 0 0 2px var(--gold, rgba(212, 162, 58, 0.95)),
-        0 6px 14px rgba(77, 50, 26, 0.1);
+   home.rs), since nothing changed on the board that turn.
+
+   The job is to tell a just-played tile from the *played tiles around it*,
+   not from the square underneath: a played square reports `PremiumDto::Blank`
+   (`board_to_dto`), so a highlighted tile is never on a premium colour. The
+   old gold wash failed at that job by being the same warm gold as an ordinary
+   tile — `#f6dca4 → #ddb771` against `rgba(212,162,58,…)` — leaving a 2px ring
+   to carry the whole difference.
+
+   So: no background of its own, and contrast by *value* instead. `--mark` is
+   the one dark that is deliberately outside the board's warm range. */
+
+/* Both marks are pseudo-elements rather than the cell's own `box-shadow`, and
+   that is load-bearing: `cqw` resolves against the nearest *ancestor*
+   container, and an element is never its own container. A `cqw` ring set on
+   `.board-cell` would size itself off the viewport while the cell sized itself
+   off the grid — right on a desktop, wrong everywhere else. A pseudo-element
+   is a descendant, so it measures the cell exactly as `.tile-face` does. */
+.board-cell-last-move::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    /* Thins with the board rather than staying stubbornly heavy on a phone,
+       where a cell is ~15px and a fixed 3px ring would eat the letter. The
+       floor stops it aliasing away entirely; the cap is for a board larger
+       than any we render today. */
+    border: clamp(1px, 4cqw, 4px) solid var(--mark);
+    pointer-events: none;
+}
+
+/* The cue that survives greyscale, colour blindness, and a phone in sunlight —
+   colour alone is a poor carrier for "this is what just changed". */
+.board-cell-last-move::after {
+    content: "";
+    position: absolute;
+    top: 6cqw;
+    right: 6cqw;
+    width: 30cqw;
+    height: 30cqw;
+    border-radius: 50%;
+    background: var(--mark);
+}
+
+/* Selection wins the ring, and the marker is why it can. The rule below gives
+   a selected cell the clay ring as a `box-shadow`; without this the dark
+   border would paint on top of it and swallow the selection. The corner marker
+   stays, so the cell still says "just played" while selected — which the old
+   treatment could not do, having only its background left. */
+.board-cell-last-move.board-cell-selected::before {
+    display: none;
 }
 
 /* The selection ring must stay visible even when the selected cell is filled /
