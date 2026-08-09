@@ -710,16 +710,31 @@ them), and it is the only way a description is ever readable in a language
 other than the one the server was written in — which matters for a service
 already shipping Spanish dictionaries.
 
-**A change to user details broadcasts a reload.** Not a game event: the game
-has not changed, and its version must not move — otherwise every open game
-would look modified and the version would stop meaning what it means. A
-separate signal, deliberately saying only *something about a user changed*
-rather than what.
+**A change to user details bumps the version of every game that player is in,
+and broadcasts the new state to that game's subscribers.** The ordinary update
+path. No new message type, no "reload" signal, nothing for a client to learn.
 
-Unspecific on purpose. A rename can touch a dozen games; rebuilding and pushing
-each of them is real work for something cosmetic, and clients already know how
-to refetch what they are showing. The cost of the occasional unnecessary
-refetch is far below the cost of getting a targeted invalidation subtly wrong.
+An earlier draft of this note said the opposite — a bare reload, and the
+version must *not* move because the game had not changed. That contradicts the
+first thing this note argues. The complaint at the top is precisely that *the
+version does not move for everything a client can see*, and a name is
+something a client can see. Once names resolve at the point the DTO is built,
+a rename genuinely changes the state a client should be showing, and saying so
+is what the version is for.
+
+It is also required rather than tidy. `should_apply_update` takes an incoming
+state only when its version is higher, so a broadcast carrying the same version
+is a broadcast every client correctly ignores. Sending the data without moving
+the version would be sending nothing.
+
+**And it scales the right way, which is the reverse of what I assumed.** A
+bare reload is work proportional to *everyone connected*, arriving as a
+request storm from clients that mostly did not care. Bumping the affected
+games is work proportional to *the games that one player is in* — a handful,
+touched at the rate people rename themselves, which is rarely. The targeted
+version is the cheap one at any population worth worrying about, and it is
+also the one that needs no round trip: the client is handed the answer rather
+than told to go and ask.
 
 **The harness runs the bots — there is no proxy.** An earlier draft of this
 note put a "bot proxy" between the server and the bots. That was a mistake in
@@ -896,7 +911,8 @@ on invitations as their own lifecycle.
 And [1.0 Rules](../1.0-rules.md) gains what this settles:
 
 - user details — name, email, rating — are always a lookup, never copied into
-  game data, and changing them tells clients to reload
+  game data, and changing them bumps and republishes every game that player is
+  in
 - a seat invited by name must name a registered account, checked when the seat
   is added rather than when the invitation is sent
 - declining and withdrawing are final for that seat, and starting the game
