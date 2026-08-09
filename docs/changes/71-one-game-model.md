@@ -63,6 +63,7 @@ pub enum GameMessage {
     InvitationDeclined { seat: u8 },
     SeatWithdrawn { seat: u8 },
     KeepRequested,
+    UpdateUserDetails { player: PlayerId },
 }
 ```
 
@@ -710,9 +711,26 @@ them), and it is the only way a description is ever readable in a language
 other than the one the server was written in — which matters for a service
 already shipping Spanish dictionaries.
 
-**A change to user details bumps the version of every game that player is in,
-and broadcasts the new state to that game's subscribers.** The ordinary update
-path. No new message type, no "reload" signal, nothing for a client to learn.
+**A change to user details is a `GameMessage` like any other**, sent once per
+game that player is in. It bumps the version, records the event and broadcasts,
+through the same handler as a move.
+
+**It carries nothing to apply**, and that is the point rather than a wrinkle.
+The game never stored the name, so there is nothing in the game to update — the
+message exists only to say *the rendering of this game is out of date*. The
+fresh name arrives because building the DTO resolves it, which is what the
+lookup rule bought.
+
+So the fan-out lives in `update_player_details`: find the player's games, send
+one message to each. Nothing new in the handler, no "reload" signal, and
+nothing for a client to learn — it receives the same update it receives when
+somebody passes.
+
+It also leaves the log honest. A version bump with no event behind it would be
+unexplained the next time anybody reads the history; `UpdateUserDetails` says
+why the number moved without saying what changed, which is all anybody needs.
+And it does not disturb undo, which walks back the last *move* rather than the
+last event.
 
 An earlier draft of this note said the opposite — a bare reload, and the
 version must *not* move because the game had not changed. That contradicts the
