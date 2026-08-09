@@ -683,6 +683,25 @@ identity. `current_rating` is neither — it is the player's standing now, read
 from another table and joined in for display. That is a projection, and a game
 object should not carry it at all.
 
+**And a display name is the same kind of thing.** `ParticipantState` holds one
+as a `String`, copied in when the seat is claimed and written into
+`snapshot_json` with everything else, and nothing ever joins back to `players`.
+So renaming yourself changes one row and leaves a stale copy in every game you
+are in — visible to a client that has just started, because the copy is what
+the server sends.
+
+A game should say *who* is in a seat and let the answer to *what are they
+called* come from the row that knows. That is the same rule as the rating, and
+finding it twice by accident is the argument for stating it once: **a game owns
+what happened in it, and nothing about a player that can change independently
+of it.**
+
+Chat messages and move descriptions are the awkward corner. A message from when
+somebody was called something else is arguably a true record and can keep its
+copy; a description baked as prose — `format!("{display_name} was retired…")` —
+cannot be re-resolved at all, which is an argument for descriptions carrying
+ids and being rendered at display time. Not settled here.
+
 **The harness runs the bots — there is no proxy.** An earlier draft of this
 note put a "bot proxy" between the server and the bots. That was a mistake in
 its own terms: if the DTOs are invisible and the environment is the same
