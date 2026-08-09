@@ -90,16 +90,16 @@ The contract lives in [4.3 API Schema](../4.3-api-schema.md#status-codes-what-ea
 because both ends are written against it. What follows is the same table from
 the server's side: which component produces each code, and on what condition.
 
-| Code | Originates in | Condition |
-| --- | --- | --- |
-| `429` | `throttle::registration` | more than 2 registrations a minute from one address |
-| `429` | `throttle::heavy_auth` | more than 10 logins or password resets a minute from one address |
-| `429` | `throttle::authenticated` | more than 240 requests a minute from one session |
-| `503` | `throttle::global` | more than 1200 requests a minute across everybody |
-| `503` | `with_hash_permit` | all four hashing permits taken, and none freed within the wait |
-| `502` | Caddy | the `server` container is not answering — mid-deploy, crashed, or starting |
-| `504` | Caddy | the server accepted the connection and did not answer in time |
-| *(none)* | the network | no response at all; the client treats it as `502` |
+| Code | HTTP text | Originates in | Condition |
+| --- | --- | --- | --- |
+| `429` | Too Many Requests | `throttle::registration` | more than 2 registrations a minute from one address |
+| `429` | Too Many Requests | `throttle::heavy_auth` | more than 10 logins or password resets a minute from one address |
+| `429` | Too Many Requests | `throttle::authenticated` | more than 240 requests a minute from one session |
+| `503` | Service Unavailable | `throttle::global` | more than 1200 requests a minute across everybody |
+| `503` | Service Unavailable | `with_hash_permit` | all four hashing permits taken, and none freed within the wait |
+| `502` | Bad Gateway | Caddy | the `server` container is not answering — mid-deploy, crashed, or starting |
+| `504` | Gateway Timeout | Caddy | the server accepted the connection and did not answer in time |
+| *(none)* | — | the network | no response at all; the client treats it as `502` |
 
 Every one of them carries `Retry-After` and an `ApiError` body, so a caller
 gets the same shape whatever refused them.
