@@ -4,6 +4,57 @@ Design note for issue #25, which absorbed #12, #13 and #14. **Built, not yet
 released** — this records the shape for review before it ships, and the test
 plan alongside it is [25-rate-limiting-test-plan.md](25-rate-limiting-test-plan.md).
 
+## One problem, three changes
+
+Too much work arriving at a small box. Three issues divide it, and they are
+sequenced because each needs the one before it.
+
+| | | |
+| --- | --- | --- |
+| **#11** | how much runs **at once** | done, live |
+| **#25** | how often anyone may **ask** | this change |
+| **#28** | whether the numbers are **right** | next |
+
+**#11 is what protects availability.** `spawn_blocking` around Argon2 so a
+hash stops occupying an async worker, and semaphores bounding how many hashes
+and engine searches run together. It holds against a distributed attempt
+because it does not care where requests come from. When saturated it answers
+`503` with a retry hint rather than queueing.
+
+**#25 is the weakest of the three against anything determined**, and that is
+fine — it is not what it is for. It stops one noisy caller monopolising the
+service and returns an honest `429` instead of a queue that grows behind a
+semaphore. Without it, #11 converts a load problem into a latency problem and
+hides it.
+
+**#28 is how any of this stays true.** The numbers here are a first guess
+sized by hand with `curl`; nothing measures them, and nothing catches them
+drifting. It runs against rehearsal, on the hardware the limits exist to
+protect, and asserts the *rules* rather than the throughput — throughput ages,
+rules do not.
+
+The order is not arbitrary. Limits without concurrency bounds protect nothing
+under real load; measurement before both has nothing to measure.
+
+### Where they meet, and one place they disagree
+
+Issue #28 pins what #11 and #25 claim, so the claims have to be worth pinning. Two
+of its rules land on this change:
+
+**`/health` is never limited**, so `deploy.sh`'s smoke test and
+`rollback.sh`'s health poll cannot be throttled during an incident. Held here,
+and asserted by `check-rate-limits.sh` already.
+
+**The global limit should answer `503`, not `429`** — the codes distinguish
+"you are asking too often" from "the server is full", and a caller can act
+differently on each. **This change does not do that.** All four tiers answer
+`429`, because they are all `tower_governor` and that is its refusal. The
+distinction is real and worth having, and #28 will assert it, so it is better
+settled before release than found by the test that was written to trust it.
+
+Its third claim on the pair — the semaphore answering `503` with a retry hint
+rather than queueing — is already true, in `with_hash_permit`.
+
 ## What this is for, and what it is not
 
 The service already bounds how much expensive work runs *at once*: `hash_limit`
