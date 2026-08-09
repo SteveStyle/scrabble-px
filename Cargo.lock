@@ -19,16 +19,20 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "admin-cli"
-version = "0.4.22"
+version = "0.4.25"
 dependencies = [
  "api",
+ "axum",
  "chrono",
  "clap",
  "rand 0.8.5",
  "reqwest",
  "serde",
  "serde_json",
+ "server-game",
+ "tokio",
  "unicode-width",
+ "uuid",
 ]
 
 [[package]]
@@ -107,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "api"
-version = "0.4.22"
+version = "0.4.25"
 dependencies = [
  "serde",
 ]
@@ -1613,7 +1617,7 @@ checksum = "a3d8a32ae18130a3c84dd492d4215c3d913c3b07c6b63c2eb3eb7ff1101ab7bf"
 
 [[package]]
 name = "engine-core"
-version = "0.4.22"
+version = "0.4.25"
 dependencies = [
  "rules-shared",
 ]
@@ -4361,7 +4365,7 @@ dependencies = [
 
 [[package]]
 name = "rules-shared"
-version = "0.4.22"
+version = "0.4.25"
 dependencies = [
  "serde",
  "serde_json",
@@ -4614,7 +4618,7 @@ dependencies = [
 
 [[package]]
 name = "server-game"
-version = "0.4.22"
+version = "0.4.25"
 dependencies = [
  "api",
  "argon2",
@@ -5344,7 +5348,7 @@ dependencies = [
 
 [[package]]
 name = "tile-lite-elite-ui"
-version = "0.4.22"
+version = "0.4.25"
 dependencies = [
  "api",
  "console_error_panic_hook",

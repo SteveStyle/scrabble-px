@@ -60,12 +60,20 @@ DEPLOY_HOST="${DEPLOY_HOST:-129.151.69.246}"
 DEPLOY_USER="${DEPLOY_USER:-ubuntu}"
 DEPLOY_SSH_KEY="${DEPLOY_SSH_KEY:-$HOME/.ssh/oracle_tile_lite_elite}"
 DEPLOY_REMOTE_DIR="${DEPLOY_REMOTE_DIR:-tile-lite-elite}"
-# What production is gated on. This is the *rehearsal* host, not the local
-# preview: "did the release mechanism work against a real host" is a far
-# stronger guarantee than "did you look at it on localhost", and the second
-# is what this used to check. STAGING_URL is still honoured so an existing
-# environment or muscle-memory override keeps working.
+# Production is gated on both hosts, because they answer different questions.
+#
+# The rehearsal host answers "did the release mechanism work against a real
+# host", which is a far stronger guarantee than "did you look at it on
+# localhost" — and when it arrived it replaced the preview check on exactly
+# that reasoning. That was half right. Stronger at proving the *deploy*, and
+# no answer at all to the other question preview is for: did somebody use the
+# change and find it does what was wanted. The two were one environment before
+# they were split, which is how one check came to stand for both.
+#
+# STAGING_URL is still honoured so an existing environment or muscle-memory
+# override keeps working.
 REHEARSAL_URL="${REHEARSAL_URL:-${STAGING_URL:-https://129.151.84.183.sslip.io}}"
+PREVIEW_URL="${PREVIEW_URL:-http://localhost:8081}"
 # The URL of the host this script is acting on — production by default, the
 # rehearsal host when a wrapper says so. Named TARGET_URL rather than
 # PROD_URL because it is not always production: deploy-preview.sh and
@@ -302,6 +310,39 @@ fi
 if (( ! IS_RELEASE )); then
   echo "==> Skipping the rehearsal gate: this deploy is the rehearsal"
 else
+# The user-testing gate — and it is worth being honest about what it can do.
+# It proves this commit was *deployed* to preview. It cannot prove anybody
+# looked at it, and nothing else in the pipeline can either: whether a person
+# formed a judgement is not observable from here. So this is a prompt, not a
+# proof, and the only one available for the question.
+#
+# That is also the argument against having it. A technical change may be
+# better tested elsewhere, and user testing could reasonably happen against a
+# branch — which the process does not currently allow, since preview deploys
+# HEAD. Both are reasons to skip it deliberately, not reasons to drop it:
+# skipping is visible, and absence is not.
+#
+# Skippable, because some changes have nothing a person can look at — release
+# tooling, most obviously, which is exactly the kind of change that cannot be
+# rehearsed either. The variable says "there was nothing to see", not "I did
+# not look", so it is named for the gate rather than for the inconvenience.
+if (( IS_RELEASE )) && [[ "${DEPLOY_SKIP_PREVIEW:-}" != "1" ]]; then
+  PREVIEW_HEALTH="$(curl -sf --max-time 5 "$PREVIEW_URL/health" 2>/dev/null || true)"
+  PREVIEW_VERSION="$(printf '%s' "$PREVIEW_HEALTH" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || true)"
+  PREVIEW_SHA="${PREVIEW_VERSION#*+}"
+  if [[ -z "$PREVIEW_VERSION" ]]; then
+    echo "error: preview ($PREVIEW_URL) isn't running — look at this commit there first:" >&2
+    echo "           ./scripts/deploy-preview.sh" >&2
+    echo "       DEPLOY_SKIP_PREVIEW=1 if there is nothing for a person to look at." >&2
+    exit 1
+  elif [[ "$PREVIEW_SHA" != "$TARGET_SHA" ]]; then
+    echo "error: preview is running commit $PREVIEW_SHA, not $TARGET_SHA ($DEPLOY_REF)." >&2
+    echo "       Look at this commit there first: ./scripts/deploy-preview.sh" >&2
+    echo "       DEPLOY_SKIP_PREVIEW=1 if there is nothing for a person to look at." >&2
+    exit 1
+  fi
+fi
+
 STAGING_HEALTH="$(curl -sf --max-time 5 "$REHEARSAL_URL/health" 2>/dev/null || true)"
 # `|| true` on every one of these: `grep` exits 1 when it matches nothing,
 # and under `set -o pipefail` that kills the assignment outright — so the
@@ -578,9 +619,13 @@ else
   # and check-commit-stamp.sh validates the stamp against the commit's own
   # tree. An uncommitted edit to API_VERSION would otherwise produce a
   # stamp that fails its own check.
+  # One parser, shared with check-commit-stamp.sh and tested in
+  # scripts/tests/ — rustfmt wraps this declaration once the numbers grow,
+  # and both readers assumed one line. It exits non-zero rather than
+  # printing nothing, so a version that cannot be read stops the bump
+  # instead of writing a stamp its own checker would reject.
   BUMP_API="$(git -C "$REPO_DIR" show HEAD:crates/api/src/lib.rs \
-    | grep -m1 'API_VERSION: ApiVersion' \
-    | grep -o 'major: [0-9]*, minor: [0-9]*' | sed 's/major: //; s/, minor: /./')"
+    | "$(dirname "$0")/read-api-version.sh")"
   git -C "$REPO_DIR" commit --quiet \
     -m "app $NEXT_VERSION api $BUMP_API: bump dev version following production release" \
     -m "Production now runs $DEPLOYED_VERSION+$TARGET_SHA."

@@ -29,24 +29,90 @@ pub(crate) async fn admin_delete_user(
     State(state): State<AppState>,
     Path(player_id): Path<String>,
 ) -> Result<StatusCode, ApiProblem> {
-    // Refuse while the account is mid-game. An unclaimed seat cannot take its
-    // turn, so every other player waits until the move time limit retires it.
-    // Finish or abort the game first — or wait, since a game always times out
-    // eventually (see MAX_MOVE_TIME_LIMIT_SECONDS).
+    // Refuse while anything still refers to the account — a game it created,
+    // a seat it holds, or an invitation it has not answered
+    // (docs/1.0-rules.md, DEL-2).
+    //
+    // Deleting a user with games attached is what raises every awkward
+    // question: unclaimed seats, an unmanageable game whose creator is gone,
+    // another player's history half-owned by an account that no longer
+    // exists. Requiring the references to be gone first removes all of them.
+    //
+    // It is only reasonable because references expire on their own: a
+    // completed game is swept a week after it ends and takes its invitations
+    // with it, and an unstarted one runs a 30-day countdown unless its creator
+    // keeps answering to keep it — which a departing user will not. So the
+    // admin waits, or deletes the games explicitly first. Two ordered commands
+    // rather than one with cascading semantics.
     {
+        let mentioned_by = persistence::game_ids_mentioning_player(&state.db, &player_id)
+            .await
+            .map_err(ApiProblem::from_sqlx)?;
+
         let games = state.games.read().await;
-        let active: Vec<&str> = games
+        let attached: Vec<&GameSession> = games
             .values()
-            .filter(|game| game.has_active_seat_for(&player_id))
-            .map(|game| game.id.as_str())
+            .filter(|game| {
+                game.creator_player_id.as_deref() == Some(player_id.as_str())
+                    || game
+                        .participants
+                        .iter()
+                        .any(|seat| seat.player_id.as_deref() == Some(player_id.as_str()))
+            })
             .collect();
-        if !active.is_empty() {
-            return Err(ApiProblem::bad_request(format!(
-                "That account is playing in {} game(s) still under way ({}). \
-                 Finish or abort them first.",
-                active.len(),
-                active.join(", "),
-            )));
+        // One row per game, whatever number of ways it refers to the account.
+        // A creator who invited somebody is both attached and mentioned, and
+        // listing their own game twice would read as two problems.
+        let mentioned: Vec<&GameSession> = mentioned_by
+            .iter()
+            .filter(|game_id| !attached.iter().any(|game| &&game.id == game_id))
+            .filter_map(|game_id| games.get(game_id))
+            .collect();
+
+        // Sent as data rather than written into the message. Whoever reads
+        // this is deciding whether to wait or to act, and that decision wants
+        // the same table they have just seen from `games list` — which the
+        // client is far better placed to draw than the server is.
+        let created_at = persistence::created_at_by_game(&state.db)
+            .await
+            .map_err(ApiProblem::from_sqlx)?;
+        let last_activity = persistence::last_activity_by_game(&state.db)
+            .await
+            .map_err(ApiProblem::from_sqlx)?;
+
+        let mut blocking: Vec<api::AdminGameSummaryDto> = Vec::new();
+        for game in attached.iter().chain(mentioned.iter()) {
+            // Each seat's invitation status comes from the invitations table,
+            // not the session, so it has to be filled in — without it every
+            // empty seat reads "unclaimed", and a seat somebody turned down
+            // looks like one nobody was ever asked about.
+            let mut dto = game.to_dto();
+            let invitations = persistence::get_invitations_for_game(&state.db, &game.id)
+                .await
+                .map_err(ApiProblem::from_sqlx)?;
+            crate::game_state::attach_invitation_status(&mut dto.participants, &invitations);
+            blocking.push(api::AdminGameSummaryDto {
+                id: game.id.clone(),
+                status: game.status,
+                created_at: created_at.get(&game.id).copied().unwrap_or(0),
+                last_activity_at: last_activity.get(&game.id).copied().unwrap_or(0),
+                participants: dto.participants,
+            });
+        }
+
+        if !blocking.is_empty() {
+            // No counts and no agreement. The list below may hold one game or
+            // a dozen, in any mix of states, and a sentence that tries to
+            // describe them ends up either wrong or written three ways — while
+            // the rows say all of it already, including why each one counts:
+            // the account is visible in the seats.
+            return Err(ApiProblem::blocked_by_games(
+                "That account cannot be deleted yet. The games below still refer to \
+                 it. Please wait until they are gone, then delete the account. Games \
+                 are removed automatically from a week after their last activity, and \
+                 an invitation goes with the game holding it.",
+                blocking,
+            ));
         }
     }
 
@@ -172,7 +238,7 @@ pub(crate) async fn admin_list_games(
                     player_id: participant.player_id.clone(),
                     engine_id: participant.engine_id.clone(),
                     score: participant.score,
-                    // Not meaningful in an admin summary view.
+                    // Filled in below, per game.
                     invitation_status: None,
                     invited_email: participant.invited_email.clone(),
                     rating_before: None,
@@ -183,6 +249,16 @@ pub(crate) async fn admin_list_games(
                 .collect(),
         })
         .collect();
+    // Each seat's invitation status lives in its own table, so it has to be
+    // filled in per game. Left out while this column showed names only; now
+    // that an empty seat says which kind of empty it is, leaving it out made
+    // a declined seat look like one nobody had been asked about.
+    for summary in &mut summaries {
+        let invitations = persistence::get_invitations_for_game(&state.db, &summary.id)
+            .await
+            .map_err(ApiProblem::from_sqlx)?;
+        crate::game_state::attach_invitation_status(&mut summary.participants, &invitations);
+    }
     summaries.sort_by_key(|s| std::cmp::Reverse(s.created_at));
 
     Ok(Json(summaries))

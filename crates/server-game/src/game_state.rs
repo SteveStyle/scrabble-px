@@ -167,8 +167,11 @@ pub fn redact_game_state(mut dto: GameStateDto, access: &ViewerAccess) -> GameSt
 /// every seat is already claimed by the time it matters (`start_game`
 /// requires full seating), so `invitation_status: None` from `to_dto()`
 /// is already correct and this call is skipped entirely.
-pub fn attach_invitation_status(dto: &mut GameStateDto, invitations: &[InvitationRecord]) {
-    for participant in &mut dto.participants {
+pub fn attach_invitation_status(
+    participants: &mut [api::ParticipantDto],
+    invitations: &[InvitationRecord],
+) {
+    for participant in participants.iter_mut() {
         if participant.kind != SeatKind::Human || participant.player_id.is_some() {
             continue;
         }
@@ -358,6 +361,19 @@ impl GameSession {
     /// observable change strictly increases `version`. Over-bumping (e.g. a
     /// resignation that both records the exit and ends the game) is harmless —
     /// only monotonicity matters, not contiguity.
+    /// Record that something about this game changed, for a change the
+    /// session itself cannot see.
+    ///
+    /// A seat's invitation status lives in `game_invitations`, not on the
+    /// `GameSession`, so sending, accepting, declining or withdrawing an
+    /// invitation alters what a client displays without altering anything
+    /// here. `version` is what every client checks — an update whose version
+    /// has not moved is discarded, by broadcast and by explicit refresh
+    /// alike — so those handlers have to say so themselves.
+    pub fn touch(&mut self) {
+        self.mark_changed();
+    }
+
     fn mark_changed(&mut self) {
         self.version += 1;
     }
@@ -570,6 +586,36 @@ impl GameSession {
     /// no background scheduler in this server, so this is checked lazily
     /// whenever a game is touched (see `expire_overdue_turns` in `app.rs`)
     /// rather than firing exactly on the deadline.
+    /// The number the next record takes.
+    ///
+    /// A sequence, not the turn. `move_number` used to be `turn_number`, which
+    /// works only while every record advances the turn — and several do not.
+    /// A seat resigning off turn, a creator force-resigning one, a timeout on
+    /// a seat that was not on turn, and an abort all record without moving the
+    /// game on, so the next record claimed a number already taken. That breaks
+    /// `unique(game_id, move_number)` and the row id derived from it
+    /// (`persistence::save_game`), and the failed write rolls back while this
+    /// session keeps the change — leaving an aborted game that comes back
+    /// alive on the next restart.
+    ///
+    /// Taken as the highest number so far rather than the count, because a
+    /// database written by the old code may hold gaps, and a count would walk
+    /// straight into one.
+    ///
+    /// **The name no longer describes it.** It numbers events, and a
+    /// resignation, a retirement, an abort and a timeout are not moves. It is
+    /// a per-game event sequence — which is the third counter of that shape
+    /// here, alongside `version`, and whether they should be one is part of
+    /// the design note on how a client knows a game changed.
+    fn next_move_number(&self) -> i64 {
+        self.moves
+            .iter()
+            .map(|record| record.move_number)
+            .max()
+            .unwrap_or(0)
+            + 1
+    }
+
     pub fn apply_move_timeout(&mut self) -> bool {
         if self.status != GameStatus::Active {
             return false;
@@ -590,8 +636,9 @@ impl GameSession {
         // retire a seat; both must return its tiles, or a timeout strands a
         // rack exactly as a resignation used to.
         self.return_rack_to_bag(seat);
+        let next_move_number = self.next_move_number();
         self.moves.push(MoveRecord {
-            move_number: self.turn_number,
+            move_number: next_move_number,
             seat_number: seat,
             move_type: "timeout".to_string(),
             main_word: None,
@@ -789,6 +836,7 @@ impl GameSession {
             dictionary: rules_shared::dictionary_by_name(&self.rules.language)
                 .expect("game rules should reference a known dictionary"),
         };
+        let next_move_number = self.next_move_number();
         let participant = self
             .participants
             .get_mut(seat_number as usize)
@@ -825,7 +873,7 @@ impl GameSession {
             })
             .collect();
         self.moves.push(MoveRecord {
-            move_number: self.turn_number,
+            move_number: next_move_number,
             seat_number,
             move_type: "place".to_string(),
             main_word: Some(validated.preview.main_word.clone()),
@@ -850,12 +898,13 @@ impl GameSession {
         ensure_active_turn(self, seat_number)?;
         let move_elapsed_us =
             ((now_unix_seconds() - self.turn_started_at).max(0) as u64) * 1_000_000;
+        let next_move_number = self.next_move_number();
         let participant = self
             .participants
             .get(seat_number as usize)
             .ok_or_else(|| format!("Unknown seat {seat_number}"))?;
         self.moves.push(MoveRecord {
-            move_number: self.turn_number,
+            move_number: next_move_number,
             seat_number,
             move_type: "pass".to_string(),
             main_word: None,
@@ -880,6 +929,7 @@ impl GameSession {
         if self.bag.len() < tiles.len() {
             return Err("Not enough tiles left in bag to exchange".to_string());
         }
+        let next_move_number = self.next_move_number();
         let participant = self
             .participants
             .get_mut(seat_number as usize)
@@ -896,7 +946,7 @@ impl GameSession {
         refill_rack(&mut participant.rack, &mut self.bag, self.rules.rack_size);
 
         self.moves.push(MoveRecord {
-            move_number: self.turn_number,
+            move_number: next_move_number,
             seat_number,
             move_type: "exchange".to_string(),
             main_word: None,
@@ -1027,6 +1077,7 @@ impl GameSession {
         move_type: &str,
         reason: &str,
     ) -> Result<(), String> {
+        let next_move_number = self.next_move_number();
         let participant = self
             .participants
             .get_mut(seat_number as usize)
@@ -1035,7 +1086,7 @@ impl GameSession {
         let description = format!("{} {reason}", participant.display_name);
         self.return_rack_to_bag(seat_number);
         self.moves.push(MoveRecord {
-            move_number: self.turn_number,
+            move_number: next_move_number,
             seat_number,
             move_type: move_type.to_string(),
             main_word: None,
@@ -1069,8 +1120,9 @@ impl GameSession {
         if self.status == GameStatus::Finished || self.status == GameStatus::Aborted {
             return Err("The game has already ended".to_string());
         }
+        let next_move_number = self.next_move_number();
         self.moves.push(MoveRecord {
-            move_number: self.turn_number,
+            move_number: next_move_number,
             seat_number: self.current_seat,
             move_type: "admin_force_end".to_string(),
             main_word: None,
@@ -1098,8 +1150,9 @@ impl GameSession {
         for participant in &mut self.participants {
             participant.resigned = true;
         }
+        let next_move_number = self.next_move_number();
         self.moves.push(MoveRecord {
-            move_number: self.turn_number,
+            move_number: next_move_number,
             seat_number: self.current_seat,
             move_type: "abort".to_string(),
             main_word: None,

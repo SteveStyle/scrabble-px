@@ -2,6 +2,51 @@ use super::*;
 
 // ========== Game Invitation Handlers ==========
 
+/// Records that a game's invitations changed, and tells everyone watching.
+///
+/// **Every write to `game_invitations` must end here.** A seat's invitation
+/// status is rendered as part of the game but stored in its own table, and
+/// `version` — the only freshness signal a client has — lives on the
+/// `GameSession`. So a row written without this leaves every open tab showing
+/// the old seat: not by broadcast, since none is sent, and not by an explicit
+/// refresh either, since `should_apply_update` only takes a version higher
+/// than the one already held. A full page reload is the only thing that
+/// notices, which is how three of these were found — by reloading.
+///
+/// Funnelled rather than repeated because there are seven writers across
+/// three modules and nothing in the type system connects them. Some of them
+/// happen to be safe already — accepting claims a seat, withdrawing releases
+/// one, removing a seat removes it, and each of those bumps `version` on its
+/// own account. That is luck, not design: it holds only while the invitation
+/// change travels with a change to the session, and it is exactly why the two
+/// that did not (sending, declining) went unnoticed until somebody reloaded a
+/// page. **If in doubt, call this. Calling it twice is harmless** — `version`
+/// is a counter and a second identical update is discarded by the client.
+///
+/// The underlying split is a data-model question rather than a coding one,
+/// and is tracked as its own design note.
+pub(crate) async fn announce_invitation_change(
+    state: &AppState,
+    game_id: &str,
+) -> Result<(), ApiProblem> {
+    let dto = {
+        let mut games = state.games.write().await;
+        let Some(game) = games.get_mut(game_id) else {
+            // A game that has gone since the write is not an error worth
+            // failing the caller's action over — there is simply nobody left
+            // to tell.
+            return Ok(());
+        };
+        game.touch();
+        persistence::save_game(&state.db, game)
+            .await
+            .map_err(ApiProblem::from_sqlx)?;
+        game_dto_with_invitation_status(state, game).await?
+    };
+    let _ = state.events.send(GameEventDto::StateUpdated { game: dto });
+    Ok(())
+}
+
 pub(crate) async fn invite_player_to_game(
     Path(game_id): Path<String>,
     State(state): State<AppState>,
@@ -102,6 +147,8 @@ pub(crate) async fn invite_player_to_game(
     // than the local DB awaits this guard was already (pre-existing
     // pattern) held across.
     drop(games);
+
+    announce_invitation_change(&state, &game_id).await?;
 
     // Named and email invitations have a specific address to notify — an
     // open/stranger invitation has no invitee yet, just an open seat.
@@ -308,6 +355,8 @@ pub(crate) async fn reject_invitation(
     persistence::update_invitation_status(&state.db, &invitation_id, "rejected")
         .await
         .map_err(ApiProblem::from_sqlx)?;
+
+    announce_invitation_change(&state, &invitation.game_id).await?;
 
     tracing::info!(invitation_id, player_id = %caller_player_id, "invitation rejected");
 

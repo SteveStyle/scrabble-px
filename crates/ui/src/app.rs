@@ -923,12 +923,17 @@ pub fn RootApp() -> Element {
                     on_custom_new_game: move |submission: crate::components::games_panel::CustomGameSubmission| {
                         let server_url = server_url_for_custom_create.clone();
                         let token = session().map(|current| current.session_token.clone());
+                        // Copied out before the submission moves, so the
+                        // builder can be dismissed on success only — a refusal
+                        // leaves it up with the values that caused it.
+                        let mut draft_open = submission.draft_open;
                         spawn(async move {
                             is_loading.set(true);
                             error_message.set(None);
                             let start_immediately = submission.start_immediately;
                             match create_custom_game(&server_url, token.as_deref(), &submission).await {
                                 Ok(created) => {
+                                    draft_open.set(false);
                                     reset_composer_state(
                                         dragging_tile_id,
                                         selected_blank_letter,

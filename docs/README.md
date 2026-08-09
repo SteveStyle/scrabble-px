@@ -4,6 +4,7 @@ This folder collects the design notes and operating guides for Tile Lite Elite, 
 
 ## 1.x — Meta: overview, functionality, architecture
 
+- [1.0 Rules](1.0-rules.md) — the decisions about how the service behaves, cited by id from tests and commits
 - [1.1 Architecture](1.1-architecture.md) — system overview, deployment topology, guiding principles and roles
 - [1.2 Components and Interactions](1.2-components-and-interactions.md) — component diagram, move/turn sequence diagrams
 - [1.3 Technology Decisions](1.3-technology-decisions.md) — why Axum/SQLite/Dioxus/etc.
@@ -74,6 +75,21 @@ this? If it only makes the decision feel justified, cut it.
 **No issue numbers.** `#42` means nothing once the tracker has moved on, and
 these documents outlive it. Provenance belongs in commit messages, which are
 permanent and carry their own context; the document carries current truth.
+
+**Say what we do, not what we rejected.** Options considered and dropped
+belong to the discussion, not the document. "We change the dates in the
+database" — not "not the system clock, and not the CLI either". The reader
+never proposed those.
+
+This is the hardest one to hold, because the alternatives are vivid to
+whoever just chose between them and invisible to everyone else. It is also
+where documents rot: a decision changes, the new choice is written in, and
+the old one survives as an aside that now describes something nobody does.
+
+Where a rejected option was carrying a real constraint, keep the constraint
+and drop the comparison. "It must be in-module: backdating needs `state.db`"
+says everything "rather than an external test" did, and stays true when the
+alternative is forgotten.
 
 **Say what is, not what should be.** `should`, `may` and `typically` describe
 an intention. "Each environment has one SQLite database" beats "the project

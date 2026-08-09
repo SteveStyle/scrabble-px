@@ -8,6 +8,10 @@ use super::*;
 pub struct ApiProblem {
     status: StatusCode,
     message: String,
+    /// Games standing in the way, sent alongside the message so a client can
+    /// render them however suits it. Empty for everything except the refusals
+    /// that have some to name.
+    blocking_games: Vec<api::AdminGameSummaryDto>,
     /// Seconds for a `Retry-After` header, set only on 503. A client that
     /// is told to come back should be told when — without it, a well-behaved
     /// client has to guess, and guessing usually means retrying immediately,
@@ -20,6 +24,21 @@ impl ApiProblem {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
+            blocking_games: Vec::new(),
+            retry_after: None,
+        }
+    }
+
+    /// A refusal that can name the games responsible. The message still
+    /// stands on its own, for a client that does not read the list.
+    pub(crate) fn blocked_by_games(
+        message: impl Into<String>,
+        blocking_games: Vec<api::AdminGameSummaryDto>,
+    ) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+            blocking_games,
             retry_after: None,
         }
     }
@@ -28,6 +47,7 @@ impl ApiProblem {
         Self {
             status: StatusCode::NOT_FOUND,
             message: message.into(),
+            blocking_games: Vec::new(),
             retry_after: None,
         }
     }
@@ -36,6 +56,7 @@ impl ApiProblem {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: message.into(),
+            blocking_games: Vec::new(),
             retry_after: None,
         }
     }
@@ -44,6 +65,7 @@ impl ApiProblem {
         Self {
             status: StatusCode::FORBIDDEN,
             message: message.into(),
+            blocking_games: Vec::new(),
             retry_after: None,
         }
     }
@@ -52,6 +74,7 @@ impl ApiProblem {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: error.to_string(),
+            blocking_games: Vec::new(),
             retry_after: None,
         }
     }
@@ -60,6 +83,7 @@ impl ApiProblem {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: message.into(),
+            blocking_games: Vec::new(),
             retry_after: None,
         }
     }
@@ -81,6 +105,7 @@ impl ApiProblem {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
             message: message.into(),
+            blocking_games: Vec::new(),
             retry_after: Some(retry_after_secs),
         }
     }
@@ -92,6 +117,7 @@ impl IntoResponse for ApiProblem {
             self.status,
             Json(ApiError {
                 message: self.message,
+                blocking_games: self.blocking_games,
             }),
         )
             .into_response();

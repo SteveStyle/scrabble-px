@@ -674,26 +674,30 @@ pub async fn delete_player(pool: &Pool<Sqlite>, player_id: &str) -> Result<bool,
 }
 
 /// Deletes a game and everything that belongs to it (participants, moves,
-/// chat, invitations, rating history). Doesn't touch player accounts.
-/// Caller is responsible for also dropping it from the in-memory
-/// `AppState.games` map — this only handles the database side.
+/// chat, invitations). Doesn't touch player accounts. Caller is responsible
+/// for also dropping it from the in-memory `AppState.games` map — this only
+/// handles the database side.
 ///
-/// `rating_history` is included because each row carries the `game_id` it
-/// came from and `RatingPointDto` hands that id to the client: an orphaned
-/// row leaves the rating graph plotting a point that links to a game
-/// nobody can open. What this deliberately does *not* do is unwind the
-/// rating itself — `player_ratings.rating` keeps the value this game moved
-/// it to. Recomputing every subsequent game's ELO to excise one result is
-/// far more than a delete should do, and the alternative (leaving the
-/// history row) would misreport which game produced the current rating
-/// either way. The graph loses a point; the current rating stays honest.
+/// **`rating_history` survives.** A player's rating history belongs to the
+/// player rather than to the games that produced it (docs/1.0-rules.md,
+/// ACC-3 and RET-2), and it is what makes deleting games acceptable at all —
+/// every game is deleted eventually, so history that went with them would
+/// mean nobody had one.
+///
+/// This did delete it, for a reason that turned out to cost more than it
+/// saved: each row carries the `game_id` it came from and `RatingPointDto`
+/// hands that id to the client, so a surviving row leaves the graph plotting
+/// a point that links to a game nobody can open. That is a broken link. The
+/// alternative was a rating graph that quietly emptied itself a week after
+/// each game, which is data loss.
+///
+/// What this still deliberately does *not* do is unwind the rating itself —
+/// `player_ratings.rating` keeps the value this game moved it to.
+/// Recomputing every subsequent game's ELO to excise one result is far more
+/// than a delete should do.
 pub async fn delete_game(pool: &Pool<Sqlite>, game_id: &str) -> Result<bool, sqlx::Error> {
     let mut tx = pool.begin().await?;
     sqlx::query("delete from game_moves where game_id = ?1")
-        .bind(game_id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("delete from rating_history where game_id = ?1")
         .bind(game_id)
         .execute(&mut *tx)
         .await?;
@@ -1309,6 +1313,40 @@ pub async fn get_invitations_for_player(
     .await?;
 
     Ok(rows.into_iter().map(invitation_from_row).collect())
+}
+
+/// Every game whose rows still mention this player, other than through the
+/// creator or a seat — which the caller checks against the loaded sessions
+/// (docs/1.0-rules.md, DEL-2).
+///
+/// Deliberately broad. Deleting an account is a data-cleanup command, so
+/// anything at all tying it to a game that still exists is reason enough to
+/// wait — the games go on their own, and the cost of waiting is nothing
+/// against the cost of a game left referring to somebody who is gone.
+///
+/// - **Invitations, at any status.** A declined one still names the account,
+///   and the seat it was for keeps that name on the roster (DEL-3). An
+///   accepted one has become a seat, which the caller sees anyway.
+/// - **Invitations sent.** The inviter is the creator today, so this is
+///   covered twice over — but it is covered here in its own right rather than
+///   by coincidence.
+/// - **Chat.** A message carries the writer's id and their display name, so a
+///   game that still holds one still shows them.
+pub async fn game_ids_mentioning_player(
+    pool: &Pool<Sqlite>,
+    player_id: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    let rows = sqlx::query_scalar::<_, String>(
+        "select distinct game_id from game_invitations
+         where invited_player_id = ?1 or inviting_player_id = ?1
+         union
+         select distinct game_id from game_messages where player_id = ?1",
+    )
+    .bind(player_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
 }
 
 /// Every invitation (any status) ever created for a game — used to compute

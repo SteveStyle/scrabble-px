@@ -30,7 +30,7 @@ fn build_id_appends_as_semver_build_metadata() {
     );
 }
 
-async fn create_test_state(database_url: &str) -> AppState {
+pub(super) async fn create_test_state(database_url: &str) -> AppState {
     AppState::new(
         database_url,
         "http://127.0.0.1:8080".to_string(),
@@ -43,7 +43,7 @@ async fn create_test_state(database_url: &str) -> AppState {
     .expect("test app state should initialize")
 }
 
-fn test_database_url() -> String {
+pub(super) fn test_database_url() -> String {
     let path = std::env::temp_dir().join(format!(
         "tile-lite-elite-server-test-{}.sqlite3",
         Uuid::new_v4()
@@ -52,7 +52,7 @@ fn test_database_url() -> String {
     format!("sqlite://{}", path.display())
 }
 
-async fn send_json<T: Serialize>(
+pub(super) async fn send_json<T: Serialize>(
     app: Router,
     method: Method,
     uri: &str,
@@ -72,7 +72,7 @@ async fn send_json<T: Serialize>(
     .expect("request should succeed")
 }
 
-async fn send_json_auth<T: Serialize>(
+pub(super) async fn send_json_auth<T: Serialize>(
     app: Router,
     method: Method,
     uri: &str,
@@ -97,7 +97,11 @@ async fn send_json_auth<T: Serialize>(
     .expect("request should succeed")
 }
 
-async fn send_empty(app: Router, method: Method, uri: &str) -> axum::http::Response<Body> {
+pub(super) async fn send_empty(
+    app: Router,
+    method: Method,
+    uri: &str,
+) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
             .method(method)
@@ -109,7 +113,7 @@ async fn send_empty(app: Router, method: Method, uri: &str) -> axum::http::Respo
     .expect("request should succeed")
 }
 
-async fn send_empty_auth(
+pub(super) async fn send_empty_auth(
     app: Router,
     method: Method,
     uri: &str,
@@ -129,15 +133,15 @@ async fn send_empty_auth(
 /// way it would be by `into_make_service_with_connect_info` in
 /// production — it has to be injected into the request's extensions by
 /// hand, exactly like axum's own connect-info middleware would.
-fn loopback_peer() -> SocketAddr {
+pub(super) fn loopback_peer() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 54321))
 }
 
-fn remote_peer() -> SocketAddr {
+pub(super) fn remote_peer() -> SocketAddr {
     SocketAddr::from(([203, 0, 113, 5], 54321))
 }
 
-async fn send_admin<T: Serialize>(
+pub(super) async fn send_admin<T: Serialize>(
     app: Router,
     method: Method,
     uri: &str,
@@ -158,7 +162,7 @@ async fn send_admin<T: Serialize>(
     app.oneshot(request).await.expect("request should succeed")
 }
 
-async fn read_json<T: DeserializeOwned>(response: axum::http::Response<Body>) -> T {
+pub(super) async fn read_json<T: DeserializeOwned>(response: axum::http::Response<Body>) -> T {
     let bytes = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("body should read");
@@ -1538,7 +1542,7 @@ async fn spanish_game_plays_carro_with_two_ordinary_r_tiles() {
     assert_eq!(updated.participants[0].score, (3 + 1 + 1 + 1 + 1) * 2);
 }
 
-async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {
+pub(super) async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {
     read_json(
         send_json(
             app,
@@ -1562,17 +1566,17 @@ async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {
 /// either of them starts it. Both sessions are returned since, under the
 /// per-seat ownership model, every action from here on needs the
 /// matching seat owner's token.
-struct TwoHumanGame {
-    game: GameStateDto,
-    alice: PlayerSessionDto,
-    bob: PlayerSessionDto,
+pub(super) struct TwoHumanGame {
+    pub(super) game: GameStateDto,
+    pub(super) alice: PlayerSessionDto,
+    pub(super) bob: PlayerSessionDto,
 }
 
 /// Everything `create_two_human_game` does, minus the final `/start` —
 /// both seats claimed, game still `Waiting`. Its own fixture since a
 /// couple of tests (seat reordering) specifically need that
 /// pre-start window.
-async fn create_two_human_game_waiting(app: Router) -> TwoHumanGame {
+pub(super) async fn create_two_human_game_waiting(app: Router) -> TwoHumanGame {
     let alice = register_player(app.clone(), "Alice").await;
     let bob = register_player(app.clone(), "Bob").await;
 
@@ -1639,7 +1643,7 @@ async fn create_two_human_game_waiting(app: Router) -> TwoHumanGame {
     }
 }
 
-async fn create_two_human_game(app: Router) -> TwoHumanGame {
+pub(super) async fn create_two_human_game(app: Router) -> TwoHumanGame {
     let waiting = create_two_human_game_waiting(app.clone()).await;
     let started: GameStateDto = read_json(
         send_json_auth(
@@ -1660,18 +1664,18 @@ async fn create_two_human_game(app: Router) -> TwoHumanGame {
     }
 }
 
-struct ThreeHumanGame {
-    game: GameStateDto,
-    alice: PlayerSessionDto,
-    bob: PlayerSessionDto,
-    carol: PlayerSessionDto,
+pub(super) struct ThreeHumanGame {
+    pub(super) game: GameStateDto,
+    pub(super) alice: PlayerSessionDto,
+    pub(super) bob: PlayerSessionDto,
+    pub(super) carol: PlayerSessionDto,
 }
 
 /// Same shape as `create_two_human_game`, one more seat — used by the
 /// multi-player continuation tests, which specifically need at least 3
 /// active seats to observe "one resigns, the other two keep playing"
 /// (with only 2 seats, any single exit always ends the game).
-async fn create_three_human_game(app: Router) -> ThreeHumanGame {
+pub(super) async fn create_three_human_game(app: Router) -> ThreeHumanGame {
     let alice = register_player(app.clone(), "Alice3").await;
     let bob = register_player(app.clone(), "Bob3").await;
     let carol = register_player(app.clone(), "Carol3").await;
@@ -4670,92 +4674,6 @@ async fn admin_can_list_and_delete_users() {
 }
 
 #[tokio::test]
-async fn admin_deleting_a_user_unclaims_their_seat_but_keeps_the_game() {
-    let database_url = test_database_url();
-    let state = create_test_state(&database_url).await;
-    let app = build_router(state.clone());
-
-    let alice: PlayerSessionDto = read_json(
-        send_json(
-            app.clone(),
-            Method::POST,
-            "/auth/register",
-            &RegisterPlayerRequest {
-                display_name: "Alice".to_string(),
-                email: "alice@example.com".to_string(),
-                password: "correct horse battery staple".to_string(),
-                stay_logged_in: false,
-            },
-        )
-        .await,
-    )
-    .await;
-
-    let created: GameStateDto = read_json(
-        send_json_auth(
-            app.clone(),
-            Method::POST,
-            "/games",
-            Some(&alice.session_token),
-            &CreateGameRequest {
-                seats: vec![
-                    CreateSeatRequest {
-                        kind: SeatKind::Human,
-                        display_name: "Alice".to_string(),
-                        engine_id: None,
-                        claim: Some(SeatClaim::Creator),
-                    },
-                    CreateSeatRequest {
-                        kind: SeatKind::Engine,
-                        display_name: "Greedy".to_string(),
-                        engine_id: Some("greedy-v1".to_string()),
-                        claim: None,
-                    },
-                ],
-                seed: Some(7),
-                variant: None,
-                language: None,
-                board_layout: None,
-                move_time_limit_seconds: None,
-            },
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(
-        created.participants[0].player_id.as_deref(),
-        Some(alice.player_id.as_str())
-    );
-
-    let delete_response = send_admin::<()>(
-        app.clone(),
-        Method::DELETE,
-        &format!("/admin/users/{}", alice.player_id),
-        loopback_peer(),
-        None,
-    )
-    .await;
-    assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
-
-    // Alice's session was deleted along with her account, and nobody
-    // else is tied to this game (the seat is now unclaimed, and admin
-    // deletion doesn't touch `creator_player_id` — see its own doc
-    // comment), so there's no longer a legitimate caller who could
-    // fetch it through the normal player-facing endpoint. Assert
-    // directly on the in-memory state instead, which is also a more
-    // direct check of what this test actually cares about.
-    let games = state.games.read().await;
-    let fetched = games
-        .get(&created.id)
-        .expect("the game itself should survive");
-    assert_eq!(fetched.id, created.id);
-    assert_eq!(
-        fetched.participants[0].player_id, None,
-        "the seat should be unclaimed, not still pointing at a deleted player"
-    );
-}
-
-#[tokio::test]
 async fn admin_can_reset_a_password() {
     let database_url = test_database_url();
     let state = create_test_state(&database_url).await;
@@ -5158,12 +5076,16 @@ async fn admin_deleting_a_user_removes_their_rating_rows_and_reset_tokens() {
     }
 }
 
-/// Each `rating_history` row carries the `game_id` it came from and
-/// `RatingPointDto` hands that id to the client, so an orphan left by a
-/// game delete makes the rating graph plot a point linking to a game
-/// nobody can open.
+/// ACC-3: a player's rating history belongs to them, not to the games that
+/// produced it. Every game is deleted eventually, so history that went with
+/// them would mean nobody kept one — which is what made retention quietly
+/// empty the rating graph a week after each game.
+///
+/// The cost is a broken link: each row carries its `game_id` and
+/// `RatingPointDto` hands that to the client, so a point can now link to a
+/// game nobody can open.
 #[tokio::test]
-async fn admin_deleting_a_game_removes_its_rating_history() {
+async fn admin_deleting_a_game_keeps_its_rating_history() {
     let database_url = test_database_url();
     let state = create_test_state(&database_url).await;
     let app = build_router(state.clone());
@@ -5196,15 +5118,15 @@ async fn admin_deleting_a_game_removes_its_rating_history() {
     .await;
     assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
 
-    let orphaned: i64 =
-        sqlx::query_scalar("select count(*) from rating_history where game_id = ?1")
-            .bind(&doomed.id)
-            .fetch_one(&state.db)
-            .await
-            .expect("count should succeed");
+    let kept: i64 = sqlx::query_scalar("select count(*) from rating_history where game_id = ?1")
+        .bind(&doomed.id)
+        .fetch_one(&state.db)
+        .await
+        .expect("count should succeed");
     assert_eq!(
-        orphaned, 0,
-        "a deleted game should leave no rating history behind"
+        kept, 1,
+        "rating history belongs to the player, not to the game that produced \
+         it (ACC-3), so deleting the game leaves it standing"
     );
 
     let survivor_points: i64 =
@@ -7376,4 +7298,66 @@ fn game_request_with_limit(move_time_limit_seconds: Option<u64>) -> CreateGameRe
         board_layout: None,
         move_time_limit_seconds,
     }
+}
+
+/// A user with any game attached cannot be deleted — seated or created,
+/// whatever its status.
+///
+/// Deleting a user with games attached is what raises the awkward questions:
+/// unclaimed seats, a game whose creator no longer exists, another player's
+/// history half-owned by nobody. Requiring the games to be gone first removes
+/// all of them, and is only reasonable because games do not last — a finished
+/// one is swept a week after it ends.
+#[tokio::test]
+async fn admin_refuses_to_delete_a_user_with_games() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    let alice = register_player(app.clone(), "Alice").await;
+
+    // A waiting game — not under way, so the old "is it active?" rule would
+    // have allowed the delete and orphaned it.
+    send_json_auth(
+        app.clone(),
+        Method::POST,
+        "/games",
+        Some(&alice.session_token),
+        &game_request_with_limit(None),
+    )
+    .await;
+
+    let refused = send_admin::<()>(
+        app.clone(),
+        Method::DELETE,
+        &format!("/admin/users/{}", alice.player_id),
+        loopback_peer(),
+        None,
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "a user with a waiting game must not be deletable"
+    );
+
+    // With the game gone, the delete succeeds.
+    let game_id = {
+        let games = state.games.read().await;
+        games.keys().next().expect("one game").clone()
+    };
+    persistence::delete_game(&state.db, &game_id)
+        .await
+        .expect("delete game");
+    state.games.write().await.remove(&game_id);
+
+    let allowed = send_admin::<()>(
+        app.clone(),
+        Method::DELETE,
+        &format!("/admin/users/{}", alice.player_id),
+        loopback_peer(),
+        None,
+    )
+    .await;
+    assert_eq!(allowed.status(), StatusCode::NO_CONTENT);
 }

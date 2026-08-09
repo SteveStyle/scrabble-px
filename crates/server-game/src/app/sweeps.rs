@@ -7,7 +7,11 @@ use super::*;
 /// before the rest of the handler runs. Persists and broadcasts every game
 /// it changes.
 pub(crate) async fn expire_overdue_turns(state: &AppState) {
-    let mut finished = Vec::new();
+    // Named `retired` rather than `finished` because retiring a seat is not
+    // the same as ending the game: `apply_move_timeout` returns true whenever
+    // it takes a seat, and `handle_seat_exit` only finishes the game once at
+    // most one seat is still playing. With three or more, the others play on.
+    let mut retired = Vec::new();
     {
         let mut games = state.games.write().await;
         for game in games.values_mut() {
@@ -16,11 +20,11 @@ pub(crate) async fn expire_overdue_turns(state: &AppState) {
                 if let Err(error) = persistence::save_game(&state.db, game).await {
                     tracing::error!(game_id = %game.id, %error, "failed to persist timeout retirement");
                 }
-                finished.push(game.to_dto());
+                retired.push(game.to_dto());
             }
         }
     }
-    for dto in &mut finished {
+    for dto in &mut retired {
         if let Err(error) = stats::attach_current_ratings(&state.db, dto).await {
             tracing::error!(game_id = %dto.id, %error, "failed to read current ratings after timeout retirement");
         }
@@ -28,13 +32,22 @@ pub(crate) async fn expire_overdue_turns(state: &AppState) {
     // Always a no-op — a timeout never moves rating (see
     // `stats::settle_ratings`) — kept for consistency with every other
     // place a Finished game's DTO goes out.
-    for dto in &mut finished {
+    for dto in &mut retired {
         if let Err(error) = stats::attach_rating_deltas(&state.db, dto).await {
             tracing::error!(game_id = %dto.id, %error, "failed to read rating deltas after timeout retirement");
         }
     }
-    for dto in finished {
-        let _ = state.events.send(GameEventDto::GameFinished { game: dto });
+    // The same conditional every other exit path uses — see
+    // `roster::force_resign_seat`, which retires a seat the same way and
+    // documents the pattern. Announcing a finish for a game still being
+    // played tells the remaining players it is over.
+    for dto in retired {
+        let event = if dto.status == api::GameStatus::Finished {
+            GameEventDto::GameFinished { game: dto }
+        } else {
+            GameEventDto::StateUpdated { game: dto }
+        };
+        let _ = state.events.send(event);
     }
 }
 
