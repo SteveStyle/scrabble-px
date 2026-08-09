@@ -223,6 +223,7 @@ type_of() {
     *major-function*)   echo "major-function" ;;
     *minor-function*)   echo "minor-function" ;;
     *bug*)              echo "defect fix" ;;
+    *appearance*)       echo "appearance" ;;
     *)                  echo "unclassified" ;;
   esac
 }
