@@ -193,20 +193,31 @@ if (( IS_RELEASE )) && { [[ "$SCRIPT_BRANCH" != "main" ]] || [[ -n "$SCRIPT_DIRT
   echo "    Test tooling changes on the rehearsal host first:"
   echo "        ./scripts/deploy-rehearsal.sh"
   echo
-  # Refuse rather than block when there is no terminal. A bare `read` with
-  # no stdin waits forever, so this hung a non-interactive run instead of
-  # failing it — found by testing the guard itself. A deploy that hangs is
-  # worse than one that stops, the same lesson as the `timeout 300` around
-  # --migrate-only.
-  if [[ ! -t 0 ]]; then
-    echo "    Not a terminal, so this cannot be confirmed. Refusing." >&2
-    echo "    Merge the tooling to main first, or run this interactively." >&2
-    exit 1
-  fi
-  read -r -p "    Type 'production' to run this anyway: " CONFIRM_TOOLING
-  if [[ "$CONFIRM_TOOLING" != "production" ]]; then
-    echo "    Stopped — nothing was deployed."
-    exit 1
+  # Gates-only changes nothing, so there is nothing here to protect production
+  # from. Skipping the whole confirmation — the prompt as well as the refusal —
+  # is also what lets the gate suite run at all: a test has no terminal.
+  #
+  # The prompt has to go with it, not just the refusal. Leaving `read` reachable
+  # made a gates-only run hang instead of answering, which is the same trap the
+  # paragraph below describes and was caught the same way: by running it.
+  if [[ "${DEPLOY_GATES_ONLY:-}" == "1" ]]; then
+    echo "    (gates only — nothing will be deployed, so not asking)"
+  else
+    # Refuse rather than block when there is no terminal. A bare `read` with
+    # no stdin waits forever, so this hung a non-interactive run instead of
+    # failing it — found by testing the guard itself. A deploy that hangs is
+    # worse than one that stops, the same lesson as the `timeout 300` around
+    # --migrate-only.
+    if [[ ! -t 0 ]]; then
+      echo "    Not a terminal, so this cannot be confirmed. Refusing." >&2
+      echo "    Merge the tooling to main first, or run this interactively." >&2
+      exit 1
+    fi
+    read -r -p "    Type 'production' to run this anyway: " CONFIRM_TOOLING
+    if [[ "$CONFIRM_TOOLING" != "production" ]]; then
+      echo "    Stopped — nothing was deployed."
+      exit 1
+    fi
   fi
 fi
 
@@ -313,9 +324,15 @@ fi
 # gate that stays silent when it has nothing to check is not.
 if (( ! IS_RELEASE )) || [[ "${DEPLOY_SKIP_CI:-}" == "1" ]]; then
   :
-elif [[ "$(gh run list --commit "$TARGET_FULL_SHA" --workflow CI --limit 30 \
-      --json event --jq '[.[] | select(.event == "pull_request")] | length' \
-      2>/dev/null || echo 0)" == "0" ]]; then
+# The same query shape ci-status.sh uses, counted here in bash rather than by
+# `gh --jq`. Two ways of asking the same question about the same data is how
+# they come to disagree — and the count was the only place relying on gh's
+# embedded jq, which made this branch the one part of the gate a test could not
+# reproduce faithfully.
+elif ! printf '%s\n' "$(gh run list --commit "$TARGET_FULL_SHA" --workflow CI --limit 30 \
+      --json databaseId,event,headBranch,status,conclusion,url \
+      --jq '.[] | [.databaseId, .event, .headBranch, .status, .conclusion, .url] | @tsv' \
+      2>/dev/null || true)" | cut -f2 | grep -qx 'pull_request'; then
   echo "==> No pull-request run for this commit — nothing to check there"
 elif ! "$REPO_DIR/scripts/ci-status.sh" --run pull_request "$TARGET_FULL_SHA"; then
   echo "error: refusing to deploy — the pull request for this commit did not pass CI." >&2
@@ -464,6 +481,24 @@ elif [[ "$STAGING_SHA" != "$TARGET_SHA" ]]; then
 fi
 echo "==> Rehearsal host confirmed running this commit ($TARGET_SHA) — proceeding"
 fi
+fi
+
+# Every gate has now had its say, and nothing has been changed yet. That makes
+# this the one point where the checks can be exercised without deploying —
+# which is what `DEPLOY_GATES_ONLY=1` is for, and what makes
+# `scripts/tests/deploy.test.sh` possible at all.
+#
+# Until it existed, these gates were only ever run by deploying, so the branch
+# where each says **no** almost never ran: nobody rehearses a deploy against a
+# commit they expect to be refused. Two gates had already failed open for
+# exactly that reason, and a third (#100) refused every rehearsal for a day
+# before a person tripped over it.
+#
+# Useful by hand too — "would this deploy be allowed?" is worth being able to
+# ask without finding out the expensive way.
+if [[ "${DEPLOY_GATES_ONLY:-}" == "1" ]]; then
+  echo "==> Gates only: every check passed, stopping before anything is built"
+  exit 0
 fi
 
 # The fresh checkout. A throwaway `git worktree` rather than checking $REF
