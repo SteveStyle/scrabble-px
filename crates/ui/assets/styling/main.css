@@ -331,14 +331,42 @@ button:disabled {
     border-top: 1px solid rgba(111, 75, 44, 0.12);
 }
 
+/* `column-reverse`, with the messages rendered newest-first, so the panel sits
+   at the latest message rather than the earliest and stays there as more
+   arrive. A reversed column scrolls from the bottom by definition, which is
+   why this needs no scrolling code — and why it cannot drift out of step with
+   the list the way a manual scroll-to-bottom would. */
 .chat-messages {
     display: flex;
-    flex-direction: column;
+    flex-direction: column-reverse;
     gap: 6px;
     max-height: 180px;
     overflow-y: auto;
     margin-bottom: 10px;
 }
+
+/* Marks a message that has just arrived, then gets out of the way.
+   Deliberately keyed on the element being *created* rather than on a "seen"
+   flag: the chat watermark advances the instant a message arrives for an open
+   game — watching the panel counts as reading it — so by the time this renders
+   there is no unread state left to read. What there is, is a new DOM node,
+   because the list is keyed by message id and only the new one is built.
+
+   The cost is that every message marks itself when a game is first opened,
+   since they are all created at once. That reads as the messages arriving,
+   which is close enough to true. */
+@keyframes chat-message-arriving {
+    from {
+        background: rgba(212, 162, 58, 0.55);
+        box-shadow: inset 0 0 0 2px var(--gold);
+    }
+    to {
+        background: transparent;
+        box-shadow: inset 0 0 0 2px transparent;
+    }
+}
+
+
 
 .chat-empty {
     font-size: 0.8rem;
@@ -356,6 +384,15 @@ button:disabled {
     padding: 5px 10px;
     border-radius: 12px;
     background: rgba(255, 255, 255, 0.7);
+    /* Runs once, when the element is created — see the keyframes above for why
+       that is the signal rather than an unread flag. */
+    animation: chat-message-arriving 6s ease-out 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .chat-message {
+        animation: none;
+    }
 }
 
 .chat-message-own {
