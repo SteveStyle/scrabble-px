@@ -259,6 +259,63 @@ fit_title() {
   return 0
 }
 
+# Which documents are overdue a read.
+#
+# Not the same question as 4.x's freshness stamp, which asks whether a document
+# still matches the code. This asks whether it is still worth reading: relevant,
+# ordered, navigable — which only reading the whole thing can answer, and which
+# nothing prompts you to do.
+#
+# The trigger is change rather than the calendar. A document nobody has touched
+# does not need re-reading; one that has grown by a quarter since it was last
+# read has become a different document, which is how docs/3.3 went from 629
+# lines to 986 in two days with every addition justified on its own.
+#
+# Stamp a document by putting this near its title, after reading it whole:
+#
+#     *Reviewed whole at `<short-sha>` (YYYY-MM-DD).*
+REVIEW_THRESHOLD_PERCENT=25
+echo "==> Documentation review"
+DOC_UNSTAMPED=""
+DOC_FLAGGED=0
+DOC_OK=0
+for doc in docs/*.md docs/changes/*.md; do
+  [[ -f "$doc" ]] || continue
+  stamp="$(grep -m1 -oE 'Reviewed whole at `[0-9a-f]+`' "$doc" 2>/dev/null | grep -oE '[0-9a-f]+' || true)"
+  if [[ -z "$stamp" ]]; then
+    DOC_UNSTAMPED="$DOC_UNSTAMPED ${doc#docs/}"
+    continue
+  fi
+  # Lines added plus removed since the stamp, against the document's length now.
+  churn="$(git diff --numstat "$stamp..origin/main" -- "$doc" 2>/dev/null \
+    | awk '{print $1 + $2}' || true)"
+  churn="${churn:-0}"
+  total="$(wc -l < "$doc" | tr -d ' ')"
+  (( total == 0 )) && total=1
+  percent=$(( churn * 100 / total ))
+  if (( percent >= REVIEW_THRESHOLD_PERCENT )); then
+    printf '    %-42s %s%% changed since %s — worth re-reading\n' "${doc#docs/}" "$percent" "$stamp"
+    DOC_FLAGGED=$((DOC_FLAGGED + 1))
+  else
+    DOC_OK=$((DOC_OK + 1))
+  fi
+done
+if [[ -n "$DOC_UNSTAMPED" ]]; then
+  # Naming all two dozen is noise. The longest are where a read pays most, and
+  # are the ones that grew without anybody looking at the whole.
+  # shellcheck disable=SC2086
+  set -- $DOC_UNSTAMPED
+  printf '    %-42s %s\n' "never reviewed" "$# documents"
+  for doc in $(wc -l docs/*.md 2>/dev/null | sort -rn | head -4 | awk '{print $2}'); do
+    [[ "$doc" == "total" ]] && continue
+    case " $DOC_UNSTAMPED " in
+      *" ${doc#docs/} "*) printf '    %-42s %s lines\n' "  ${doc#docs/}" "$(wc -l < "$doc" | tr -d ' ')" ;;
+    esac
+  done
+fi
+(( DOC_FLAGGED == 0 && DOC_OK > 0 )) && printf '    %s\n' "$DOC_OK reviewed and little changed since"
+echo
+
 echo "==> Open changes"
 printf "    %-4s %-${TITLE_WIDTH}s %-16s %s\n" "#" "TITLE" "TYPE" "STATE"
 printf '    '; printf '%*s' $((TITLE_WIDTH + 44)) '' | tr ' ' '-'; echo
