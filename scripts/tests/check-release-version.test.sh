@@ -13,18 +13,31 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 CHECK="$HERE/check-release-version.sh"
 failures=0
 
-# Runs the check in a scratch git repo with no tags and no `gh`, so the only
-# inputs are the arguments.
+# Runs the check in a scratch git repo with no tags and no `gh` reachable, so
+# the only inputs are the arguments.
+#
+# The isolation builds a PATH containing symlinks to exactly the tools the
+# script uses, and nothing else. An earlier version set `PATH=/usr/bin:/bin`
+# and passed here while failing in CI, because `gh` lives in `~/.local/bin` on
+# this machine and in `/usr/bin` on a GitHub runner — a test that depended on
+# where a binary happened to be installed. Naming the tools is the only way to
+# be sure of what is absent.
 run_isolated() {
   local version="$1" previous="${2:-}"
-  local dir
+  local dir bin
   dir="$(mktemp -d)"
+  bin="$dir/bin"
+  mkdir -p "$bin"
+  # Everything the script reaches for, including what its own shebang and
+  # heredoc need — `env` and `bash` to start at all, `cat` to print the
+  # explanation. A missing one shows up as exit 127, not as a wrong answer.
+  for tool in env bash cat git sed sort tail; do
+    ln -s "$(command -v "$tool")" "$bin/$tool"
+  done
   (
     cd "$dir"
-    git init -q .
-    # An empty PATH but for the essentials: `gh` must be absent so the check
-    # takes its "cannot judge" path deterministically, on any machine.
-    PATH="/usr/bin:/bin" "$CHECK" "$version" "$previous" 2>&1
+    PATH="$bin" git init -q .
+    PATH="$bin" "$CHECK" "$version" "$previous" 2>&1
   )
   local status=$?
   rm -rf "$dir"
