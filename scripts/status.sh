@@ -108,6 +108,38 @@ echo
 # rows for "merged, awaiting release" is not the same thing, and it misses the
 # commits that carry no issue at all — docs, tooling, the version bump — which
 # is most of what usually sits in main.
+# Does a change of this type reach users when a release ships, or was it live
+# the moment it merged?
+#
+# One rule, used by both the release preview and the "done, not yet released"
+# list below. They used to answer differently: this section knew that
+# documentation and tooling are live at merge, and that section did not, so
+# every merge-lane change ever closed accumulated there for good — nine of them
+# by the time anyone counted, all of them already live.
+reach_of() {
+  case "$1" in
+    *documentation*|*non-prod-tooling*) echo "live at merge" ;;
+    *prod-tooling*)                     echo "live at merge, unless it is admin-cli" ;;
+    *)                                  echo "reaches users" ;;
+  esac
+}
+
+# Non-empty if this issue was delivered by a release that has already happened
+# — its milestone is a version, and that version is tagged. Version milestones
+# are closed by `deploy.sh` as it ships them, so "closed and named like a
+# version" is the same fact read two ways; the tag is the one that cannot be
+# closed by hand.
+shipped_already() {
+  local milestone
+  milestone="$(gh issue view "$1" --json milestone --jq '.milestone.title // ""' 2>/dev/null || true)"
+  [[ "$milestone" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo ""; return; }
+  if git rev-parse -q --verify "refs/tags/prod-$milestone" > /dev/null 2>&1; then
+    echo "already shipped in $milestone"
+  else
+    echo ""
+  fi
+}
+
 echo "==> A release from main would ship"
 MAIN_VERSION="$(git show origin/main:Cargo.toml 2>/dev/null | grep -m1 '^version' | cut -d'"' -f2 || true)"
 LAST_PROD_TAG="$(git tag --list 'prod-[0-9]*' 2>/dev/null \
@@ -139,18 +171,18 @@ else
       title="${meta%%$'\t'*}"
       labels="${meta#*$'\t'}"
       [[ -z "$meta" ]] && { title="(could not read issue)"; labels=""; }
-      # Not everything on main reaches users at a release. Documentation and
-      # non-production tooling run from the working tree or the repo, so they
-      # were live the moment they merged — listing them as "ships" would
-      # overstate what a deploy is actually putting out.
-      case "$labels" in
-        *documentation*|*non-prod-tooling*) reach="live at merge" ;;
-        *prod-tooling*)                     reach="live at merge, unless it is admin-cli" ;;
-        *)                                  reach="reaches users" ;;
-      esac
+      reach="$(reach_of "$labels")"
+      # A change already delivered by an earlier release can still be
+      # referenced by later commits — its design note being retired, say. It is
+      # not part of what this release delivers, and counting it produced a
+      # "functional change in a patch bump" warning for a release that carried
+      # no functionality at all.
+      already="$(shipped_already "$num")"
       printf '    %-12s #%-4s %-40s %-16s %s\n' \
-        "ships" "$num" "$(printf '%.40s' "$title")" "$labels" "$reach"
-      case "$labels" in *major-function*|*minor-function*) FUNCTIONAL="yes" ;; esac
+        "ships" "$num" "$(printf '%.40s' "$title")" "$labels" "${already:-$reach}"
+      if [[ -z "$already" && "$reach" == "reaches users" ]]; then
+        case "$labels" in *major-function*|*minor-function*) FUNCTIONAL="yes" ;; esac
+      fi
     done <<< "$SHIPPING"
 
     # The same judgement check-release-version.sh makes at deploy time, made
@@ -384,8 +416,9 @@ echo
 # question the issue list alone cannot answer.
 echo "==> Done, not yet released"
 AWAITING="$(gh issue list --state closed --limit 100 \
-  --json number,title,milestone \
-  -q '.[] | select(.milestone != null) | [.number, .title, .milestone.title] | @tsv' \
+  --json number,title,milestone,labels \
+  -q '.[] | select(.milestone != null)
+      | [.number, .title, .milestone.title, ([.labels[].name] | join(","))] | @tsv' \
   2>/dev/null || true)"
 
 OPEN_MILESTONES="$(gh api "repos/{owner}/{repo}/milestones?state=open" \
@@ -393,15 +426,21 @@ OPEN_MILESTONES="$(gh api "repos/{owner}/{repo}/milestones?state=open" \
 
 FOUND=0
 if [[ -n "$AWAITING" && -n "$OPEN_MILESTONES" ]]; then
-  while IFS=$'\t' read -r num title milestone; do
+  while IFS=$'\t' read -r num title milestone labels; do
     [[ -z "$num" ]] && continue
-    if grep -qxF "$milestone" <<< "$OPEN_MILESTONES" 2>/dev/null; then
-      printf "    %-4s %s %s\n" "$num" "$(fit_title "$title")" "$milestone"
-      FOUND=1
-    fi
+    # An open milestone alone is not enough. The lane milestones — fasttrack,
+    # minor, major, merge — never close, that being what makes them lanes, so
+    # this test was permanently true for anything closed against one.
+    grep -qxF "$milestone" <<< "$OPEN_MILESTONES" 2>/dev/null || continue
+    # And a change that never reaches users has nothing to wait for. It went
+    # live when it merged, so listing it as "not yet released" is wrong rather
+    # than merely noisy — it invents a queue that does not exist.
+    [[ "$(reach_of "$labels")" == "reaches users" ]] || continue
+    printf "    %-4s %s %s\n" "$num" "$(fit_title "$title")" "$milestone"
+    FOUND=1
   done <<< "$AWAITING"
 fi
-(( FOUND == 0 )) && echo "    (nothing waiting — everything closed is live)"
+(( FOUND == 0 )) && echo "    (nothing waiting — everything closed either is live or does not reach users)"
 
 echo
 echo "    Types: docs/3.3, \"The six types of change\"."
