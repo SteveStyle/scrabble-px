@@ -2729,6 +2729,110 @@ where
 /// to a response the server sent back rejecting it, which keeps its own
 /// specific message. This is the one signal that distinguishes "the server
 /// is down/unreachable" from "you made an illegal move."
+/// A refusal the caller can do something about: the server's own message, plus
+/// how long to wait when it said.
+///
+/// `429` is the caller asking too often — their own doing, and fixable by
+/// slowing down. Deliberately *not* part of `backend_is_unreachable`: the
+/// service is answering perfectly well, and dropping a working session into
+/// the reconnect loop over a rate limit would be the opposite of what the
+/// status means.
+///
+/// `Retry-After` carries a number of seconds. Anything else is ignored rather
+/// than guessed at — a wrong wait is worse than none, because somebody will
+/// believe it.
+fn refusal_message(status: u16, retry_after: Option<String>, body: String) -> String {
+    if status != 429 {
+        return body;
+    }
+    match retry_after
+        .as_deref()
+        .map(str::trim)
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        // "in 0 seconds" is absurd and "in 1 seconds" is unfinished. Our own
+        // server never sends 0 — `refusal` floors it at one — so this is for
+        // whatever a proxy or a future server might say, and the honest
+        // rendering of "wait none" is that there is nothing to wait for.
+        Some(0) => format!("{body} Try again now."),
+        Some(1) => format!("{body} Try again in 1 second."),
+        Some(seconds) => format!("{body} Try again in {seconds} seconds."),
+        None => body,
+    }
+}
+
+#[cfg(test)]
+mod refusal_message_tests {
+    use super::refusal_message;
+
+    /// Everything that is not a rate limit passes through untouched — a 400 or
+    /// a 404 has no wait to offer and inventing one would be a lie.
+    #[test]
+    fn other_statuses_are_left_alone() {
+        assert_eq!(
+            refusal_message(400, Some("5".into()), "Bad request".into()),
+            "Bad request"
+        );
+        assert_eq!(refusal_message(404, None, "Not found".into()), "Not found");
+    }
+
+    /// The whole point: a caller told to slow down is told for how long.
+    #[test]
+    fn a_rate_limit_says_how_long_to_wait() {
+        assert_eq!(
+            refusal_message(429, Some("30".into()), "You are asking too often.".into()),
+            "You are asking too often. Try again in 30 seconds."
+        );
+    }
+
+    /// The plural agrees with the number: 0 seconds, 1 second, 2 seconds. "In
+    /// 1 seconds" makes an interface look unfinished, and "in 0 seconds" is
+    /// absurd — a wait of none is not a wait, so it is said as one.
+    #[test]
+    fn the_wait_agrees_with_its_number() {
+        assert_eq!(
+            refusal_message(429, Some("1".into()), "Slow down.".into()),
+            "Slow down. Try again in 1 second."
+        );
+        assert_eq!(
+            refusal_message(429, Some("2".into()), "Slow down.".into()),
+            "Slow down. Try again in 2 seconds."
+        );
+        assert_eq!(
+            refusal_message(429, Some("0".into()), "Slow down.".into()),
+            "Slow down. Try again now."
+        );
+    }
+
+    /// `Retry-After` may also be an HTTP date, and a proxy may mangle it. A
+    /// wait we cannot read is left out rather than guessed — a wrong number is
+    /// worse than no number, because somebody will believe it.
+    #[test]
+    fn an_unreadable_wait_is_omitted_not_invented() {
+        for value in [
+            None,
+            Some("Wed, 21 Oct 2026 07:28:00 GMT"),
+            Some(""),
+            Some("soon"),
+        ] {
+            assert_eq!(
+                refusal_message(429, value.map(str::to_string), "Slow down.".into()),
+                "Slow down.",
+                "value: {value:?}"
+            );
+        }
+    }
+
+    /// Whitespace around the number is a proxy's doing, not the caller's.
+    #[test]
+    fn surrounding_whitespace_does_not_lose_the_wait() {
+        assert_eq!(
+            refusal_message(429, Some("  12  ".into()), "Slow down.".into()),
+            "Slow down. Try again in 12 seconds."
+        );
+    }
+}
+
 const UNREACHABLE_MESSAGE: &str = "Can't reach the server.";
 
 /// Marks the backend unreachable. Called only at the point where a request
@@ -2852,11 +2956,18 @@ where
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(SESSION_INVALID_MESSAGE.to_string());
         }
+        let status = response.status().as_u16();
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let msg = response
             .json::<api::ApiError>()
             .await
             .map(|e| e.message)
             .unwrap_or_else(|_| "Request failed".to_string());
+        let msg = refusal_message(status, retry_after, msg);
         return Err(msg);
     }
     response.json::<R>().await.map_err(|e| e.to_string())
@@ -2888,11 +2999,14 @@ where
         if response.status() == 401 {
             return Err(SESSION_INVALID_MESSAGE.to_string());
         }
+        let status = response.status();
+        let retry_after = response.headers().get("retry-after");
         let msg = response
             .json::<api::ApiError>()
             .await
             .map(|e| e.message)
-            .unwrap_or_else(|_| format!("HTTP {} {}", response.status(), response.status_text()));
+            .unwrap_or_else(|_| format!("HTTP {status}"));
+        let msg = refusal_message(status, retry_after, msg);
         return Err(msg);
     }
     response
@@ -2983,11 +3097,18 @@ where
     }
     mark_online();
     if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let msg = response
             .json::<api::ApiError>()
             .await
             .map(|e| e.message)
             .unwrap_or_else(|_| "Request failed".to_string());
+        let msg = refusal_message(status, retry_after, msg);
         return Err(msg);
     }
     response.json::<R>().await.map_err(|e| e.to_string())
@@ -3014,11 +3135,14 @@ where
     }
     mark_online();
     if !response.ok() {
+        let status = response.status();
+        let retry_after = response.headers().get("retry-after");
         let msg = response
             .json::<api::ApiError>()
             .await
             .map(|e| e.message)
-            .unwrap_or_else(|_| format!("HTTP {} {}", response.status(), response.status_text()));
+            .unwrap_or_else(|_| format!("HTTP {status}"));
+        let msg = refusal_message(status, retry_after, msg);
         return Err(msg);
     }
     response
@@ -3042,11 +3166,18 @@ where
     }
     mark_online();
     if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let msg = response
             .json::<api::ApiError>()
             .await
             .map(|e| e.message)
             .unwrap_or_else(|_| "Request failed".to_string());
+        let msg = refusal_message(status, retry_after, msg);
         return Err(msg);
     }
     Ok(())
@@ -3072,11 +3203,14 @@ where
     }
     mark_online();
     if !response.ok() {
+        let status = response.status();
+        let retry_after = response.headers().get("retry-after");
         let msg = response
             .json::<api::ApiError>()
             .await
             .map(|e| e.message)
-            .unwrap_or_else(|_| format!("HTTP {} {}", response.status(), response.status_text()));
+            .unwrap_or_else(|_| format!("HTTP {status}"));
+        let msg = refusal_message(status, retry_after, msg);
         return Err(msg);
     }
     Ok(())

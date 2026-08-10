@@ -52,6 +52,7 @@ mod sweeps;
 mod tests;
 #[cfg(test)]
 mod tests_account_lifecycle;
+mod throttle;
 
 use self::admin::*;
 use self::auth::*;
@@ -184,19 +185,29 @@ pub fn build_router(state: AppState) -> Router {
         )
         .layer(middleware::from_fn(require_loopback));
 
-    Router::new()
-        .route("/health", get(health))
+    // Creating an account is limited hardest, and on its own: a throwaway
+    // account is how the other limits get worked around.
+    let registration_routes =
+        throttle::registration(Router::new().route("/auth/register", post(register_player)));
+
+    // The rest of the unauthenticated auth surface. Each of these spends real
+    // Argon2 time whether or not the credentials are real, which is what
+    // makes them worth reaching for.
+    let heavy_auth_routes = throttle::heavy_auth(
+        Router::new()
+            .route("/auth/login", post(login_player))
+            .route("/auth/forgot-password", post(request_password_reset))
+            .route("/auth/reset-password", post(reset_password)),
+    );
+
+    let player_routes = Router::new()
         .route("/engines", get(list_engines))
         .route("/dictionaries/{name}", get(get_dictionary))
         // Authentication
-        .route("/auth/register", post(register_player))
-        .route("/auth/login", post(login_player))
         .route("/auth/validate", post(validate_session))
         .route("/auth/logout", post(logout))
         .route("/auth/change-password", post(change_password))
         .route("/auth/update-details", post(update_player_details))
-        .route("/auth/forgot-password", post(request_password_reset))
-        .route("/auth/reset-password", post(reset_password))
         .route("/players/search", get(search_players))
         // Rating & Stats
         .route("/players/{player_id}/stats", get(get_player_stats))
@@ -251,7 +262,25 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/invitations/{invitation_id}/reject",
             post(reject_invitation),
-        )
+        );
+
+    // Everything a caller does once signed in, keyed by session, then a floor
+    // under the lot. Admin is outside both: it is loopback-only, so the only
+    // caller is the operator, and throttling them mid-cleanup helps nobody.
+    let limited = throttle::global(
+        registration_routes
+            .merge(heavy_auth_routes)
+            .merge(throttle::authenticated(player_routes)),
+    );
+
+    Router::new()
+        // No limit of any kind. Monitoring and deploy.sh's own smoke test call
+        // this, and it has to answer while everything else is refusing — a
+        // health check that fails under load reports an outage that is not
+        // happening, and the deploy would roll back a release that was merely
+        // busy.
+        .route("/health", get(health))
+        .merge(limited)
         .merge(admin_routes)
         .layer(CorsLayer::permissive())
         // One INFO-level span per request (method, path, status, latency)
