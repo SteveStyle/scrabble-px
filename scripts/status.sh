@@ -8,18 +8,26 @@ set -euo pipefail
 #
 #   is the work done          issue open/closed
 #   is it in production       milestone open/closed
-#   is it being worked on     a branch named `issue-<N>-*` exists
+#   is it being worked on     a `Refs #N` commit exists off origin/main
 #   merged, awaiting release  a `Refs #N` commit is on origin/main
 #   what type of change       the issue's type label (docs/3.3, "The six types")
 #   what is live right now    GET /health
 #
 # Because nothing is stored, nothing can drift and there is nothing to keep
 # up to date — which is the whole reason to derive status rather than record
-# it. The cost of that choice is that the view is only as good as the branch
-# naming convention: a branch not named `issue-<N>-*` leaves its issue
-# showing "not started". That is deliberate. The convention is what makes
-# the work findable, and a view that quietly papered over a mis-named branch
-# would remove the one signal that the convention had slipped.
+# it.
+#
+# The two "is it being worked on" rows are the same question asked of the same
+# evidence, `Refs #N`, split only by whether the commit has landed. Reading the
+# commits rather than the branch name is what lets one branch carry several
+# issues and show under each — the shape most real changes turn out to have.
+# The branch-name glob survives as a fallback for a branch with no commits yet.
+#
+# The cost of deriving rather than recording is that the view is only as good
+# as the convention: a change with neither a `Refs #N` trailer nor an
+# `issue-<N>-*` branch still reads "not started". That is deliberate. A view
+# that papered over a missing trailer would remove the one signal that the
+# convention had slipped.
 #
 # Usage:
 #   ./scripts/status.sh            # open changes + what production is running
@@ -167,16 +175,49 @@ remote_branch_for_issue() {
     | head -1 || true
 }
 
+# The branch carrying unmerged work for an issue, found by its commits rather
+# than by its name — so a branch covering two issues is visible under both, and
+# an issue keeps its own state whatever the branch is called.
+#
+# `--not origin/main` is the whole trick: it asks for work that has *not*
+# landed, which is what "in progress" means. Without it an old `Refs #N` on
+# main masks every later commit for the same issue, which is how #41 read
+# "merged, awaiting release" while its second round was still being written.
+unmerged_branch_for_issue() {
+  local num="$1" sha
+  sha="$(git log --branches --remotes --not origin/main \
+    -E --grep="Refs #${num}([^0-9]|\$)" --format=%h -1 2>/dev/null || true)"
+  [[ -z "$sha" ]] && { echo ""; return; }
+  local local_branch
+  local_branch="$(git branch --contains "$sha" --format='%(refname:short)' 2>/dev/null \
+    | head -1 || true)"
+  if [[ -n "$local_branch" ]]; then
+    echo "$local_branch"
+  else
+    git branch --remotes --contains "$sha" --format='%(refname:short)' 2>/dev/null \
+      | grep -v HEAD | head -1 | sed 's|^origin/||' || true
+  fi
+}
+
 state_of_issue() {
-  local num="$1" type="${2:-}" branch
+  local num="$1" type="${2:-}" branch unmerged
   branch="$(branch_for_issue "$num")"
   [[ -z "$branch" ]] && branch="$(remote_branch_for_issue "$num")"
 
-  # Ask main's history first, not the branches. A merged change has its
-  # branch deleted, so branch-only detection reported finished work as "not
-  # started" — which it did for three issues the moment they were merged.
-  # `Refs #N` is in every commit by convention, and unlike a branch it is
-  # permanent. The trailing guard stops #1 matching "Refs #19".
+  # Unmerged work first, because it is the more current fact. An issue that has
+  # been merged once and reopened, or one sharing a branch with another, is
+  # still in progress — and asking main first said otherwise.
+  unmerged="$(unmerged_branch_for_issue "$num")"
+  if [[ -n "$unmerged" ]]; then
+    echo "in progress ($unmerged)"
+    return
+  fi
+
+  # Then main's history. A merged change has its branch deleted, so
+  # branch-only detection reported finished work as "not started" — which it
+  # did for three issues the moment they were merged. `Refs #N` is in every
+  # commit by convention, and unlike a branch it is permanent. The trailing
+  # guard stops #1 matching "Refs #19".
   if git log origin/main -E --grep="Refs #${num}([^0-9]|\$)" \
        --format=%h 2>/dev/null | grep -q .; then
     # Only the types that change the app wait for a release. Documentation
@@ -364,4 +405,6 @@ fi
 
 echo
 echo "    Types: docs/3.3, \"The six types of change\"."
-echo "    A branch not named issue-<N>-* shows as \"not started\" — rename it."
+echo "    State comes from \"Refs #N\" in the commits, so a branch covering"
+echo "    several issues shows under each. A change with neither a Refs"
+echo "    trailer nor an issue-<N>-* branch reads \"not started\"."
