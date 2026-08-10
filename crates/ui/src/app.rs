@@ -2750,7 +2750,12 @@ fn refusal_message(status: u16, retry_after: Option<String>, body: String) -> St
         .map(str::trim)
         .and_then(|value| value.parse::<u32>().ok())
     {
-        Some(0) | Some(1) => format!("{body} Try again in a second."),
+        // "in 0 seconds" is absurd and "in 1 seconds" is unfinished. Our own
+        // server never sends 0 — `refusal` floors it at one — so this is for
+        // whatever a proxy or a future server might say, and the honest
+        // rendering of "wait none" is that there is nothing to wait for.
+        Some(0) => format!("{body} Try again now."),
+        Some(1) => format!("{body} Try again in 1 second."),
         Some(seconds) => format!("{body} Try again in {seconds} seconds."),
         None => body,
     }
@@ -2780,17 +2785,22 @@ mod refusal_message_tests {
         );
     }
 
-    /// "Try again in 1 seconds" is the kind of thing that makes an interface
-    /// look unfinished.
+    /// The plural agrees with the number: 0 seconds, 1 second, 2 seconds. "In
+    /// 1 seconds" makes an interface look unfinished, and "in 0 seconds" is
+    /// absurd — a wait of none is not a wait, so it is said as one.
     #[test]
-    fn one_second_reads_as_english() {
+    fn the_wait_agrees_with_its_number() {
         assert_eq!(
             refusal_message(429, Some("1".into()), "Slow down.".into()),
-            "Slow down. Try again in a second."
+            "Slow down. Try again in 1 second."
+        );
+        assert_eq!(
+            refusal_message(429, Some("2".into()), "Slow down.".into()),
+            "Slow down. Try again in 2 seconds."
         );
         assert_eq!(
             refusal_message(429, Some("0".into()), "Slow down.".into()),
-            "Slow down. Try again in a second."
+            "Slow down. Try again now."
         );
     }
 
