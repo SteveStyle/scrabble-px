@@ -33,6 +33,23 @@ services:
       # it logs the message instead of sending it (see crates/server-game/src/email.rs).
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       RESEND_FROM_ADDRESS: ${RESEND_FROM_ADDRESS:-Tile Lite Elite <noreply@mail.tileliteelite.com>}
+      # Rate limits — how often a caller may ask, tunable without a rebuild.
+      # Read once when the router is built, so a change takes a container
+      # restart (`docker compose up -d server`) rather than a new image. Set
+      # them in `.env` beside the secrets, which deploy.sh never touches, so a
+      # tuned host keeps its numbers across every redeploy.
+      #
+      # Defaults live in crates/server-game/src/app/throttle.rs and are a
+      # first guess for a 2 vCPU box; ./scripts/check-rate-limits.sh asserts
+      # the shape against a running server.
+      TILE_LITE_ELITE_LIMIT_REGISTER_PER_MIN: ${TILE_LITE_ELITE_LIMIT_REGISTER_PER_MIN:-}
+      TILE_LITE_ELITE_LIMIT_REGISTER_BURST: ${TILE_LITE_ELITE_LIMIT_REGISTER_BURST:-}
+      TILE_LITE_ELITE_LIMIT_AUTH_PER_MIN: ${TILE_LITE_ELITE_LIMIT_AUTH_PER_MIN:-}
+      TILE_LITE_ELITE_LIMIT_AUTH_BURST: ${TILE_LITE_ELITE_LIMIT_AUTH_BURST:-}
+      TILE_LITE_ELITE_LIMIT_SESSION_PER_MIN: ${TILE_LITE_ELITE_LIMIT_SESSION_PER_MIN:-}
+      TILE_LITE_ELITE_LIMIT_SESSION_BURST: ${TILE_LITE_ELITE_LIMIT_SESSION_BURST:-}
+      TILE_LITE_ELITE_LIMIT_GLOBAL_PER_MIN: ${TILE_LITE_ELITE_LIMIT_GLOBAL_PER_MIN:-}
+      TILE_LITE_ELITE_LIMIT_GLOBAL_BURST: ${TILE_LITE_ELITE_LIMIT_GLOBAL_BURST:-}
     volumes:
       - tile-lite-elite-data:/data
     restart: unless-stopped
