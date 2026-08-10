@@ -56,7 +56,11 @@ jobs:
       # by returning nothing so the stamp check skipped itself. Cheap to run,
       # and the only test in the repo that covers a script.
       - name: Shell script tests
-        run: ./scripts/tests/read-api-version.test.sh
+        run: |
+          ./scripts/tests/read-api-version.test.sh
+          ./scripts/tests/check-release-version.test.sh
+          ./scripts/tests/check-commit-stamp.test.sh
+          ./scripts/tests/ci-status.test.sh
 
       # -D warnings makes any clippy or rustc warning fail the build. Scoped to
       # this repo's crates (old-crates carry many pre-existing warnings we don't

@@ -288,6 +288,15 @@ if [[ -z "$DEPLOYED_VERSION" ]]; then
   exit 1
 fi
 
+# A patch release may not carry functional change — the rule and the reasoning
+# are in docs/3.3, "Releases are branches". Checked here, before anything is
+# built, so a wrong version number costs a moment rather than a release. The
+# check passes whenever it cannot judge (no milestone, no `gh`, no network), so
+# it can only ever catch a mistake, never invent one.
+if (( IS_RELEASE )); then
+  "$REPO_DIR/scripts/check-release-version.sh" "$DEPLOYED_VERSION"
+fi
+
 # Refuses to ship a commit that was never actually exercised on the rehearsal host —
 # a passing `cargo test` only proves the code compiles and unit-tests
 # clean, not that it boots/migrates cleanly in a real container. Without

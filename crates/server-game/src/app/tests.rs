@@ -795,12 +795,22 @@ async fn persisted_games_reload_into_new_app_state() {
             "/games",
             Some(&alice.session_token),
             &CreateGameRequest {
-                seats: vec![CreateSeatRequest {
-                    kind: SeatKind::Human,
-                    display_name: "Alice".to_string(),
-                    engine_id: None,
-                    claim: Some(SeatClaim::Creator),
-                }],
+                seats: vec![
+                    CreateSeatRequest {
+                        kind: SeatKind::Human,
+                        display_name: "Alice".to_string(),
+                        engine_id: None,
+                        claim: Some(SeatClaim::Creator),
+                    },
+                    // A game needs two seats; a bot fills the second without
+                    // an invitation, keeping this test about reloading.
+                    CreateSeatRequest {
+                        kind: SeatKind::Engine,
+                        display_name: "Greedy".to_string(),
+                        engine_id: Some("greedy-v1".to_string()),
+                        claim: None,
+                    },
+                ],
                 seed: Some(999),
                 variant: None,
                 language: None,
@@ -831,7 +841,111 @@ async fn persisted_games_reload_into_new_app_state() {
         .expect("game should reload from sqlite snapshot");
     assert_eq!(restored.id, created.id);
     assert_eq!(restored.status, api::GameStatus::Active);
-    assert_eq!(restored.participants.len(), 1);
+    assert_eq!(restored.participants.len(), 2);
+}
+
+/// GAME-3. A one-seat game is not a small game — it is over on its first
+/// turn, because the finish rule reads "one seat or fewer still unresigned"
+/// as somebody having left, which is true from the start when nobody else
+/// was ever there.
+#[tokio::test]
+async fn creating_a_game_with_one_seat_is_rejected() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state);
+    let alice = register_player(app.clone(), "Alice").await;
+
+    let response = send_json_auth(
+        app,
+        Method::POST,
+        "/games",
+        Some(&alice.session_token),
+        &CreateGameRequest {
+            seats: vec![CreateSeatRequest {
+                kind: SeatKind::Human,
+                display_name: "Alice".to_string(),
+                engine_id: None,
+                claim: Some(SeatClaim::Creator),
+            }],
+            seed: None,
+            variant: None,
+            language: None,
+            board_layout: None,
+            move_time_limit_seconds: None,
+        },
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// GAME-3, checked again where a roster can shrink. Seats may be removed
+/// after creation, so passing the check once is not enough.
+#[tokio::test]
+async fn starting_a_game_cut_down_to_one_seat_is_rejected() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state);
+    let alice = register_player(app.clone(), "Alice").await;
+
+    let created: GameStateDto = read_json(
+        send_json_auth(
+            app.clone(),
+            Method::POST,
+            "/games",
+            Some(&alice.session_token),
+            &CreateGameRequest {
+                seats: vec![
+                    CreateSeatRequest {
+                        kind: SeatKind::Human,
+                        display_name: "Alice".to_string(),
+                        engine_id: None,
+                        claim: Some(SeatClaim::Creator),
+                    },
+                    CreateSeatRequest {
+                        kind: SeatKind::Engine,
+                        display_name: "Greedy".to_string(),
+                        engine_id: Some("greedy-v1".to_string()),
+                        claim: None,
+                    },
+                ],
+                seed: None,
+                variant: None,
+                language: None,
+                board_layout: None,
+                move_time_limit_seconds: None,
+            },
+        )
+        .await,
+    )
+    .await;
+
+    let removed = send_json_auth(
+        app.clone(),
+        Method::POST,
+        &format!("/games/{}/seats/1/remove", created.id),
+        Some(&alice.session_token),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        removed.status(),
+        StatusCode::OK,
+        "removing a seat while waiting is allowed"
+    );
+
+    let response = send_json_auth(
+        app,
+        Method::POST,
+        &format!("/games/{}/start", created.id),
+        Some(&alice.session_token),
+        &StartGameRequest::default(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a roster of one must not reach the board"
+    );
 }
 
 #[tokio::test]

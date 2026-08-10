@@ -953,7 +953,13 @@ fn game_row(
                                 if messages.is_empty() {
                                     p { class: "chat-empty", "No messages yet" }
                                 }
-                                for message in messages.iter() {
+                                // Newest first in the DOM. `.chat-messages` is
+                                // `column-reverse`, which paints the first child
+                                // at the bottom *and* starts scrolled there —
+                                // so the latest message is in view without any
+                                // scrolling code, and stays in view as more
+                                // arrive.
+                                for message in messages.iter().rev() {
                                     {
                                         let is_own = viewer_player_id == Some(message.player_id.as_str());
                                         let message_class = if is_own {
