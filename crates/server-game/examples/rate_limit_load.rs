@@ -26,6 +26,25 @@
 //! Request shapes come from the `api` crate's own DTOs. A load test that
 //! builds JSON by hand drifts from the contract silently, and then passes
 //! while testing something the server no longer accepts.
+//!
+//! **What this cannot test, and why.** Caddy replaces `X-Forwarded-For` with
+//! the address the connection came from, so every request from one machine is
+//! one caller however the header is set — see
+//! `docs/changes/25-rate-limiting.md`. Two checks were written here on the
+//! assumption that addresses could be spoofed, and would have reported
+//! confidently on nothing:
+//!
+//! - **the global floor**, which needs enough traffic to pass it without
+//!   tripping a keyed tier first — impossible from one address, since the
+//!   per-caller limit binds long before 1200/min
+//! - **the hashing semaphore**, which needs concurrent logins that are not
+//!   refused for frequency — and heavy auth refuses them at ten a minute
+//!
+//! Both need either many real sources or the keyed limits raised on the host
+//! for the duration. That is #91's rig, not this one's. The session check
+//! below *does* work, because the authenticated tier keys on the session token
+//! rather than the address, and two sessions from one machine are genuinely
+//! two callers.
 
 use std::fmt::Write as _;
 use std::fs::OpenOptions;
@@ -35,19 +54,7 @@ use std::time::{Duration, Instant};
 
 use api::{LoginPlayerRequest, RegisterPlayerRequest};
 
-const RESULTS_CSV_HEADER: &str = "timestamp_unix_seconds,git_commit,host,target,per_ip_refused_after,global_status,health_under_load,sessions_separate,registration_refused_after,hash_median_ms,semaphore_503s,checks_failed\n";
-
-/// Requests fired at the global floor. The default limit is 1200/min with a
-/// burst of 200, and these are spread across enough addresses that no *keyed*
-/// tier trips first — which is the point: this check has to be about the
-/// global limit alone, or it proves nothing about it.
-const GLOBAL_PROBE_REQUESTS: usize = 1_600;
-const GLOBAL_PROBE_ADDRESSES: usize = 160;
-
-/// Concurrent logins aimed at the hashing semaphore rather than at a rate
-/// limit — hence one address each, staying under the heavy-auth allowance so
-/// what refuses them is capacity and not frequency.
-const SEMAPHORE_PROBE_LOGINS: usize = 24;
+const RESULTS_CSV_HEADER: &str = "timestamp_unix_seconds,git_commit,host,target,per_ip_refused_after,health_under_load,sessions_separate,registration_refused_after,hash_median_ms,checks_failed\n";
 
 /// Argon2 at the OWASP profile costs ~47 ms on the production box. A hash that
 /// suddenly takes ~1 ms means somebody weakened the parameters, which is a
@@ -137,18 +144,6 @@ fn run_tag() -> String {
     format!("{:x}", now_unix_seconds() & 0xff_ffff)
 }
 
-/// "The server is not available" is a family, not a code: it is down, or
-/// unreachable, or busy, and a caller does the same thing about all three —
-/// back off and retry. The client already draws exactly this line in
-/// `backend_is_unreachable`, and this check has to agree with it or the two
-/// would be pinning different contracts.
-///
-/// The other family is "you are asking too often", which is 429 alone: the
-/// caller's own doing, and fixable by them.
-fn is_unavailable(status: u16) -> bool {
-    (502..=504).contains(&status)
-}
-
 async fn status_of(request: reqwest::RequestBuilder) -> u16 {
     match request.send().await {
         Ok(response) => response.status().as_u16(),
@@ -194,25 +189,21 @@ async fn main() {
         check_registration_cap(&client, &target, &tag, &mut report).await;
     let sessions_separate = check_sessions_are_separate(&client, &target, &tag, &mut report).await;
     let hash_median_ms = check_hash_cost(&client, &target, &tag, &mut report).await;
-    let semaphore_503s = check_semaphore_refuses(&client, &target, &tag, &mut report).await;
-    let global_status = check_global_floor(&client, &target, &tag, &mut report).await;
     let health_under_load = check_health_is_never_limited(&client, &target, &mut report).await;
 
     let mut row = String::new();
     let _ = writeln!(
         row,
-        "{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{},{},{},{},{},{},{},{},{},{}",
         now_unix_seconds(),
         git_commit_label(),
         hostname(),
         target,
         per_ip_refused_after,
-        global_status,
         health_under_load,
         sessions_separate,
         registration_refused_after,
         hash_median_ms,
-        semaphore_503s,
         report.failures.len(),
     );
 
@@ -351,11 +342,12 @@ async fn check_sessions_are_separate(
     let mut tokens = Vec::new();
     for which in ["one", "two"] {
         let name = format!("loadtest-{tag}-sess-{which}");
-        // Registered from its own address so the registration cap, which is
-        // keyed by address, does not interfere with what is being tested.
+        // Both registrations land in the same address bucket — there is no
+        // second address to be had — so this needs the registration burst to
+        // have room for two. It is the first thing this run does for a reason.
         let response = client
             .post(format!("{target}/auth/register"))
-            .header("x-forwarded-for", format!("{address}-{which}"))
+            .header("x-forwarded-for", &address)
             .json(&RegisterPlayerRequest {
                 display_name: name.clone(),
                 email: format!("{name}@example.com"),
@@ -480,145 +472,6 @@ async fn check_hash_cost(
         format!("median login round trip {median} ms (including network)"),
     );
     median.to_string()
-}
-
-/// #11's semaphore refuses as unavailable rather than queueing indefinitely. Aimed
-/// at capacity, not frequency: each login comes from its own address, so the
-/// heavy-auth rate limit is not what answers.
-async fn check_semaphore_refuses(
-    client: &reqwest::Client,
-    target: &str,
-    tag: &str,
-    report: &mut Report,
-) -> String {
-    let mut handles = Vec::new();
-    for n in 0..SEMAPHORE_PROBE_LOGINS {
-        let client = client.clone();
-        let target = target.to_string();
-        let name = format!("loadtest-{tag}-sema-{n}");
-        handles.push(tokio::spawn(async move {
-            let response = client
-                .post(format!("{target}/auth/login"))
-                .header("x-forwarded-for", format!("198.19.{}.{}", n / 250, n % 250))
-                .json(&LoginPlayerRequest {
-                    display_name: name,
-                    password: "correct horse battery staple".to_string(),
-                    stay_logged_in: false,
-                })
-                .send()
-                .await;
-            match response {
-                Ok(r) => {
-                    let status = r.status().as_u16();
-                    let retry_after = r
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .map(str::to_string);
-                    (status, retry_after)
-                }
-                Err(_) => (0, None),
-            }
-        }));
-    }
-
-    let mut unavailable = 0usize;
-    let mut with_retry_after = 0usize;
-    let mut queued_forever = 0usize;
-    for handle in handles {
-        match handle.await {
-            Ok((status, retry_after)) if is_unavailable(status) => {
-                unavailable += 1;
-                if retry_after.is_some() {
-                    with_retry_after += 1;
-                }
-            }
-            Ok((0, _)) => queued_forever += 1,
-            Ok(_) => {}
-            Err(_) => queued_forever += 1,
-        }
-    }
-
-    report.rule(
-        "nothing queues indefinitely under concurrent hashing",
-        queued_forever == 0,
-        format!("{queued_forever} of {SEMAPHORE_PROBE_LOGINS} never answered"),
-    );
-
-    // A 503 is the *expected* shape when saturated, but a box fast enough to
-    // absorb the burst is not a failure — so this reports rather than judges,
-    // and only insists that any 503 carries the retry hint that makes it
-    // actionable.
-    if unavailable > 0 {
-        report.rule(
-            "an unavailable answer carries Retry-After",
-            with_retry_after == unavailable,
-            format!("{with_retry_after} of {unavailable} had the header"),
-        );
-    } else {
-        println!(
-            "  --   the hashing pool absorbed {SEMAPHORE_PROBE_LOGINS} concurrent logins without refusing"
-        );
-    }
-    unavailable.to_string()
-}
-
-/// The global floor answers from the **unavailable** family, not 429.
-/// Different facts: 429 says *you* are asking too often, and the 5xx family
-/// says the service is not there for anybody just now — down, unreachable, or
-/// busy. A caller backs off on the second and slows down on the first.
-///
-/// Spread across many addresses so no keyed tier trips first — otherwise this
-/// would prove something about the per-address limit instead.
-async fn check_global_floor(
-    client: &reqwest::Client,
-    target: &str,
-    _tag: &str,
-    report: &mut Report,
-) -> String {
-    let mut handles = Vec::new();
-    for n in 0..GLOBAL_PROBE_REQUESTS {
-        let client = client.clone();
-        let target = target.to_string();
-        let address = format!(
-            "100.64.{}.{}",
-            (n % GLOBAL_PROBE_ADDRESSES) / 250,
-            (n % GLOBAL_PROBE_ADDRESSES) % 250
-        );
-        handles.push(tokio::spawn(async move {
-            status_of(
-                client
-                    .get(format!("{target}/engines"))
-                    .header("x-forwarded-for", address),
-            )
-            .await
-        }));
-    }
-
-    let mut unavailable = 0usize;
-    let mut too_many = 0usize;
-    for handle in handles {
-        if let Ok(status) = handle.await {
-            if is_unavailable(status) {
-                unavailable += 1;
-            } else if status == 429 {
-                too_many += 1;
-            }
-        }
-    }
-
-    report.rule(
-        "the global floor refuses as unavailable, not as asking too often",
-        unavailable > 0 && too_many == 0,
-        format!(
-            "{unavailable} in the 502-504 family and {too_many} answered 429, across {GLOBAL_PROBE_REQUESTS} requests from {GLOBAL_PROBE_ADDRESSES} addresses"
-        ),
-    );
-    if unavailable == 0 {
-        "none".to_string()
-    } else {
-        format!("{unavailable}x5xx")
-    }
 }
 
 /// LIMIT-4. `/health` is never limited, at any rate — `deploy.sh` smoke-tests

@@ -204,17 +204,33 @@ nobody.
 otherwise, taking the leftmost entry — Caddy appends, so the original client
 is first.
 
-**This trusts a header, and may only do so while the server has no port of its
-own.** `docker-compose.yml` gives the `server` service no `ports:`, so Caddy is
-the sole ingress and the header is Caddy's. The moment anything else can reach
-the server the header is attacker-controlled, and this becomes a way to evade
-the limit — or, worse, to lock out a chosen victim by forging their address.
+**The header is Caddy's, not the caller's** — and that is stronger than it
+sounds. Caddy does not trust an incoming `X-Forwarded-For`: with no
+`trusted_proxies` configured it **replaces** the header with the address the
+connection actually came from. So a caller cannot forge their address, cannot
+spread themselves across imaginary addresses to evade a limit, and cannot lock
+out a chosen victim by claiming to be them.
 
-The alternative is worse rather than safer: without the header the key is the
-`web` container for every request on the internet, so the first abuser locks
-out everyone. **The constraint is therefore real and belongs in the compose
-file**, not merely in a comment here: adding a `ports:` line to the server
-service silently converts this from a protection into a weapon.
+Verified rather than assumed, on 2026-08-09: five registrations sent through
+Caddy with five different `X-Forwarded-For` values shared one bucket, and the
+same five sent straight at the server were treated as five callers. The proxy
+is doing the sanitising.
+
+**The precondition is therefore narrower than it first appears, and still
+real.** It is not "the header must be trustworthy" — Caddy sees to that. It is
+that **nothing may reach the server except through Caddy**, which
+`docker-compose.yml` enforces by giving the `server` service no `ports:`.
+Adding one would let a caller supply their own header and be believed.
+
+The alternative — ignoring the header and keying on the peer — is worse rather
+than safer: the peer is the `web` container for every request on the internet,
+so the first abuser locks out everyone.
+
+**One consequence for testing**, which cost a rehearsal run to find: per-caller
+separation cannot be verified from outside, because every request from one
+machine is genuinely one caller. It is verified in-process instead, by
+`one_callers_allowance_is_not_anothers`. A test that appears to send from two
+addresses through Caddy is testing nothing, and will fail — correctly.
 
 **By session token, not by account**, on the authenticated tier. Resolving a
 token to an account needs the database and a key extractor cannot wait. They
