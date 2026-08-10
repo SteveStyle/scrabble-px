@@ -127,12 +127,49 @@ this change settles.
 
 Applied outermost first, each answering a different question:
 
-| Tier | Keyed by | Question | Default | Burst |
+| Tier | Keyed by | Question |
+| --- | --- | --- |
+| registration | client address | is one source manufacturing accounts |
+| heavy auth | client address | is one source burning Argon2 time |
+| authenticated | session token | is one caller monopolising the service |
+| global | nothing | is the service as a whole beyond its means |
+
+### What is limited, and by what
+
+The same four tiers as a grid of *what is counted* against *who it is counted
+for*. A blank is not an oversight to be filled in — it is a combination
+deliberately not limited, and the blanks are the more interesting half.
+
+| | per IP | per session | per account | global |
 | --- | --- | --- | --- | --- |
-| registration | client address | is one source manufacturing accounts | 2/min | 3 |
-| heavy auth | client address | is one source burning Argon2 time | 10/min | 10 |
-| authenticated | session token | is one caller monopolising the service | 240/min | 60 |
-| global | nothing | is the service as a whole beyond its means | 1200/min | 200 |
+| **registrations** | 2/min, burst 3 | | | |
+| **logins and password resets** | 10/min, burst 10 | | | |
+| **authenticated requests** | | 240/min, burst 60 | | |
+| **any request** | | | | 1200/min, burst 200 |
+
+Three things fall out of it that the list above cannot show.
+
+**The account column is empty, and that is a substitution rather than a gap.**
+The issue asked for authenticated limits keyed per account. They are keyed per
+session, because resolving a token to an account needs the database and a key
+extractor cannot wait. Session is a proxy that coincides with account for the
+case that matters — a bot harness reuses one session — and diverges for a
+person with three devices, who gets three allowances. Acceptable, and worth
+seeing rather than inferring.
+
+**Authenticated traffic has no per-IP limit at all.** Ten sessions from one
+address get ten times 240/min between them, bounded only by the global floor.
+Acquiring those sessions is itself limited — ten logins a minute from that
+address — but a session lasts up to ten days (`ACC-1`), so they can be
+collected slowly and spent all at once. This is the one blank that might want
+filling.
+
+**No metric has a global limit of its own.** There is no service-wide cap on
+registrations, so a registration flood spread across enough addresses is
+bounded only by the 1200/min that covers everything. Whether that matters
+depends on how much of the 1200 a determined caller can spend on registrations
+before ordinary traffic notices, which is a question for #28 rather than a
+guess here.
 
 **Registration is tightest** because a throwaway account is how every other
 limit here gets worked around, and nobody legitimately registers twice in a
