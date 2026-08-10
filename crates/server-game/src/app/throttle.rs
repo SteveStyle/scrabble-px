@@ -29,6 +29,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use axum::extract::ConnectInfo;
 use axum::http::Request;
+use rand::Rng;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::KeyExtractor;
 use tower_governor::{GovernorError, GovernorLayer};
@@ -212,12 +213,47 @@ where
 fn refusal(error: GovernorError, problem: impl Fn(u32) -> ApiProblem) -> axum::response::Response {
     match error {
         GovernorError::TooManyRequests { wait_time, .. } => {
-            // Zero would invite an immediate retry, which is the one thing a
-            // limited caller should not do.
-            problem(u32::try_from(wait_time).unwrap_or(u32::MAX).max(1)).into_response()
+            problem(retry_after(wait_time)).into_response()
         }
         other => ApiProblem::internal(format!("rate limiting failed: {other}")).into_response(),
     }
+}
+
+/// How much extra, at most, a caller is asked to wait so that everybody
+/// refused at once does not come back at once. See `retry_after`.
+const RETRY_JITTER_SECONDS: u64 = 2;
+
+/// What goes in `Retry-After`, from the remaining wait `governor` reports.
+///
+/// `Retry-After` is machine-readable. Our own client only renders it, but a
+/// third-party client — or the bot harness — will use it to schedule a retry,
+/// so it has to be a number that works when obeyed exactly.
+///
+/// Two adjustments, both upward, because the errors are not symmetric: a
+/// caller who waits slightly too long is served, and one who waits slightly
+/// too little is refused.
+///
+/// **Round up.** `tower_governor` computes the wait as
+/// `wait_time_from(now).as_secs()`, which truncates. The wait is a countdown
+/// from the moment of refusal, so it is almost never a whole number of
+/// seconds, and 2.99s was reported as 2 — a client obeying it exactly was
+/// refused again, every time. The value arrives already truncated, so adding
+/// one is the ceiling. This subsumes the old `.max(1)`: a sub-second wait
+/// still reports 1, and zero is never offered, since zero invites the
+/// immediate retry a limited caller should not make.
+///
+/// **Then jitter.** The three keyed tiers stagger themselves — each caller's
+/// bucket refreshes from its own spend — but `global` is one bucket for the
+/// whole service, with a 50ms period, so every caller it refuses computes the
+/// same sub-second wait and is told the same number. Without jitter they all
+/// return together, into a service that was already short of room. Rounding up
+/// on its own would make that worse, by turning a spread of truncated values
+/// into a uniform one.
+fn retry_after(wait_time: u64) -> u32 {
+    let seconds = wait_time
+        .saturating_add(1)
+        .saturating_add(rand::thread_rng().gen_range(0..=RETRY_JITTER_SECONDS));
+    u32::try_from(seconds).unwrap_or(u32::MAX)
 }
 
 /// One permit every this often. Shared so the keyed tiers and the global floor
@@ -399,6 +435,99 @@ mod tests {
             statuses[3],
             StatusCode::TOO_MANY_REQUESTS,
             "the fourth is over it, and is told so rather than made to wait: {statuses:?}"
+        );
+    }
+
+    /// `Retry-After` has to work when a machine obeys it exactly.
+    ///
+    /// The bound that matters is the lower one: the value must never be less
+    /// than the wait `governor` reported, because that value is already
+    /// truncated and acting on it early is the defect this covers. The upper
+    /// bound pins the jitter as a spread rather than an open-ended delay.
+    #[test]
+    fn retry_after_is_never_early_and_never_wildly_late() {
+        for wait in [0, 1, 2, 29, 3_600] {
+            for _ in 0..50 {
+                let answer = u64::from(retry_after(wait));
+                let earliest = wait + 1;
+                assert!(
+                    answer >= earliest,
+                    "told to wait {answer}s when governor's own remaining wait was {wait}s, \
+                     already truncated — obeying that is too early"
+                );
+                assert!(
+                    answer <= earliest + RETRY_JITTER_SECONDS,
+                    "told to wait {answer}s for a {wait}s wait, which is more than jitter allows"
+                );
+            }
+        }
+    }
+
+    /// Never zero, whatever the wait. Zero invites the immediate retry a
+    /// limited caller should not make, and it was the one case the old
+    /// `.max(1)` existed for — worth keeping asserted now that the flooring is
+    /// a consequence of rounding up rather than its own step.
+    #[test]
+    fn retry_after_never_invites_an_immediate_retry() {
+        for _ in 0..50 {
+            assert!(retry_after(0) >= 1);
+        }
+    }
+
+    /// The behaviour the rounding is for: a client that waits exactly as long
+    /// as it was told is served.
+    ///
+    /// Before this, `Retry-After` was `wait_time_from(now).as_secs()` —
+    /// truncated — so a 3s period reported 2, and obeying it exactly was
+    /// refused every time. A test asserting only that a caller recovers
+    /// *eventually* passed throughout.
+    ///
+    /// Built with the real `refusal` handler rather than governor's default
+    /// response, because the header under test is the one our handler writes.
+    #[tokio::test]
+    async fn a_caller_that_obeys_retry_after_is_served() {
+        let config = GovernorConfigBuilder::default()
+            .period(std::time::Duration::from_millis(3000))
+            .burst_size(1)
+            .key_extractor(ClientAddress)
+            .finish()
+            .expect("a valid config");
+        let app = Router::new().route("/", get(|| async { "ok" })).layer(
+            GovernorLayer::new(std::sync::Arc::new(config)).error_handler(|error| {
+                refusal(error, |wait| {
+                    ApiProblem::too_many_requests("too often", wait)
+                })
+            }),
+        );
+        let call = async |app: Router| {
+            app.oneshot(forwarded("203.0.113.12"))
+                .await
+                .expect("the router should answer")
+        };
+
+        assert_eq!(
+            call(app.clone()).await.status(),
+            StatusCode::OK,
+            "the burst"
+        );
+
+        let refused = call(app.clone()).await;
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        let told: u64 = refused
+            .headers()
+            .get("retry-after")
+            .expect("a refusal carries Retry-After")
+            .to_str()
+            .expect("an ASCII header")
+            .parse()
+            .expect("a whole number of seconds");
+
+        tokio::time::sleep(std::time::Duration::from_secs(told)).await;
+
+        assert_eq!(
+            call(app).await.status(),
+            StatusCode::OK,
+            "waiting exactly as long as Retry-After said must be enough"
         );
     }
 
