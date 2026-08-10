@@ -231,6 +231,18 @@ echo "==> $TARGET_SHA confirmed on the remote ($REMOTE_BRANCHES)"
 # and a run of skipped jobs still concludes success. Asking the looser question
 # is what passed the commit released as 0.5.0, whose only run that executed
 # e2e had failed. See docs/3.3, "Gating on a particular run".
+#
+# **Which run depends on the environment.** A rehearsal exercises a commit that
+# is usually still on a branch, so there is no push-to-`main` run to wait for —
+# asking for one blocked the gate for its full twenty minutes and never reached
+# the build. And e2e cannot be required of a branch push, because it does not
+# run there: requiring it would refuse every rehearsal rather than every other
+# one.
+if (( IS_RELEASE )); then
+  CI_RUN=(--run push:main --require e2e)
+else
+  CI_RUN=(--run push)
+fi
 if [[ "${DEPLOY_SKIP_CI:-}" == "1" ]]; then
   echo "==> WARNING: skipping the CI gate (DEPLOY_SKIP_CI=1)"
 # `--wait` rather than a bare check: CI takes 3-10 minutes, so deploying
@@ -238,7 +250,7 @@ if [[ "${DEPLOY_SKIP_CI:-}" == "1" ]]; then
 # you to run the wait by hand and come back. Blocking here folds that into
 # the one command you already typed.
 elif ! "$REPO_DIR/scripts/ci-status.sh" --wait \
-  --run push:main --require e2e "$TARGET_FULL_SHA"; then
+  "${CI_RUN[@]}" "$TARGET_FULL_SHA"; then
   echo "error: refusing to deploy — see above. Fix CI rather than deploying past it," >&2
   echo "       or set DEPLOY_SKIP_CI=1 if GitHub itself is the problem." >&2
   exit 1
@@ -254,7 +266,7 @@ fi
 # 0.5.0 through, so it is **said out loud** rather than skipped quietly. A line
 # reading "no pull-request run" is something you can notice and question; a
 # gate that stays silent when it has nothing to check is not.
-if [[ "${DEPLOY_SKIP_CI:-}" == "1" ]]; then
+if (( ! IS_RELEASE )) || [[ "${DEPLOY_SKIP_CI:-}" == "1" ]]; then
   :
 elif [[ "$(gh run list --commit "$TARGET_FULL_SHA" --workflow CI --limit 30 \
       --json event --jq '[.[] | select(.event == "pull_request")] | length' \
