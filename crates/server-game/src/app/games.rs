@@ -1,5 +1,10 @@
 use super::*;
 
+/// The fewest seats a game may have. Below this the finish rule — one seat or
+/// fewer still unresigned means the last one standing has won — is true before
+/// anybody has left.
+const MINIMUM_SEATS: usize = 2;
+
 pub(crate) async fn list_games(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -104,10 +109,6 @@ pub(crate) async fn create_game(
     headers: HeaderMap,
     Json(request): Json<CreateGameRequest>,
 ) -> Result<Json<api::GameStateDto>, ApiProblem> {
-    if request.seats.is_empty() {
-        return Err(ApiProblem::bad_request("At least one seat is required"));
-    }
-
     // Every seat now needs a real accepting/claiming party (the creator
     // themselves, a named invitee, or a stranger who accepts an open
     // invitation) — there's no more "anonymous, open to whoever clicks it"
@@ -115,6 +116,15 @@ pub(crate) async fn create_game(
     let creator_player_id = authenticated_player_id(&state, &headers)
         .await
         .ok_or_else(|| ApiProblem::unauthorized("Sign in to create a game"))?;
+
+    // Two, not one. A single-seat game is not merely pointless: the game ends
+    // as soon as one seat or fewer is still unresigned, which is true of a
+    // solo game from its first turn, so it finished after one move and
+    // declared that seat the winner. The finish rule is right — somebody left
+    // and one remains — and this is the precondition it always assumed.
+    if request.seats.len() < MINIMUM_SEATS {
+        return Err(ApiProblem::bad_request("A game needs at least two seats"));
+    }
 
     let creator_claims = request
         .seats
@@ -353,6 +363,13 @@ pub(crate) async fn start_game(
         let game = games
             .get_mut(&game_id)
             .ok_or_else(|| ApiProblem::not_found("Game not found"))?;
+
+        // Checked again here, not only at creation: seats can be removed
+        // afterwards, and a roster taken down to one would otherwise reach
+        // the board and end on its first turn.
+        if game.participants.len() < MINIMUM_SEATS {
+            return Err(ApiProblem::bad_request("A game needs at least two seats"));
+        }
 
         // Every human seat needs a real occupant (creator or an accepted
         // invitation) before play can start — an unclaimed human seat means
