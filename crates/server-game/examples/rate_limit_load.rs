@@ -184,12 +184,18 @@ async fn main() {
 
     let mut report = Report::new();
 
-    let per_ip_refused_after = check_per_ip_burst(&client, &target, &tag, &mut report).await;
-    let registration_refused_after =
-        check_registration_cap(&client, &target, &tag, &mut report).await;
-    let sessions_separate = check_sessions_are_separate(&client, &target, &tag, &mut report).await;
-    let hash_median_ms = check_hash_cost(&client, &target, &tag, &mut report).await;
+    // One address for the whole run, because there is only ever one: Caddy
+    // replaces the header with where the connection came from. Randomised only
+    // so a re-run is not refused by the bucket the last one filled.
+    let address = format!("203.0.113.{}", 1 + (now_unix_seconds() % 250));
+
+    let (seeded, registration_refused_after) =
+        probe_registration_limit(&client, &target, &tag, &address, &mut report).await;
+    let sessions_separate =
+        check_sessions_are_separate(&client, &target, &address, &seeded, &mut report).await;
+    let hash_median_ms = check_hash_cost(&client, &target, &address, &seeded, &mut report).await;
     let health_under_load = check_health_is_never_limited(&client, &target, &mut report).await;
+    let per_ip_refused_after = registration_refused_after.clone();
 
     let mut row = String::new();
     let _ = writeln!(
@@ -226,128 +232,39 @@ async fn main() {
     }
 }
 
-/// LIMIT-1 and LIMIT-2: a caller over its allowance is refused rather than
-/// queued, and the request *before* the allowance is not. Both halves matter —
-/// a limiter that refused everything would pass the first on its own.
-async fn check_per_ip_burst(
-    client: &reqwest::Client,
-    target: &str,
-    tag: &str,
-    report: &mut Report,
-) -> String {
-    let address = format!("198.51.100.{}", 1 + (now_unix_seconds() % 250));
-    let mut first_refusal: Option<usize> = None;
-
-    for attempt in 1..=20usize {
-        let name = format!("loadtest-{tag}-burst-{attempt}");
-        let status = status_of(
-            client
-                .post(format!("{target}/auth/register"))
-                .header("x-forwarded-for", &address)
-                .json(&RegisterPlayerRequest {
-                    display_name: name.clone(),
-                    email: format!("{name}@example.com"),
-                    password: "correct horse battery staple".to_string(),
-                    stay_logged_in: false,
-                }),
-        )
-        .await;
-
-        if status == 429 {
-            first_refusal = Some(attempt);
-            break;
-        }
-        if attempt == 1 {
-            report.rule(
-                "the first request is not refused",
-                status != 429,
-                format!("got {status}"),
-            );
-        }
-    }
-
-    match first_refusal {
-        Some(n) => {
-            report.rule(
-                "a caller over its allowance is refused (429)",
-                true,
-                format!("after {n} from one address"),
-            );
-            n.to_string()
-        }
-        None => {
-            report.rule(
-                "a caller over its allowance is refused (429)",
-                false,
-                "twenty registrations from one address were all accepted",
-            );
-            "never".to_string()
-        }
-    }
+/// One account created by the probe below: enough to sign in as, later.
+struct SeededAccount {
+    name: String,
+    token: String,
 }
 
-/// The registration cap trips where expected. Separate from the burst check
-/// because it is the *tightest* limit and the one an attacker reaches for
-/// first — a throwaway account is how every other limit gets worked around.
-async fn check_registration_cap(
+/// LIMIT-1 and LIMIT-2, and the setup for everything after it — the same act.
+///
+/// Registers until refused. What comes back is both the measurement (how many
+/// got through, and that the refusal happened at all) and the accounts the
+/// later checks need to sign in with.
+///
+/// **They have to be the same act.** Every request from this machine is one
+/// caller — Caddy replaces the forwarded header — so the registration
+/// allowance is a single small budget shared by the whole run. An earlier
+/// version spent it proving the limit worked and then found it had nothing
+/// left to register the accounts the other checks needed, and reported three
+/// failures that were all itself.
+async fn probe_registration_limit(
     client: &reqwest::Client,
     target: &str,
     tag: &str,
+    address: &str,
     report: &mut Report,
-) -> String {
-    let address = format!("203.0.113.{}", 1 + (now_unix_seconds() % 250));
-    let mut accepted = 0usize;
+) -> (Vec<SeededAccount>, String) {
+    let mut seeded: Vec<SeededAccount> = Vec::new();
+    let mut refused_after: Option<usize> = None;
 
     for attempt in 1..=12usize {
-        let name = format!("loadtest-{tag}-reg-{attempt}");
-        let status = status_of(
-            client
-                .post(format!("{target}/auth/register"))
-                .header("x-forwarded-for", &address)
-                .json(&RegisterPlayerRequest {
-                    display_name: name.clone(),
-                    email: format!("{name}@example.com"),
-                    password: "correct horse battery staple".to_string(),
-                    stay_logged_in: false,
-                }),
-        )
-        .await;
-        if status == 429 {
-            break;
-        }
-        accepted += 1;
-    }
-
-    // The default is 2/min with a burst of 3, so a handful through is right
-    // and a dozen is not. The assertion is the order of magnitude, not the
-    // exact figure, which is tunable per host by design.
-    report.rule(
-        "the registration cap trips within a few attempts",
-        accepted > 0 && accepted <= 8,
-        format!("{accepted} accepted before refusal"),
-    );
-    accepted.to_string()
-}
-
-/// LIMIT-3, and the property that keeps the bot harness in #10 from throttling
-/// its owner: two sessions from one address are two callers.
-async fn check_sessions_are_separate(
-    client: &reqwest::Client,
-    target: &str,
-    tag: &str,
-    report: &mut Report,
-) -> String {
-    let address = format!("192.0.2.{}", 1 + (now_unix_seconds() % 250));
-
-    let mut tokens = Vec::new();
-    for which in ["one", "two"] {
-        let name = format!("loadtest-{tag}-sess-{which}");
-        // Both registrations land in the same address bucket — there is no
-        // second address to be had — so this needs the registration burst to
-        // have room for two. It is the first thing this run does for a reason.
+        let name = format!("loadtest-{tag}-{attempt}");
         let response = client
             .post(format!("{target}/auth/register"))
-            .header("x-forwarded-for", &address)
+            .header("x-forwarded-for", address)
             .json(&RegisterPlayerRequest {
                 display_name: name.clone(),
                 email: format!("{name}@example.com"),
@@ -356,44 +273,98 @@ async fn check_sessions_are_separate(
             })
             .send()
             .await;
-        let token = match response {
-            Ok(r) if r.status().is_success() => r
-                .json::<serde_json::Value>()
-                .await
-                .ok()
-                .and_then(|v| v["session_token"].as_str().map(str::to_string)),
-            _ => None,
-        };
-        if let Some(token) = token {
-            tokens.push(token);
+
+        match response {
+            Ok(r) if r.status().as_u16() == 429 => {
+                refused_after = Some(attempt - 1);
+                break;
+            }
+            Ok(r) if r.status().is_success() => {
+                if let Ok(body) = r.json::<serde_json::Value>().await
+                    && let Some(token) = body["session_token"].as_str()
+                {
+                    seeded.push(SeededAccount {
+                        name,
+                        token: token.to_string(),
+                    });
+                }
+            }
+            _ => break,
         }
     }
 
-    if tokens.len() < 2 {
+    report.rule(
+        "the first registration is not refused",
+        !seeded.is_empty(),
+        format!("{} got through", seeded.len()),
+    );
+
+    match refused_after {
+        Some(count) => {
+            report.rule(
+                "registering repeatedly from one address is refused (429)",
+                true,
+                format!("after {count}"),
+            );
+            // The default is 2/min with a burst of 3, so a handful through is
+            // right and a dozen is not. The order of magnitude is the
+            // assertion; the exact figure is tunable per host by design.
+            report.rule(
+                "and the allowance is small",
+                count <= 8,
+                format!("{count} accepted before refusal"),
+            );
+            (seeded, count.to_string())
+        }
+        None => {
+            report.rule(
+                "registering repeatedly from one address is refused (429)",
+                false,
+                "twelve attempts from one address were all accepted",
+            );
+            (seeded, "never".to_string())
+        }
+    }
+}
+
+/// LIMIT-3, and the one separation that *can* be seen from outside: the
+/// authenticated tier keys on the session token, so two sessions from one
+/// machine are genuinely two callers even though one address is.
+async fn check_sessions_are_separate(
+    client: &reqwest::Client,
+    target: &str,
+    address: &str,
+    seeded: &[SeededAccount],
+    report: &mut Report,
+) -> String {
+    if seeded.len() < 2 {
         report.rule(
             "two sessions from one address are two callers",
             false,
-            "could not register two accounts to test with",
+            format!(
+                "needed two accounts, the registration probe yielded {}",
+                seeded.len()
+            ),
         );
         return "untested".to_string();
     }
 
-    // Spend the first session's allowance from the shared address, then ask
-    // whether the second still answers.
+    // Spend the first session's allowance, then ask whether the second still
+    // answers.
     for _ in 0..80 {
         let _ = status_of(
             client
                 .get(format!("{target}/engines"))
-                .header("x-forwarded-for", &address)
-                .bearer_auth(&tokens[0]),
+                .header("x-forwarded-for", address)
+                .bearer_auth(&seeded[0].token),
         )
         .await;
     }
     let second = status_of(
         client
             .get(format!("{target}/engines"))
-            .header("x-forwarded-for", &address)
-            .bearer_auth(&tokens[1]),
+            .header("x-forwarded-for", address)
+            .bearer_auth(&seeded[1].token),
     )
     .await;
 
@@ -408,38 +379,22 @@ async fn check_sessions_are_separate(
 
 /// A hash still costs what it should. Not a benchmark — a collapse detector.
 /// Argon2's cost is the whole of a stored password's strength, and it can be
-/// weakened by a one-line change that nothing else would notice.
+/// weakened by a one-line change nothing else would notice.
 async fn check_hash_cost(
     client: &reqwest::Client,
     target: &str,
-    tag: &str,
+    address: &str,
+    seeded: &[SeededAccount],
     report: &mut Report,
 ) -> String {
-    let name = format!("loadtest-{tag}-hash");
-    let address = format!("198.18.0.{}", 1 + (now_unix_seconds() % 250));
-
-    let registered = client
-        .post(format!("{target}/auth/register"))
-        .header("x-forwarded-for", &address)
-        .json(&RegisterPlayerRequest {
-            display_name: name.clone(),
-            email: format!("{name}@example.com"),
-            password: "correct horse battery staple".to_string(),
-            stay_logged_in: false,
-        })
-        .send()
-        .await
-        .map(|r| r.status().is_success())
-        .unwrap_or(false);
-
-    if !registered {
+    let Some(account) = seeded.first() else {
         report.rule(
-            "a password hash still costs ~47 ms",
+            "a password hash still costs what it should",
             false,
-            "could not register an account to log in as",
+            "the registration probe yielded no account to log in as",
         );
         return "untested".to_string();
-    }
+    };
 
     // A *wrong* password against a real account: the account exists, so the
     // server verifies rather than short-circuiting, and nothing is left signed
@@ -450,9 +405,9 @@ async fn check_hash_cost(
         let _ = status_of(
             client
                 .post(format!("{target}/auth/login"))
-                .header("x-forwarded-for", &address)
+                .header("x-forwarded-for", address)
                 .json(&LoginPlayerRequest {
-                    display_name: name.clone(),
+                    display_name: account.name.clone(),
                     password: "not the right password".to_string(),
                     stay_logged_in: false,
                 }),
@@ -464,8 +419,9 @@ async fn check_hash_cost(
     let median = samples[samples.len() / 2];
 
     // Network time is included and cannot be subtracted, so the floor is what
-    // carries the check: a round trip cannot be *faster* than the hash it
-    // contains.
+    // carries the check: a round trip cannot be *faster* than the hash inside
+    // it. A login refused for frequency returns without hashing at all, which
+    // would read as a collapse — hence the ceiling on attempts above.
     report.rule(
         "a password hash still costs what it should",
         (HASH_MS_FLOOR..=HASH_MS_CEILING).contains(&median),
