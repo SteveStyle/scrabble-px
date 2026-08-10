@@ -244,6 +244,28 @@ elif ! "$REPO_DIR/scripts/ci-status.sh" --wait \
   exit 1
 fi
 
+# The pull request's own run, separately, because it is an independent answer.
+# A version branch is merged fast-forward, so the released commit *is* the
+# branch tip the PR tested — and for the commit released as 0.5.0 that run had
+# failed, which this alone would have refused.
+#
+# Conditional, because not every change has a pull request: the merge lane
+# routinely does not. Absence is therefore a pass, which is the shape that let
+# 0.5.0 through, so it is **said out loud** rather than skipped quietly. A line
+# reading "no pull-request run" is something you can notice and question; a
+# gate that stays silent when it has nothing to check is not.
+if [[ "${DEPLOY_SKIP_CI:-}" == "1" ]]; then
+  :
+elif [[ "$(gh run list --commit "$TARGET_FULL_SHA" --workflow CI --limit 30 \
+      --json event --jq '[.[] | select(.event == "pull_request")] | length' \
+      2>/dev/null || echo 0)" == "0" ]]; then
+  echo "==> No pull-request run for this commit — nothing to check there"
+elif ! "$REPO_DIR/scripts/ci-status.sh" --run pull_request "$TARGET_FULL_SHA"; then
+  echo "error: refusing to deploy — the pull request for this commit did not pass CI." >&2
+  echo "       That run is the one that exercises e2e against the branch." >&2
+  exit 1
+fi
+
 # Ordered before the rehearsal check deliberately. This is an impossibility,
 # not a process requirement: no amount of rehearsing makes an image bootable
 # against a database it does not understand. Checked second, a rollback
