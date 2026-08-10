@@ -101,6 +101,51 @@ case "$DEPLOY_ENV" in
   *) echo "error: DEPLOY_ENV must be 'production' or 'rehearsal', not '$DEPLOY_ENV'." >&2; exit 1 ;;
 esac
 
+# --- Emergency changes -------------------------------------------------------
+#
+# `DEPLOY_EMERGENCY="<why>"` — restore service when the normal path is too slow.
+# See docs/3.3, "Emergency changes", which says the important part: **try
+# rollback first.** `rollback.sh` is a retag and a restore, needs no build and
+# no transfer, and has no gates because it only ever moves to something that
+# was already running. This path is for when rolling back cannot help — a bug
+# that has been live for a week, or an outage caused by something outside the
+# image.
+#
+# It skips exactly two gates, and they are the two that cost time: standing
+# this commit up on preview, and on rehearsal. Each is a full image build plus
+# a transfer and a deploy.
+#
+# It does **not** skip CI. One complete run, e2e included, is the check worth
+# waiting for — it is the only thing between here and production that has
+# actually exercised the change. `DEPLOY_SKIP_CI` still exists and still means
+# what it did: GitHub itself is unreachable. That is a different problem from
+# production being down, and conflating them would let an emergency quietly
+# ship something nothing had run.
+#
+# Nor does it skip the two that are not policy: the commit must be on a remote
+# branch, or production runs something that exists only on this machine and
+# there is nothing to roll back to or reason about afterwards; and the database
+# must not have outrun the image, which is physics rather than process — that
+# server would not boot, turning a bug into an outage.
+EMERGENCY=""
+if [[ -n "${DEPLOY_EMERGENCY:-}" ]]; then
+  case "$DEPLOY_EMERGENCY" in
+    1|true|yes) EMERGENCY="(no reason given at the time)" ;;
+    *)          EMERGENCY="$DEPLOY_EMERGENCY" ;;
+  esac
+  echo
+  echo "  ############################################################"
+  echo "  ##  EMERGENCY DEPLOY                                      ##"
+  echo "  ##  preview and rehearsal are being skipped.              ##"
+  echo "  ##  CI still has to pass, e2e included.                   ##"
+  echo "  ############################################################"
+  echo "  reason: $EMERGENCY"
+  echo
+  echo "  Have you tried ./scripts/rollback.sh? It is seconds, not minutes,"
+  echo "  and needs no build. Ctrl-C now if you have not."
+  echo
+fi
+
 # What a *release* means only applies to production: the prod-* tag is the
 # deployment log, the version bump moves the tree past what is now live, and
 # the milestone closure records what reached users. A rehearsal does none of
@@ -377,7 +422,9 @@ else
 # tooling, most obviously, which is exactly the kind of change that cannot be
 # rehearsed either. The variable says "there was nothing to see", not "I did
 # not look", so it is named for the gate rather than for the inconvenience.
-if (( IS_RELEASE )) && [[ "${DEPLOY_SKIP_PREVIEW:-}" != "1" ]]; then
+if [[ -n "$EMERGENCY" ]]; then
+  echo "==> Skipping the preview gate (emergency)"
+elif (( IS_RELEASE )) && [[ "${DEPLOY_SKIP_PREVIEW:-}" != "1" ]]; then
   PREVIEW_HEALTH="$(curl -sf --max-time 5 "$PREVIEW_URL/health" 2>/dev/null || true)"
   PREVIEW_VERSION="$(printf '%s' "$PREVIEW_HEALTH" | grep -o '"app_version":"[^"]*"' | cut -d'"' -f4 || true)"
   PREVIEW_SHA="${PREVIEW_VERSION#*+}"
@@ -394,6 +441,9 @@ if (( IS_RELEASE )) && [[ "${DEPLOY_SKIP_PREVIEW:-}" != "1" ]]; then
   fi
 fi
 
+if [[ -n "$EMERGENCY" ]]; then
+  echo "==> Skipping the rehearsal gate (emergency)"
+else
 STAGING_HEALTH="$(curl -sf --max-time 5 "$REHEARSAL_URL/health" 2>/dev/null || true)"
 # `|| true` on every one of these: `grep` exits 1 when it matches nothing,
 # and under `set -o pipefail` that kills the assignment outright — so the
@@ -413,6 +463,7 @@ elif [[ "$STAGING_SHA" != "$TARGET_SHA" ]]; then
   exit 1
 fi
 echo "==> Rehearsal host confirmed running this commit ($TARGET_SHA) — proceeding"
+fi
 fi
 
 # The fresh checkout. A throwaway `git worktree` rather than checking $REF
@@ -701,14 +752,26 @@ fi
 # milestone closed by hand.
 if (( ! IS_RELEASE )); then
   echo "==> No milestone change: a $DEPLOY_ENV deploy has not reached users"
-elif [[ "$BRANCH_TIP" == "$TARGET_FULL_SHA" ]] && command -v gh > /dev/null; then
+elif [[ -n "$EMERGENCY" ]]; then
+  # The tag and the version bump still happen above: those are facts about what
+  # is running, and letting production and the repo disagree would be worse
+  # than the emergency. Closing a milestone is a different kind of statement —
+  # that a scope completed the normal process — which is precisely what did not
+  # happen. The retrospective issue below carries the record instead, and
+  # whoever reviews it closes what actually shipped.
+  echo "==> No milestone change: an emergency deploy has not been through the normal process"
   MILESTONE="$(gh api "repos/{owner}/{repo}/milestones?state=open" \
     --jq ".[] | select(.title == \"$DEPLOYED_VERSION\") | .number" 2>/dev/null || true)"
   if [[ -n "$MILESTONE" ]]; then
     echo "==> Closing milestone $DEPLOYED_VERSION and its issues"
     for ISSUE in $(gh issue list --milestone "$DEPLOYED_VERSION" --state open \
       --json number --jq '.[].number' 2>/dev/null || true); do
-      if gh issue close "$ISSUE" \
+      # `--reason completed` explicitly. It is the default, so nothing changes
+      # today — but `stateReason` is how a closure's *reason* is recorded now
+      # that the wontfix/invalid/duplicate labels are gone, and this is the one
+      # site that closes an issue with no human present. A field that carries
+      # meaning should not be left implicit exactly where nobody is watching.
+      if gh issue close "$ISSUE" --reason completed \
         --comment "Released in $DEPLOY_TAG — production is running $DEPLOYED_VERSION+$TARGET_SHA." \
         > /dev/null 2>&1; then
         echo "    closed #$ISSUE"
@@ -732,6 +795,60 @@ elif [[ "$BRANCH_TIP" == "$TARGET_FULL_SHA" ]] && command -v gh > /dev/null; the
       -f description="Changes on main not yet in production." > /dev/null 2>&1 \
       && echo "    opened milestone $NEXT_VERSION for what comes next"
   fi
+fi
+
+# An emergency change is retrospectively reviewed, not unreviewed. The issue is
+# raised here rather than printed as a command to run later, because a reminder
+# issued at the worst moment of the week is a reminder that does not happen —
+# and without the review the emergency path quietly becomes the normal one.
+if [[ -n "$EMERGENCY" ]] && (( IS_RELEASE )); then
+  echo
+  echo "==> Emergency deploy — gates bypassed:"
+  echo "        preview      this commit was never stood up for anyone to look at"
+  echo "        rehearsal    the release mechanism was not exercised first"
+  echo "    Everything else was checked, CI included."
+  if command -v gh > /dev/null; then
+    EMERGENCY_BODY="$(cat <<BODY
+Production was deployed outside the normal path.
+
+| | |
+| --- | --- |
+| version | \`$DEPLOYED_VERSION+$TARGET_SHA\` |
+| tag | \`$DEPLOY_TAG\` |
+| when | $(date -u '+%Y-%m-%d %H:%M UTC') |
+| reason given | $EMERGENCY |
+
+**Bypassed:** the preview gate, so nobody looked at this commit standing up;
+and the rehearsal gate, so the release mechanism was not exercised against it
+before production was.
+
+**Not bypassed:** CI including e2e, the commit being on a remote branch, the
+schema check, and the version checks.
+
+The milestone was deliberately not closed — that would claim a scope completed
+the normal process. Close what actually shipped by hand.
+
+## To do
+
+- [ ] Confirm production is behaving, beyond the deploy's own smoke test
+- [ ] Say what the underlying problem was, separately from the fix — restoring
+      service and understanding the cause are different questions
+- [ ] Raise the normal change that makes this unnecessary next time
+- [ ] Close the milestone and issues this release actually delivered
+- [ ] Triage this issue: it has no type or lane yet, deliberately, because
+      what it turns into is a judgement
+
+Raised automatically by \`deploy.sh\`.
+BODY
+)"
+    if gh issue create --title "Emergency deploy of $DEPLOYED_VERSION — review what was bypassed" \
+      --body "$EMERGENCY_BODY" > /dev/null 2>&1; then
+      echo "    raised a retrospective issue — review it before this is forgotten"
+    else
+      echo "    warning: could not raise the retrospective issue — raise one by hand" >&2
+    fi
+  fi
+  echo
 fi
 
 echo "==> Done — https://$DEPLOY_HOST.sslip.io (or your configured hostname)"
