@@ -1507,7 +1507,11 @@ fn NameAutocompleteInput(
                 // handles it.
                 onblur: move |_| search.set(NameSearch::Idle),
             }
-            if let NameSearch::Matches(names) = search() {
+            // Tied to the field's current text, not just to the last search.
+            // Adding a seat clears the value from outside this component, which
+            // used to leave the dropdown standing over an empty box offering
+            // matches for a name that was no longer there.
+            if let (false, NameSearch::Matches(names)) = (value.trim().is_empty(), search()) {
                 div { class: "name-autocomplete-dropdown",
                     for suggestion in names {
                         button {

@@ -1868,6 +1868,31 @@ async fn a_named_seat_takes_the_invitees_own_spelling() {
         with_seat.participants[2].display_name, "CarolCase",
         "adding a seat should resolve the name the same way creating one does"
     );
+
+    // And refuses an unknown one, the same way creating a game does. The two
+    // disagreeing is what let a partial name become a seat: typing "Carol" and
+    // pressing "+ Add seat" produced a seat named "Carol" that nobody could
+    // ever claim, discovered only when somebody pressed Send.
+    let nobody = send_json_auth(
+        app.clone(),
+        Method::POST,
+        &format!("/games/{}/seats", created.id),
+        Some(&alice.session_token),
+        &CreateSeatRequest {
+            kind: SeatKind::Human,
+            display_name: "CarolCas".to_string(),
+            engine_id: None,
+            claim: Some(SeatClaim::Named {
+                display_name: "CarolCas".to_string(),
+            }),
+        },
+    )
+    .await;
+    assert_eq!(
+        nobody.status(),
+        StatusCode::NOT_FOUND,
+        "a partial name matches nobody and should be refused, not seated"
+    );
 }
 
 pub(super) async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {

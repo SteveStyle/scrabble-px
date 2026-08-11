@@ -92,19 +92,21 @@ pub(crate) async fn add_seat_to_game(
         // and without this the seat would read "steve" for the life of the
         // game, showing one player somebody else's idea of their name.
         //
-        // An unknown name is left exactly as typed rather than refused here.
-        // This endpoint deliberately does not send the invitation — that is a
-        // separate "Send" step, and it is where a name that matches nobody is
-        // reported. Refusing here would move that failure earlier, which is a
-        // change #71 is already making deliberately rather than one to slip in
-        // as a side effect of a spelling fix.
+        // An unknown name is refused, exactly as creating a game refuses one.
+        // The two paths disagreeing is the bug: creating a game resolves every
+        // named seat up front and fails on a typo, while adding a seat took the
+        // text as given — so typing a partial name and pressing "+ Add seat"
+        // produced a seat named "st", sitting in the roster until somebody
+        // pressed Send and finally learned there was no such player.
         let display_name = match &request.claim {
             Some(api::SeatClaim::Named { display_name }) => {
                 persistence::get_player_by_name(&state.db, display_name)
                     .await
                     .map_err(ApiProblem::from_sqlx)?
-                    .map(|player| player.display_name)
-                    .unwrap_or(request.display_name)
+                    .ok_or_else(|| {
+                        ApiProblem::not_found(format!("No player named '{display_name}'"))
+                    })?
+                    .display_name
             }
             _ => request.display_name,
         };
