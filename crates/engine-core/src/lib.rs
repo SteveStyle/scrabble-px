@@ -58,19 +58,12 @@ pub struct EngineDiagnostics {
 ///
 /// Checked against the validated move rather than the candidate, so it sees the
 /// words as the rules actually read them — blanks resolved, cross words
-/// included.
-fn move_is_avoided(validated: &rules_shared::model::ValidatedMove) -> bool {
-    move_is_avoided_by(validated, &|word| {
-        rules_shared::wordlists::is_avoided_by_engines(word)
-    })
-}
-
-/// The decision itself, with the list handed in.
+/// included. Every word the placement forms is checked, not just the one the
+/// engine was aiming for.
 ///
-/// Split out because the shipped greylist is empty — deliberately, until
-/// somebody sources it — so a test going through the real one could only ever
-/// observe "nothing is avoided". This is the half with the logic in it: every
-/// word the placement forms, not just the one the engine was aiming for.
+/// The list is handed in rather than read here: the shipped greylist is empty,
+/// deliberately, until somebody sources it, so a test going through the real
+/// one could only ever observe "nothing is avoided".
 fn move_is_avoided_by(
     validated: &rules_shared::model::ValidatedMove,
     avoid: &dyn Fn(&str) -> bool,
@@ -137,12 +130,18 @@ impl Default for GreedyEngine {
     }
 }
 
-impl GameEngine for GreedyEngine {
-    fn metadata(&self) -> &EngineMetadata {
-        &self.metadata
-    }
-
-    fn choose_action(&self, request: EngineRequest<'_>) -> EngineResponse {
+impl GreedyEngine {
+    /// The highest-scoring legal move the engine is willing to play, and how
+    /// many candidates it looked at.
+    ///
+    /// The list is handed in rather than read here for the same reason
+    /// `move_is_avoided_by` takes one: the shipped greylist is empty, so a test
+    /// going through the real one could only ever observe "nothing is avoided",
+    /// and the selection rule below is worth testing directly.
+    fn best_move(
+        request: &EngineRequest<'_>,
+        avoid: &dyn Fn(&str) -> bool,
+    ) -> (Option<(MoveCandidate, Score)>, usize) {
         let engine = RulesEngine {
             rules: request.rules,
             dictionary: dictionary_by_name(&request.rules.language)
@@ -157,25 +156,47 @@ impl GameEngine for GreedyEngine {
             if let Ok(validated) =
                 engine.validate_game_move(request.state, Some(request.rack), &candidate)
             {
-                // An engine does not play a greylisted word, however well it
-                // scores. A person choosing a rude word is expressing
-                // themselves; a machine doing it reads as the game insulting
-                // you — which is why the greylist has the engine as its
-                // subject and leaves the dictionary alone.
-                //
-                // Every word the placement forms is checked, not just the main
-                // one: a cross word is as much the engine's choice as the word
-                // it was aiming for.
-                if move_is_avoided(&validated) {
-                    continue;
-                }
                 let score = validated.score.total;
                 match &best {
                     Some((_, best_score)) if *best_score >= score => {}
-                    _ => best = Some((candidate, score)),
+                    // An engine does not play a greylisted word, however well
+                    // it scores. A person choosing a rude word is expressing
+                    // themselves; a machine doing it reads as the game
+                    // insulting you — which is why the greylist has the engine
+                    // as its subject and leaves the dictionary alone.
+                    //
+                    // Every word the placement forms is checked, not just the
+                    // main one: a cross word is as much the engine's choice as
+                    // the word it was aiming for.
+                    //
+                    // Checked here, and not before the comparison, because a
+                    // move that will not win does not matter — greedy play only
+                    // ever asks about the move it is about to keep. That turns
+                    // the cost from one check per legal move into one per
+                    // improvement on the best so far, which is the number of
+                    // running maxima in the sequence: about ln(n), so single
+                    // digits where there were hundreds. The result is identical
+                    // either way, because `best` is only ever replaced by a
+                    // move that survives the check.
+                    _ if !move_is_avoided_by(&validated, avoid) => best = Some((candidate, score)),
+                    _ => {}
                 }
             }
         }
+
+        (best, candidate_count)
+    }
+}
+
+impl GameEngine for GreedyEngine {
+    fn metadata(&self) -> &EngineMetadata {
+        &self.metadata
+    }
+
+    fn choose_action(&self, request: EngineRequest<'_>) -> EngineResponse {
+        let (best, candidate_count) = Self::best_move(&request, &|word| {
+            rules_shared::wordlists::is_avoided_by_engines(word)
+        });
 
         match best {
             Some((candidate, score)) => EngineResponse {
@@ -207,10 +228,9 @@ mod tests {
     /// cross word rather than the one being aimed for.
     ///
     /// Against an injected list, because the shipped greylist is empty until
-    /// somebody sources it (see `rules-shared/src/wordlists/README.md`). The
-    /// end-to-end version the issue asks for — a rack and board where the
-    /// highest-scoring play is greylisted and the engine takes the next best —
-    /// lands with the list, since it cannot be written against an empty one.
+    /// somebody sources it (see `rules-shared/src/wordlists/README.md`). This
+    /// is the predicate on its own; `the_next_best_move_is_played_when_the_best_is_avoided`
+    /// covers the selection that uses it.
     #[test]
     fn a_move_forming_an_avoided_word_is_declined() {
         use rules_shared::model::{
@@ -280,6 +300,69 @@ mod tests {
         assert!(
             matches!(response.action, EngineAction::Place(_)),
             "an empty greylist must not stop the engine playing"
+        );
+    }
+
+    /// The end-to-end case: the highest-scoring play is greylisted, so the
+    /// engine takes the next best instead of playing it or giving up.
+    ///
+    /// Written against an injected list, which is what `best_move` takes one
+    /// for. It matters more than it looks, because the check runs *after* the
+    /// score comparison — only on a move about to become the new best — so a
+    /// mistake in that ordering would show up here as the engine either playing
+    /// the avoided word anyway or passing when a legal alternative existed.
+    ///
+    /// The word to avoid is discovered rather than hardcoded: whichever move
+    /// wins with nothing avoided is the one then forbidden, so the test does
+    /// not depend on the dictionary's contents or on how ties happen to break.
+    #[test]
+    fn the_next_best_move_is_played_when_the_best_is_avoided() {
+        use rules_shared::RulesEngine;
+
+        let rules = VariantRules::official();
+        let state = GameState::new(&rules, &*SOWPODS);
+        let mut rack = Rack::default();
+        for letter in ['A', 'T', 'E', 'S', 'R'] {
+            rack.add_letter(Letter::from(letter));
+        }
+        let request = || EngineRequest {
+            state: &state,
+            seat_number: 0,
+            rack: &rack,
+            rules: &rules,
+            time_budget_ms: None,
+        };
+
+        let (best, _) = GreedyEngine::best_move(&request(), &|_| false);
+        let (winner, winning_score) = best.expect("a rack of ATESR has an opening move");
+
+        let engine = RulesEngine {
+            rules: &rules,
+            dictionary: &*SOWPODS,
+        };
+        let winning_word = engine
+            .validate_game_move(&state, Some(&rack), &winner)
+            .expect("the chosen move validated once already")
+            .preview
+            .main_word;
+
+        let (next, _) = GreedyEngine::best_move(&request(), &|word| word == winning_word);
+        let (runner_up, runner_up_score) =
+            next.expect("forbidding one word must not stop the engine playing");
+
+        let runner_up_word = engine
+            .validate_game_move(&state, Some(&rack), &runner_up)
+            .expect("the chosen move validated once already")
+            .preview
+            .main_word;
+
+        assert_ne!(
+            runner_up_word, winning_word,
+            "the avoided word must not be played"
+        );
+        assert!(
+            runner_up_score <= winning_score,
+            "the next best cannot outscore the best: {runner_up_score} > {winning_score}"
         );
     }
 
