@@ -38,6 +38,31 @@ pub fn greylist() -> &'static HashSet<String> {
     GREYLIST.get_or_init(|| parse(GREYLIST_FILE))
 }
 
+/// Both lookups take the word exactly as given, with no allocation.
+///
+/// Normalising is the *entries'* job, done once in `parse` when the list is
+/// first read — uppercasing the query instead would allocate a `String` per
+/// call, and the engine calls this for the main word and every cross word of
+/// every legal move it considers. That is thousands of allocations per bot
+/// move, on the hot path of an operation already known to be slow.
+///
+/// The contract that makes it safe: every word the rules form is uppercase by
+/// construction, because the board holds `Grapheme`s from the edition's
+/// alphabet and those are uppercase. `debug_assert` states it so a caller that
+/// breaks it fails a test rather than silently matching nothing — a safety
+/// check that fails *open* is worse than one that is merely slow.
+fn contains(list: &HashSet<String>, word: &str) -> bool {
+    debug_assert_eq!(
+        word,
+        word.trim().to_uppercase(),
+        "word lists are looked up without normalising, so callers must pass an \
+         uppercase, trimmed word — see the note on `contains`"
+    );
+    // Both lists ship empty, and an empty list can never match: worth checking
+    // before hashing the word at all.
+    !list.is_empty() && list.contains(word)
+}
+
 /// Is this word removed from the dictionaries?
 ///
 /// **Whole word, exactly.** Never a substring test: filtering a word list for
@@ -45,7 +70,7 @@ pub fn greylist() -> &'static HashSet<String> {
 /// `BASEMENT`. That is the classic way this goes wrong, it goes wrong silently,
 /// and there is a test below holding the line.
 pub fn is_denied(word: &str) -> bool {
-    denylist().contains(&word.trim().to_uppercase())
+    contains(denylist(), word)
 }
 
 /// Should an engine decline to play this word?
@@ -54,8 +79,7 @@ pub fn is_denied(word: &str) -> bool {
 /// enumerate them — but this includes them anyway rather than relying on that,
 /// so an engine reading a dictionary from somewhere else still behaves.
 pub fn is_avoided_by_engines(word: &str) -> bool {
-    let normalised = word.trim().to_uppercase();
-    greylist().contains(&normalised) || denylist().contains(&normalised)
+    contains(greylist(), word) || contains(denylist(), word)
 }
 
 /// Removes the denied words from a word list, keeping everything else exactly
@@ -138,6 +162,24 @@ mod tests {
         assert_eq!(without_denied(words), words);
         assert!(denylist().is_empty(), "shipped empty, see the README");
         assert!(greylist().is_empty(), "shipped empty, see the README");
+    }
+
+    /// Lookup takes the word as given, matches exactly, and short-circuits on
+    /// an empty list.
+    ///
+    /// The empty case is the one that ships, and it is the one the engine pays
+    /// for on every candidate — so "empty never matches, without hashing" is
+    /// behaviour worth pinning rather than an implementation detail.
+    #[test]
+    fn lookup_is_exact_and_free_when_the_list_is_empty() {
+        let list = parse("HONKY\nWOP");
+        assert!(super::contains(&list, "HONKY"));
+        assert!(!super::contains(&list, "HONKYTONK"), "whole word only");
+        assert!(!super::contains(&list, "BASEMENT"));
+
+        let empty = parse("# nothing but a comment");
+        assert!(empty.is_empty());
+        assert!(!super::contains(&empty, "HONKY"));
     }
 
     /// Engines avoid both lists, not only the grey one.
