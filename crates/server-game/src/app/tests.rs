@@ -1840,6 +1840,34 @@ async fn a_named_seat_takes_the_invitees_own_spelling() {
         created.participants[1].display_name, "BobCase",
         "the seat should carry the name Bob registered, not the one Alice typed"
     );
+
+    // The other way a named seat appears: added to a game that already exists.
+    // A different endpoint, and it was missed the first time — creating a game
+    // was fixed while "+ Add seat" still kept the inviter's spelling.
+    register_player(app.clone(), "CarolCase").await;
+    let with_seat: GameStateDto = read_json(
+        send_json_auth(
+            app.clone(),
+            Method::POST,
+            &format!("/games/{}/seats", created.id),
+            Some(&alice.session_token),
+            &CreateSeatRequest {
+                kind: SeatKind::Human,
+                display_name: "CAROLCASE".to_string(),
+                engine_id: None,
+                claim: Some(SeatClaim::Named {
+                    display_name: "CAROLCASE".to_string(),
+                }),
+            },
+        )
+        .await,
+    )
+    .await;
+
+    assert_eq!(
+        with_seat.participants[2].display_name, "CarolCase",
+        "adding a seat should resolve the name the same way creating one does"
+    );
 }
 
 pub(super) async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {
