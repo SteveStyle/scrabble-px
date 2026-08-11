@@ -1,0 +1,48 @@
+---
+config:
+  layout: elk
+  elk:
+    nodePlacementStrategy: BRANDES_KOEPF
+---
+flowchart TB
+    %% The point of the diagram: a running tab asks two different places two
+    %% different questions. The server can only say what *it* is running; only
+    %% the web container knows which bundle is actually being served.
+
+    commit["commit<br/>b717733"]:::repo
+
+    subgraph build["Build — one commit, two images"]
+        direction LR
+        serverimg["server image<br/>build id compiled in"]:::repo
+        webimg["web image<br/>bundle + version.txt<br/>a hash of the bundle"]:::repo
+    end
+
+    commit -->|"built in as<br/>the build id"| serverimg
+    commit -->|"built in, and hashed<br/>into version.txt"| webimg
+
+    server["server container<br/>answers /auth, /games, ..."]:::env
+    web["web container - Caddy<br/>serves the bundle and version.txt"]:::env
+    tab["browser tab<br/>its own id, compiled in<br/>the bundle id it loaded with"]:::env
+
+    serverimg --> server
+    webimg --> web
+    web -->|"page load: bundle, then version.txt"| tab
+
+    tab -->|"any API request"| server
+    server -->|"every response carries x-build-id"| moved
+
+    moved{"a different build<br/>from mine?"}:::gate
+    moved -->|"no - nothing to do"| tab
+    moved -->|"yes - something moved"| ask
+
+    ask["GET /version.txt<br/>the one question only<br/>the web container can answer"]:::env
+    ask --> web
+    web -->|"the bundle id being served now"| serving
+
+    serving{"different from the one<br/>I loaded with?"}:::gate
+    serving -->|"not yet - web is still<br/>catching up mid-deploy"| ask
+    serving -->|"yes - new code is really there"| reload["reload the tab"]:::gate
+
+    classDef gate fill:#fbe9dc,stroke:#b06a2c,color:#7a4318
+    classDef env fill:#e4eff8,stroke:#39698c,color:#12303f
+    classDef repo fill:#f7efe0,stroke:#96763f,color:#3a2c12
