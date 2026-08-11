@@ -1,0 +1,125 @@
+# Stems the greylist generator expands, and the words it must not catch.
+#
+# DRAFT, 2026-08-12 — for the owner to strike through. Nothing here is
+# generated: this file is the judgement, which is why it is committed and
+# reviewed rather than recomputed. See docs/3.5-word-lists-and-dictionaries.md,
+# "Generating the greylist".
+#
+# WHY THIS FILE EXISTS. rustrict catches most of what the greylist wants, but
+# its recall gaps are arbitrary: it flags NEGROES, NEGROID and NEGROIDS but not
+# NEGRO; POOFTER but not POOF or POOFTAH; POONTANG but not POON; SMUTTY but not
+# SMUT; and misses MONG entirely. A base word slipping through while its
+# inflections are caught is exactly the case the greylist exists to prevent.
+#
+# SYNTAX
+#   WORD      grey this word, exactly
+#   PREFIX*   grey every dictionary word starting with PREFIX
+#   !WORD     never grey this word, whatever else matched it
+#
+# ERR LONG. A wrongly greyed word is one the bot declines to play, which nobody
+# can observe; a missed one is a bot playing something a child should not read.
+# The two are not comparable, so entries below lean towards greying. Striking an
+# entry is cheap — that is what this draft is for.
+#
+# ENGLISH ONLY. Applies to sowpods and enable2k. German and Spanish are out of
+# scope: neither can be reviewed by somebody who does not speak the language,
+# which is the blocker rather than the sourcing.
+#
+# The word counts in comments are what each line adds beyond what rustrict
+# already flags, measured against sowpods (267,752 words).
+
+
+# ---------------------------------------------------------------------------
+# Slurs rustrict misses. The reason this file exists; strike with care.
+# ---------------------------------------------------------------------------
+
+NEGRO*          # 20 words. NEGROES/NEGROID/NEGROIDS were already flagged.
+!NEGRONI        # a cocktail
+!NEGRONIS
+
+POOF*           # 7 words. POOFTER/POOFTERS were already flagged.
+POON*           # 8 words, incl. POONCE. POONAC is cattle feed, harmless to grey.
+LEZ*            # 6 words: LEZ LEZES LEZZ LEZZA LEZZAS LEZZES
+
+WOG*            # WOG WOGGISH WOGS
+!WOGGLE         # the ring that holds a scout's neckerchief
+!WOGGLES
+
+DAGO*           # DAGO DAGOES DAGOS
+!DAGOBA         # a Buddhist shrine
+!DAGOBAS
+
+# ABO* would catch 118 words — ABOARD, ABODE, ABOUT, ABORT. Exact only.
+ABO
+ABOS
+
+# MONG* would catch 48 — MONGER, MONGOOSE, MONGREL, MONGST. Exact only.
+# The MONGOL family is here as an outdated term for Down syndrome, not as
+# the nationality; strike if you would rather keep the geographic sense.
+MONG
+MONGS
+MONGOL
+MONGOLS
+MONGOLISM
+MONGOLISMS
+MONGOLOID
+MONGOLOIDS
+
+
+# ---------------------------------------------------------------------------
+# Contested. Offensive to some, ordinary to others — strike freely.
+# ---------------------------------------------------------------------------
+
+# "To gyp" is to cheat, from Gypsy. GYP* would catch GYPSUM, GYPSOPHILA and
+# GYPLURE, so these are exact.
+GYP
+GYPS
+GYPPED
+GYPPER
+GYPPERS
+GYPPING
+GYPSY
+GYPSIES
+
+WELCH*          # 4 words. To welch on a bet; WELSH the nationality is untouched.
+SODOM*          # 10 words, incl. the place name.
+
+# NONG* would catch NONGAME, NONGLARE, NONGOVERNMENT. Exact only.
+NONG            # mild Australian insult
+NONGS
+
+
+# ---------------------------------------------------------------------------
+# Sexual and vulgar base words rustrict misses.
+# From LDNOOBW's `en` list, restricted to entries playable on a board.
+# ---------------------------------------------------------------------------
+
+SMUT*           # 16 words. Includes the SMUTCH family (a variant of smudge);
+                # harmless to grey and not worth eight exclusions to save.
+SNATCH*         # 12 words
+BAREBACK*       # 4 words
+BIMBO*          # 3 words
+EROTISM*        # 2 words
+SWINGER*        # 2 words
+DINGLEBERR*     # 1 word: DINGLEBERRIES
+HARDCORE*       # 2 words
+SHRIMPING*      # 2 words
+SNOWBALLING     # 1 word
+THROATING       # 1 word
+BUSTY
+
+SKEET*          # 4 words. SKEETER is a mosquito — greyed, harmless.
+
+# SCAT* would catch 67 words: SCATTER, SCATHE, SCATHELESS. Exact only.
+SCAT
+SCATS
+
+
+# ---------------------------------------------------------------------------
+# Marginal. Ordinary words with a second meaning. These are the likeliest
+# strikes — each one is a word the bot will simply never play.
+# ---------------------------------------------------------------------------
+
+ESCORT*         # 6 words. An ordinary word; also a car.
+DOMINATION*     # 2 words. An ordinary word.
+TWINKIE*        # 2 words. Also a snack cake.
