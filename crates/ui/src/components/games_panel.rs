@@ -1311,8 +1311,67 @@ fn add_seat_row(
         kind(),
         AdditionalSeatKind::Named | AdditionalSeatKind::Email
     ) || !name().trim().is_empty();
+
+    // One place that builds the submission, so pressing Enter and clicking the
+    // button cannot come to mean different things.
+    let mut add_seat = move || {
+        let (seat_kind, display_name, engine_id, claim) = match kind() {
+            AdditionalSeatKind::Named => (
+                SeatKind::Human,
+                name().trim().to_string(),
+                None,
+                Some(SeatClaim::Named {
+                    display_name: name().trim().to_string(),
+                }),
+            ),
+            AdditionalSeatKind::Open => (
+                SeatKind::Human,
+                "Open seat".to_string(),
+                None,
+                Some(SeatClaim::Open),
+            ),
+            AdditionalSeatKind::Email => (
+                SeatKind::Human,
+                name().trim().to_string(),
+                None,
+                Some(SeatClaim::Email {
+                    email: name().trim().to_string(),
+                }),
+            ),
+            AdditionalSeatKind::Engine => (
+                SeatKind::Engine,
+                "Bot".to_string(),
+                Some(DEFAULT_ENGINE_ID.to_string()),
+                None,
+            ),
+        };
+        on_add_seat.call(AddSeatSubmission {
+            game_id: game_id.clone(),
+            kind: seat_kind,
+            display_name,
+            engine_id,
+            claim,
+        });
+        name.set(String::new());
+    };
+    // A real `<form>` rather than per-input `onkeydown`, so Enter works from the
+    // name field, the email field, and the picker — and for the reason
+    // `auth_panel` documents: a browser autofill selection dispatches a
+    // keydown-shaped event with `.key` undefined, and Dioxus marshalling that
+    // missing key threw mid-render and wedged the runtime. An email input is
+    // exactly what a browser offers to autofill, so a keydown handler here
+    // would be inviting that back.
     rsx! {
-        div { class: "game-builder-add-row",
+        form {
+            class: "game-builder-add-row",
+            // Do NOT call `event.prevent_default()` — dioxus-web already
+            // suppresses a form's native submit, and preventing it
+            // counterintuitively re-enables the page reload. See auth_panel.
+            onsubmit: move |_| {
+                if can_submit {
+                    add_seat();
+                }
+            },
             select {
                 value: match kind() {
                     AdditionalSeatKind::Named => "named",
@@ -1353,42 +1412,7 @@ fn add_seat_row(
             button {
                 class: "toggle-button toggle-button-muted",
                 disabled: !can_submit,
-                onclick: move |_| {
-                    let (seat_kind, display_name, engine_id, claim) = match kind() {
-                        AdditionalSeatKind::Named => (
-                            SeatKind::Human,
-                            name().trim().to_string(),
-                            None,
-                            Some(SeatClaim::Named { display_name: name().trim().to_string() }),
-                        ),
-                        AdditionalSeatKind::Open => (
-                            SeatKind::Human,
-                            "Open seat".to_string(),
-                            None,
-                            Some(SeatClaim::Open),
-                        ),
-                        AdditionalSeatKind::Email => (
-                            SeatKind::Human,
-                            name().trim().to_string(),
-                            None,
-                            Some(SeatClaim::Email { email: name().trim().to_string() }),
-                        ),
-                        AdditionalSeatKind::Engine => (
-                            SeatKind::Engine,
-                            "Bot".to_string(),
-                            Some(DEFAULT_ENGINE_ID.to_string()),
-                            None,
-                        ),
-                    };
-                    on_add_seat.call(AddSeatSubmission {
-                        game_id: game_id.clone(),
-                        kind: seat_kind,
-                        display_name,
-                        engine_id,
-                        claim,
-                    });
-                    name.set(String::new());
-                },
+                r#type: "submit",
                 "+ Add seat"
             }
         }
@@ -1471,6 +1495,17 @@ fn NameAutocompleteInput(
                     on_change.call(query.clone());
                     trigger_search(query);
                 },
+                // Leaving the field puts the suggestions away. The value is
+                // already committed — `oninput` calls `on_change` on every
+                // keystroke — so tabbing out needs to change nothing except
+                // getting the list off the screen.
+                //
+                // Deliberately *not* submitting anything here. Blur fires when
+                // you tab to the picker beside it or click anywhere else, and a
+                // seat appearing because you looked away is a surprise, not a
+                // shortcut. Enter is the deliberate act, and the form above
+                // handles it.
+                onblur: move |_| search.set(NameSearch::Idle),
             }
             if let NameSearch::Matches(names) = search() {
                 div { class: "name-autocomplete-dropdown",
