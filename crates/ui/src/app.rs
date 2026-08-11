@@ -411,11 +411,25 @@ pub fn RootApp() -> Element {
                 match load_game_summaries(&server_url, Some(&token)).await {
                     Ok(summaries) => game_summaries.set(summaries),
                     Err(err) if err == SESSION_INVALID_MESSAGE => {
-                        // The session died server-side (idle or absolute
-                        // expiry) — drop to the login modal cleanly instead
-                        // of failing the poll silently forever.
+                        // The session died server-side — idle or absolute
+                        // expiry, a password change elsewhere, or the account
+                        // being deleted. Drop to the login modal cleanly, and
+                        // clear what belonged to it: the modal used to appear
+                        // over a still-visible board.
                         crate::local_storage::clear_tokens();
-                        session.set(None);
+                        clear_session_state(
+                            session,
+                            game,
+                            game_summaries,
+                            websocket_game_id,
+                            dragging_tile_id,
+                            selected_blank_letter,
+                            staged_placements,
+                            selected_cell,
+                            exchange_mode,
+                            exchange_selected,
+                            direction_override,
+                        );
                     }
                     Err(_) => {}
                 }
@@ -660,18 +674,11 @@ pub fn RootApp() -> Element {
                             });
                         }
                         crate::local_storage::clear_tokens();
-                        session.set(None);
-                        // Everything behind the login modal belongs to the
-                        // account that just logged out — leaving it in
-                        // place would show the next person to log in on
-                        // this device (or the same person's own re-login) a
-                        // stale games list, board, and rack until a fresh
-                        // load happens to overwrite it. Same reset already
-                        // used when switching games entirely.
-                        game.set(None);
-                        game_summaries.set(Vec::new());
-                        websocket_game_id.set(None);
-                        reset_composer_state(
+                        clear_session_state(
+                            session,
+                            game,
+                            game_summaries,
+                            websocket_game_id,
                             dragging_tile_id,
                             selected_blank_letter,
                             staged_placements,
@@ -693,7 +700,19 @@ pub fn RootApp() -> Element {
                             remembered_name: stored.remembered_name,
                             session_token: None,
                         });
-                        session.set(None);
+                        clear_session_state(
+                            session,
+                            game,
+                            game_summaries,
+                            websocket_game_id,
+                            dragging_tile_id,
+                            selected_blank_letter,
+                            staged_placements,
+                            selected_cell,
+                            exchange_mode,
+                            exchange_selected,
+                            direction_override,
+                        );
                         info_message.set(Some("Password changed — please log in again.".to_string()));
                     },
                     on_details_updated: move |updated: api::PlayerDto| {
@@ -1869,6 +1888,46 @@ fn empty_live_game() -> GameStateDto {
 /// Any variant would do: every edition shares one board (see
 /// `VariantRules`'s note that the premium layout is not part of what an
 /// edition varies).
+/// Drop everything belonging to the account whose session just ended.
+///
+/// Leaving it in place shows the next person to log in on this device — or
+/// the same person re-logging in — a stale games list, board and rack until
+/// something happens to overwrite it. Observed after an account was deleted
+/// server-side: the login modal appeared over a still-visible board, and
+/// registering as a new user left the previous player's tiles on screen.
+///
+/// Called from every path that ends a session: the Logout button, a session
+/// found dead server-side, and a password change (which invalidates every
+/// session for that player, including this one).
+#[allow(clippy::too_many_arguments)]
+fn clear_session_state(
+    mut session: Signal<Option<api::PlayerSessionDto>>,
+    mut game: Signal<Option<GameStateDto>>,
+    mut game_summaries: Signal<Vec<api::GameSummaryDto>>,
+    mut websocket_game_id: Signal<Option<String>>,
+    dragging_tile_id: Signal<Option<usize>>,
+    selected_blank_letter: Signal<Option<String>>,
+    staged_placements: Signal<Vec<StagedPlacementView>>,
+    selected_cell: Signal<Option<usize>>,
+    exchange_mode: Signal<bool>,
+    exchange_selected: Signal<HashSet<usize>>,
+    direction_override: Signal<Option<DirectionDto>>,
+) {
+    session.set(None);
+    game.set(None);
+    game_summaries.set(Vec::new());
+    websocket_game_id.set(None);
+    reset_composer_state(
+        dragging_tile_id,
+        selected_blank_letter,
+        staged_placements,
+        selected_cell,
+        exchange_mode,
+        exchange_selected,
+        direction_override,
+    );
+}
+
 fn empty_board() -> Vec<BoardCellDto> {
     rules_shared::VariantRules::official()
         .premiums
