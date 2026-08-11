@@ -1895,6 +1895,68 @@ async fn a_named_seat_takes_the_invitees_own_spelling() {
     );
 }
 
+/// An unknown display name must cost what a known one costs.
+///
+/// Login used to return before any hashing when the name did not exist —
+/// ~95ms against ~142ms measured over the internet, separating cleanly in five
+/// samples. That is an oracle: ask, time the answer, learn whether somebody is
+/// registered, and enumerate the user list by guessing.
+///
+/// Asserted through the hashing semaphore rather than by timing, because a
+/// timing test on a shared runner measures the runner. With no permits
+/// available, a request that *tries* to hash is refused with 503; one that
+/// short-circuits sails past to 400. So the status tells us whether the work
+/// happened, deterministically and in milliseconds.
+#[tokio::test]
+async fn an_unknown_name_still_pays_for_a_password_check() {
+    let database_url = test_database_url();
+    let mut state = create_test_state(&database_url).await;
+    state.hash_limit = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let app = build_router(state);
+
+    let response = send_json(
+        app,
+        Method::POST,
+        "/auth/login",
+        &LoginPlayerRequest {
+            display_name: "NobodyByThatName".to_string(),
+            password: "correct horse battery staple".to_string(),
+            stay_logged_in: false,
+        },
+    )
+    .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "an unknown name should have queued for a hash like any other login; \
+         a 400 here means it answered without doing the work, which is the leak"
+    );
+}
+
+/// The decoy hash has to be a real one.
+///
+/// A malformed constant would make `verify_password` bail on the parse instead
+/// of doing the work — fast, silent, and precisely the timing difference this
+/// exists to remove. `verify_password` returns a bare `bool`, so a hash that
+/// does not parse is indistinguishable from a wrong password; the only way to
+/// tell them apart is to verify the passphrase it was actually made from.
+///
+/// Kept here rather than beside the constant so nothing in the server carries
+/// the passphrase. It authenticates nobody — no account has this hash — and
+/// the login path throws the answer away.
+#[test]
+fn the_decoy_hash_is_a_real_argon2_hash() {
+    assert!(
+        crate::app::auth::verify_password(
+            "decoy — nobody holds this passphrase",
+            crate::app::auth::DECOY_PASSWORD_HASH,
+        ),
+        "the decoy hash did not verify its own passphrase, so it is malformed \
+         or was regenerated with different Argon2 parameters"
+    );
+}
+
 pub(super) async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {
     read_json(
         send_json(

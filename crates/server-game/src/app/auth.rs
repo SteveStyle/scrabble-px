@@ -74,8 +74,25 @@ pub(crate) async fn login_player(
 
     let player = persistence::get_player_by_name(&state.db, &display_name)
         .await
-        .map_err(ApiProblem::from_sqlx)?
-        .ok_or_else(|| mismatch("unknown display name"))?;
+        .map_err(ApiProblem::from_sqlx)?;
+
+    // An unknown name must cost what a known one costs.
+    //
+    // `verify_password` only ran once a player had been found, so a name that
+    // does not exist returned before any hashing — measurably sooner. Against
+    // the rehearsal host that was ~95ms against ~142ms, separating cleanly in
+    // five samples over the internet. Anyone could ask whether a name is
+    // registered, and enumerate the user list by guessing.
+    //
+    // So the miss verifies the supplied password against a fixed, valid hash
+    // and throws the answer away. A real Argon2 verify, not a sleep and not a
+    // hash of a constant: it has to do the same work, through the same
+    // semaphore, or the two paths diverge again under load — which is when
+    // somebody is measuring.
+    let Some(player) = player else {
+        let _ = verify_password_bounded(&state, &request.password, DECOY_PASSWORD_HASH).await?;
+        return Err(mismatch("unknown display name"));
+    };
 
     if !verify_password_bounded(&state, &request.password, &player.password_hash).await? {
         return Err(mismatch("wrong password"));
@@ -405,6 +422,16 @@ pub(crate) async fn reset_password(
 /// under the reverse proxy's response-header timeout, or the caller gets a
 /// 502 and the work was wasted.
 const HASH_PERMIT_WAIT: Duration = Duration::from_millis(250);
+
+/// A real Argon2 hash, used only to give a login for an unknown name the same
+/// cost as one for a known name. It is the hash of a passphrase nobody holds,
+/// and nothing is ever authenticated against it — the verify's answer is
+/// discarded.
+///
+/// Generated with the same `Argon2::default()` parameters everything else uses,
+/// so the work matches. If those parameters ever change, this must be
+/// regenerated or the timings drift apart again, quietly.
+pub(crate) const DECOY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$4iJ/BoOdBBOFmrKsOaJh0w$3HaBU8KERFkyXq8mWln6r82+JaDedascMapYeXmkTXk";
 
 /// Run one Argon2 operation under the hashing semaphore, on the blocking
 /// pool.
