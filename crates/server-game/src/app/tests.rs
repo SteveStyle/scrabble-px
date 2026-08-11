@@ -113,6 +113,21 @@ pub(super) async fn send_empty(
     .expect("request should succeed")
 }
 
+/// Signs a session out, through the API rather than the database.
+///
+/// Deleting an account somebody is signed in as is refused (#82), and
+/// registering signs you in — so an admin-delete test has to end the session
+/// first or it fails for a reason it is not about. Through `/auth/logout`
+/// because that is what an operator would do, and it exercises the same path.
+pub(super) async fn log_out(app: Router, token: &str) {
+    let response = send_empty_auth(app, Method::POST, "/auth/logout", Some(token)).await;
+    assert!(
+        response.status().is_success(),
+        "logging out should succeed, got {}",
+        response.status()
+    );
+}
+
 pub(super) async fn send_empty_auth(
     app: Router,
     method: Method,
@@ -5081,6 +5096,7 @@ async fn admin_can_list_and_delete_users() {
     .await;
     assert!(listed.iter().any(|player| player.id == alice.player_id));
 
+    log_out(app.clone(), &alice.session_token).await;
     let delete_response = send_admin::<()>(
         app.clone(),
         Method::DELETE,
@@ -5467,6 +5483,7 @@ async fn admin_deleting_a_user_removes_their_rating_rows_and_reset_tokens() {
         .expect("token insert should succeed");
     }
 
+    log_out(app.clone(), &alice.session_token).await;
     let deleted = send_admin::<()>(
         app,
         Method::DELETE,
@@ -7755,6 +7772,7 @@ async fn admin_refuses_to_delete_a_user_with_games() {
     )
     .await;
 
+    log_out(app.clone(), &alice.session_token).await;
     let refused = send_admin::<()>(
         app.clone(),
         Method::DELETE,
@@ -7779,6 +7797,7 @@ async fn admin_refuses_to_delete_a_user_with_games() {
         .expect("delete game");
     state.games.write().await.remove(&game_id);
 
+    log_out(app.clone(), &alice.session_token).await;
     let allowed = send_admin::<()>(
         app.clone(),
         Method::DELETE,

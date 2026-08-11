@@ -1072,6 +1072,31 @@ pub async fn get_session_by_id(
 /// `stay_logged_in` rows, which used to have `expires_at is null` and so
 /// lived forever. (`expires_at`/`last_seen_at` are unix-second strings, all
 /// the same width in this era, so string `<` matches numeric `<`.)
+/// Is anybody signed in as this account right now?
+///
+/// "Live" is the exact inverse of what `delete_expired_sessions` below removes,
+/// and deliberately written to mirror it line for line: a session is live while
+/// it has not passed its absolute expiry *and* has been seen inside the idle
+/// window. If those two rules ever diverge, an account could be refused
+/// deletion for a session the sweep has already decided is dead.
+pub async fn has_live_session(pool: &Pool<Sqlite>, player_id: &str) -> Result<bool, sqlx::Error> {
+    let now = now_unix_seconds();
+    let idle_cutoff = now - SESSION_IDLE_WINDOW_SECS;
+    let row = sqlx::query(
+        "select 1 from sessions
+         where player_id = ?1
+           and (expires_at is null or expires_at >= ?2)
+           and last_seen_at >= ?3
+         limit 1",
+    )
+    .bind(player_id)
+    .bind(now)
+    .bind(idle_cutoff)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
 pub async fn delete_expired_sessions(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     let now = now_unix_seconds();
     let idle_cutoff = now - SESSION_IDLE_WINDOW_SECS;

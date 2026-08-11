@@ -116,6 +116,29 @@ pub(crate) async fn admin_delete_user(
         }
     }
 
+    // Somebody interested enough to be signed in is likely to play a game, and
+    // a game is exactly what the guard above protects. So this is that same
+    // argument one step earlier: waiting costs nothing, because the tool exists
+    // to clear out *old* data and a live session is the clearest evidence that
+    // this is not old data.
+    //
+    // Said separately from the games refusal because the remedies differ. An
+    // account blocked by games waits for retention; one blocked by a session
+    // waits for the session, which ACC-1 bounds at 48 hours idle and 10 days
+    // absolute. Telling somebody to wait without saying what for is how a tool
+    // gets a reputation for being obstructive.
+    if persistence::has_live_session(&state.db, &player_id)
+        .await
+        .map_err(ApiProblem::from_sqlx)?
+    {
+        return Err(ApiProblem::bad_request(
+            "That account is signed in somewhere. Deleting it now would take an \
+             account that is in use, and one that is about to create the very \
+             games this command refuses to orphan. Sessions end on their own: \
+             48 hours after they were last used, and 10 days at the outside.",
+        ));
+    }
+
     let deleted = persistence::delete_player(&state.db, &player_id)
         .await
         .map_err(ApiProblem::from_sqlx)?;
