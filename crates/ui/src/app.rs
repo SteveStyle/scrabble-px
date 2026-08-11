@@ -2965,9 +2965,13 @@ static SERVER_BUILD_CHANGED: GlobalSignal<bool> = Signal::global(|| false);
 /// whatever it was asking for.
 ///
 /// It exists because the two HTTP clients this crate uses — `reqwest` on the
-/// desktop, `gloo` in the browser — share no response type, so "read the
-/// headers we care about" had been written out at each of six call sites. That
-/// duplication is why there was nowhere obvious to put the build-id check, and
+/// desktop, `gloo` in the browser — share no response type, so there was
+/// nowhere for "what do we do with a response" to live and it had been written
+/// out at each of six call sites. Not because the headers differ: `Retry-After`
+/// is standard and `x-build-id` is ours, and `header_string` reduces the
+/// libraries' difference to one line each.
+///
+/// That duplication is why the build-id check had nowhere obvious to go, and
 /// why `Retry-After` had to be changed in six places when its meaning moved.
 struct ResponseHeaders {
     retry_after: Option<String>,
@@ -2984,15 +2988,26 @@ impl ResponseHeaders {
     }
 }
 
-/// `reqwest`'s headers come back as bytes that may not be text; `gloo`'s come
-/// back as `Option<String>` already. This is the difference, kept in one place
-/// so the two call shapes above can look the same.
+/// One header, as text, whichever client fetched the response.
+///
+/// Nothing about these headers resists common code — `Retry-After` is standard
+/// and `x-build-id` is ours. What differs is only how the two libraries hand a
+/// header back: `reqwest` gives bytes that may not be UTF-8, so it needs
+/// `to_str`, while `gloo` has already done that work against the browser's
+/// Fetch `Headers`. Both shapes are one line, and having both under one name
+/// keeps the difference here instead of at every call site.
 #[cfg(not(target_arch = "wasm32"))]
 fn header_string(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
     headers
         .get(name)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string)
+}
+
+/// See the note on the desktop version above.
+#[cfg(target_arch = "wasm32")]
+fn header_string(headers: gloo_net::http::Headers, name: &str) -> Option<String> {
+    headers.get(name)
 }
 
 /// Records that the server is running a build this client is not.
@@ -3164,8 +3179,8 @@ where
         }
         let status = response.status();
         let retry_after = ResponseHeaders {
-            retry_after: response.headers().get("retry-after"),
-            build_id: response.headers().get("x-build-id"),
+            retry_after: header_string(response.headers(), "retry-after"),
+            build_id: header_string(response.headers(), "x-build-id"),
         }
         .handle();
         let msg = response
@@ -3304,8 +3319,8 @@ where
     if !response.ok() {
         let status = response.status();
         let retry_after = ResponseHeaders {
-            retry_after: response.headers().get("retry-after"),
-            build_id: response.headers().get("x-build-id"),
+            retry_after: header_string(response.headers(), "retry-after"),
+            build_id: header_string(response.headers(), "x-build-id"),
         }
         .handle();
         let msg = response
@@ -3376,8 +3391,8 @@ where
     if !response.ok() {
         let status = response.status();
         let retry_after = ResponseHeaders {
-            retry_after: response.headers().get("retry-after"),
-            build_id: response.headers().get("x-build-id"),
+            retry_after: header_string(response.headers(), "retry-after"),
+            build_id: header_string(response.headers(), "x-build-id"),
         }
         .handle();
         let msg = response
