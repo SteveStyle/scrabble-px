@@ -497,22 +497,76 @@ pub fn RootApp() -> Element {
     }
 
     // Marks the currently-open game's chat as seen — fires both when a game
-    // is first opened (loading its messages for the first time) and when a
-    // live update arrives for a game that's already open, so watching the
-    // panel counts as reading it. Never touches watermarks for any other
-    // game, since `game()` only ever holds the currently-selected one.
-    if let Some(current_game) = game()
-        && let Some(latest) = current_game.messages.last()
-        && chat_watermarks().get(&current_game.id) != Some(&latest.created_at)
+    // The watermark advances when the messages have been *seen*, not when they
+    // arrive. It used to advance the instant a message arrived into an open
+    // game — "watching the panel counts as reading it" — which marked as read
+    // every message that landed in a panel scrolled off the bottom of a phone,
+    // or into a tab in the background. That is the defect (#86); the clock
+    // below is what replaces it.
     {
-        let game_id = current_game.id.clone();
-        let created_at = latest.created_at;
-        chat_watermarks.with_mut(|marks| {
-            marks.insert(game_id, created_at);
-        });
-        crate::local_storage::save_chat_watermarks(&crate::local_storage::StoredChatWatermarks {
-            last_seen: chat_watermarks(),
-        });
+        let mut clock = use_signal(crate::seen_clock::SeenClock::new);
+        let mut watching_game = use_signal(|| None::<String>);
+        let mut watching_latest = use_signal(|| None::<i64>);
+
+        // One ticker, sampling. An observer would be the tidier way to learn
+        // about visibility, but a clock has to be ticked anyway to notice that
+        // it has finished — so a single 500ms sample that reads visibility and
+        // advances the clock is one mechanism rather than two, and cheap enough
+        // at that rate.
+        let mut seen_ticker_started = use_signal(|| false);
+        if !seen_ticker_started() {
+            seen_ticker_started.set(true);
+            spawn(async move {
+                loop {
+                    sleep_ms(500).await;
+                    let now_ms = now_millis();
+                    let visible = chat_messages_are_visible();
+                    *CHAT_IS_VISIBLE.write() = visible;
+
+                    let Some(current_game) = game() else {
+                        continue;
+                    };
+                    let Some(latest) = current_game.messages.last().map(|m| m.created_at) else {
+                        continue;
+                    };
+
+                    // A different game, or a new message in this one, starts the
+                    // ten seconds again — the owner's call, and the stricter
+                    // reading of "seen": each message earns its own.
+                    if watching_game() != Some(current_game.id.clone())
+                        || watching_latest() != Some(latest)
+                    {
+                        watching_game.set(Some(current_game.id.clone()));
+                        watching_latest.set(Some(latest));
+                        clock.with_mut(|c| c.restart(now_ms));
+                    }
+
+                    clock.with_mut(|c| {
+                        if visible {
+                            c.became_visible(now_ms);
+                        } else {
+                            c.became_hidden(now_ms);
+                        }
+                    });
+
+                    let unread = chat_watermarks().get(&current_game.id) != Some(&latest);
+                    if *HAS_UNREAD_CHAT.peek() != unread {
+                        *HAS_UNREAD_CHAT.write() = unread;
+                    }
+
+                    if unread && clock.peek().is_seen(now_ms) {
+                        chat_watermarks.with_mut(|marks| {
+                            marks.insert(current_game.id.clone(), latest);
+                        });
+                        crate::local_storage::save_chat_watermarks(
+                            &crate::local_storage::StoredChatWatermarks {
+                                last_seen: chat_watermarks(),
+                            },
+                        );
+                    }
+                }
+            });
+        }
     }
 
     let game_for_view = game().clone().unwrap_or_else(empty_live_game);
@@ -2994,6 +3048,87 @@ const UNREACHABLE_MESSAGE: &str = "Can't reach the server.";
 fn backend_is_unreachable(status: u16) -> bool {
     (502..=504).contains(&status)
 }
+
+/// Does the game currently open have chat nobody has read yet?
+///
+/// One signal for both indicators — the rack panel's and the chat panel's —
+/// rather than each computing it. Two derivations of one fact is how a seat's
+/// invitation status came to be right in one place and wrong in the other
+/// (#71), and these two sit on screen together where disagreeing would be
+/// obvious.
+pub static HAS_UNREAD_CHAT: GlobalSignal<bool> = Signal::global(|| false);
+
+/// Wall-clock milliseconds, from whichever clock the target has.
+///
+/// Only ever used as a difference between two readings, so the epoch does not
+/// matter — and `SeenClock` refuses to bank a negative interval, which is the
+/// guard against this jumping backwards.
+fn now_millis() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+}
+
+/// The desktop client has no scrolled-past-the-bottom problem and no document
+/// to ask, so an open game counts as visible. The ten-second rule still
+/// applies, which is the part that matters: a message is read once somebody has
+/// had it in front of them, not the moment it lands.
+#[cfg(not(target_arch = "wasm32"))]
+fn chat_messages_are_visible() -> bool {
+    true
+}
+
+/// Are the chat messages somewhere a person could actually see them?
+///
+/// Two conditions, because either alone is wrong. `document.hidden` catches the
+/// background tab, which no amount of scroll position would reveal. The panel's
+/// own rectangle catches the case the phone makes ordinary: the tab is in front
+/// of you and the chat is scrolled past the bottom of the screen.
+///
+/// Absent panel — no game open, or the element not yet rendered — is "not
+/// visible", which is the safe answer: it leaves the message marked unread
+/// rather than clearing something nobody saw.
+#[cfg(target_arch = "wasm32")]
+fn chat_messages_are_visible() -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let Some(document) = window.document() else {
+        return false;
+    };
+    if document.hidden() {
+        return false;
+    }
+    let Ok(Some(panel)) = document.query_selector(".chat-messages") else {
+        return false;
+    };
+    let rect = panel.get_bounding_client_rect();
+    let viewport_height = window
+        .inner_height()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    // Any part of it on screen counts. Requiring the whole panel would mean a
+    // tall conversation never counted as visible at all.
+    rect.bottom() > 0.0 && rect.top() < viewport_height && rect.height() > 0.0
+}
+
+/// Whether the chat messages are somewhere a person could actually see them:
+/// the tab in the foreground, and the panel on screen rather than scrolled past.
+///
+/// Read by the message fade, which pauses when this is false, and by the seen
+/// clock, which stops accumulating. One signal so the two cannot disagree about
+/// what "visible" means — the fade somebody watches finishing has to be the
+/// same thing that marks the message read.
+pub static CHAT_IS_VISIBLE: GlobalSignal<bool> = Signal::global(|| false);
 
 /// The build this client was compiled from, matching what the server stamps on
 /// every response. `None` on a build with no id, where the comparison below

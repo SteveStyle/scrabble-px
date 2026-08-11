@@ -301,6 +301,19 @@ pub fn Home(
                         rsx! {
                             div { class: "rack-scores",
                                 if started { {entries} }
+                                // Unread chat, where the eye already is. On a
+                                // phone the chat panel can be off screen
+                                // entirely, and an indicator only in the games
+                                // list tells nobody anything while they are
+                                // playing. Same signal as the chat panel's own,
+                                // so the two cannot disagree.
+                                if crate::app::HAS_UNREAD_CHAT() {
+                                    span {
+                                        class: "rack-scores-unread",
+                                        title: "New message in this game",
+                                        "✉"
+                                    }
+                                }
                                 span { class: "rack-scores-bag", "Bag {game.bag_count}" }
                             }
                         }

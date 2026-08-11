@@ -10,6 +10,61 @@ test('registers a new player and lands signed in', async ({ page }) => {
   await expectSignedIn(page);
 });
 
+test('unread chat survives being off screen, and clears once watched', async ({ page }) => {
+  // #86. The watermark used to advance the instant a message arrived into an
+  // open game — "watching the panel counts as reading it" — so a message
+  // landing in a background tab, or in a panel scrolled off a phone, was marked
+  // read by nobody. The whole issue is that visible is not the same as seen.
+  await register(page, uniqueName('unread'));
+  await page.getByRole('button', { name: 'Play Greedy Bot' }).click();
+  await page.getByRole('button', { name: 'Start', exact: true }).click();
+  // The game has to be up before the chat composer exists.
+  await expect(page.locator('.rack-panel')).toBeVisible();
+
+  await page.getByPlaceholder('Say something...').fill('does anyone read these');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+
+  // Marked unread in all three places, from one signal.
+  await expect(page.locator('.chat-message-unread')).toHaveCount(1);
+  await expect(page.locator('.rack-scores-unread')).toHaveCount(1);
+  await expect(page.locator('.chat-panel-unread')).toHaveCount(1);
+
+  // Scroll the chat out of view for longer than the ten seconds. Nothing may
+  // clear: the clock only runs while somebody could actually be looking, and on
+  // a phone this is the ordinary case — the panel is simply off the bottom.
+  //
+  // Scrolling rather than backgrounding the tab because Playwright's
+  // `bringToFront` does not flip `document.hidden` here (checked), so that test
+  // would have passed against a broken implementation. The hidden-tab half is
+  // `document.hidden` in `chat_messages_are_visible`, covered by SeenClock's
+  // own tests; this covers the wiring.
+  await page.setViewportSize({ width: 900, height: 400 });
+  await page.evaluate(() => {
+    document.querySelector('.board-panel')?.scrollIntoView({ block: 'start' });
+    window.scrollTo(0, 0);
+  });
+  await page.waitForTimeout(2_000);
+  await expect(
+    page.locator('.chat-message-unread').first(),
+    'the fade must be paused while the messages are off screen',
+  ).toHaveCSS('animation-play-state', 'paused');
+
+  await page.waitForTimeout(12_000);
+  await expect(
+    page.locator('.chat-message-unread'),
+    'messages nobody can see must not be marked read',
+  ).toHaveCount(1);
+
+  // Back in view, and the clock resumes.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.evaluate(() => document.querySelector('.chat-messages')?.scrollIntoView());
+
+  // Now watched, so it clears — and all three clear together.
+  await expect(page.locator('.chat-message-unread')).toHaveCount(0, { timeout: 20_000 });
+  await expect(page.locator('.rack-scores-unread')).toHaveCount(0);
+  await expect(page.locator('.chat-panel-unread')).toHaveCount(0);
+});
+
 test('the invite-by-name dropdown is visible, not merely rendered', async ({ page }) => {
   // #76. The suggestion list is absolutely positioned, so it lives outside its
   // cell's box — and the pre-creation builder lays seats out in a table whose

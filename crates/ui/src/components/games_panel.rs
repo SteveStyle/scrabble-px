@@ -364,11 +364,13 @@ pub fn GamesPanel(
             }
             let row_elements = rows.into_iter().map(|summary| {
                 let has_unread = has_unread_chat(&summary, &chat_watermarks);
+                let watermark = chat_watermarks.get(&summary.id).copied();
                 game_row(
                     &summary,
                     selected_id.as_deref(),
                     show_invite_actions,
                     has_unread,
+                    watermark,
                     current_game.as_ref(),
                     viewer_player_id.as_deref(),
                     can_start,
@@ -724,6 +726,9 @@ fn game_row(
     selected_id: Option<&str>,
     show_invite_actions: bool,
     has_unread_chat: bool,
+    // The `created_at` of the last message counted as seen for this game.
+    // Anything after it is still unread, and says so.
+    chat_watermark: Option<i64>,
     current_game: Option<&GameStateDto>,
     viewer_player_id: Option<&str>,
     can_start: bool,
@@ -949,6 +954,12 @@ fn game_row(
                     }
                     if can_chat {
                         div { class: "chat-panel",
+                            if crate::app::HAS_UNREAD_CHAT() {
+                                div { class: "chat-panel-unread",
+                                    span { class: "chat-panel-unread-mail", "✉" }
+                                    span { "New message" }
+                                }
+                            }
                             div { class: "chat-messages",
                                 if messages.is_empty() {
                                     p { class: "chat-empty", "No messages yet" }
@@ -962,13 +973,28 @@ fn game_row(
                                 for message in messages.iter().rev() {
                                     {
                                         let is_own = viewer_player_id == Some(message.player_id.as_str());
-                                        let message_class = if is_own {
-                                            "chat-message chat-message-own"
-                                        } else {
-                                            "chat-message"
+                                        // Unread is now a real state that outlives arrival, so the
+                                        // highlight follows it instead of following the element being
+                                        // created. A message scrolled off a phone stays marked until
+                                        // somebody has actually had it in front of them.
+                                        let is_unread = chat_watermark
+                                            .is_none_or(|seen| message.created_at > seen);
+                                        let message_class = match (is_own, is_unread) {
+                                            (true, true) => "chat-message chat-message-own chat-message-unread",
+                                            (true, false) => "chat-message chat-message-own",
+                                            (false, true) => "chat-message chat-message-unread",
+                                            (false, false) => "chat-message",
                                         };
+                                        // The fade *is* the seen clock made visible: same duration, and
+                                        // paused by the same rule, so what somebody watches finishing is
+                                        // the thing that marks the message read.
+                                        let fade = format!(
+                                            "animation-duration: {}ms; animation-play-state: {};",
+                                            crate::seen_clock::SEEN_AFTER_MS,
+                                            if crate::app::CHAT_IS_VISIBLE() { "running" } else { "paused" },
+                                        );
                                         rsx! {
-                                            div { key: "{message.id}", class: "{message_class}",
+                                            div { key: "{message.id}", class: "{message_class}", style: "{fade}",
                                                 span { class: "chat-message-sender", "{message.display_name}" }
                                                 span { class: "chat-message-body", "{message.body}" }
                                                 span { class: "chat-message-time", "{format_relative_time(message.created_at)}" }

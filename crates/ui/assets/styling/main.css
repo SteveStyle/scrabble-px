@@ -345,16 +345,45 @@ button:disabled {
     margin-bottom: 10px;
 }
 
-/* Marks a message that has just arrived, then gets out of the way.
-   Deliberately keyed on the element being *created* rather than on a "seen"
-   flag: the chat watermark advances the instant a message arrives for an open
-   game — watching the panel counts as reading it — so by the time this renders
-   there is no unread state left to read. What there is, is a new DOM node,
-   because the list is keyed by message id and only the new one is built.
+/* The two unread indicators, from one signal (`HAS_UNREAD_CHAT`).
 
-   The cost is that every message marks itself when a game is first opened,
-   since they are all created at once. That reads as the messages arriving,
-   which is close enough to true. */
+   Both are the same mail glyph the games list already uses, so the mark means
+   one thing wherever it appears. The rack one sits with the bag count because
+   that is the row somebody glances at while playing; the chat one sits above
+   the messages, where you are heading once the rack one has caught your eye. */
+.rack-scores-unread {
+    color: var(--gold);
+    font-size: 1rem;
+    line-height: 1;
+}
+
+.chat-panel-unread {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+    font-size: 0.8rem;
+    color: var(--gold);
+}
+
+.chat-panel-unread-mail {
+    font-size: 0.95rem;
+    line-height: 1;
+}
+
+/* Marks a message nobody has read yet, and fades as it earns being read.
+   Keyed on *unread* rather than on the element being created, which is what it
+   used to key on because the watermark advanced the moment a message arrived
+   and there was no unread state left to read. Now the watermark means seen, so
+   there is.
+
+   The fade is not decoration. A colour appearing tells you something changed;
+   a colour *fading while you look at it* tells you which message, and that it
+   is being marked read as you watch. Its duration is the seen clock's, set
+   inline from `SEEN_AFTER_MS` so the two cannot drift, and it is paused
+   whenever the messages are not somewhere a person could see them — the same
+   rule the clock suspends on. What you watch finishing is the thing that marks
+   the message read. */
 @keyframes chat-message-arriving {
     from {
         background: rgba(212, 162, 58, 0.55);
@@ -384,14 +413,26 @@ button:disabled {
     padding: 5px 10px;
     border-radius: 12px;
     background: rgba(255, 255, 255, 0.7);
-    /* Runs once, when the element is created — see the keyframes above for why
-       that is the signal rather than an unread flag. */
-    animation: chat-message-arriving 6s ease-out 1;
 }
 
+/* Only an unread message fades; a read one is simply a message. Duration and
+   play state come from the element's own `style`, written by the component from
+   the seen clock's constant and its visibility signal. */
+.chat-message-unread {
+    animation-name: chat-message-arriving;
+    animation-timing-function: ease-out;
+    animation-iteration-count: 1;
+    animation-fill-mode: forwards;
+}
+
+/* No animation, but the marking still has to work: without the fade an unread
+   message keeps its highlight until the watermark advances, which is the state
+   the fade was expressing anyway. */
 @media (prefers-reduced-motion: reduce) {
-    .chat-message {
+    .chat-message-unread {
         animation: none;
+        background: rgba(212, 162, 58, 0.55);
+        box-shadow: inset 0 0 0 2px var(--gold);
     }
 }
 

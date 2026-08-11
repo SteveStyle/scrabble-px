@@ -31,7 +31,21 @@ gloo-net = { version = "0.6", features = ["http", "websocket"] }
 gloo-storage = "0.3"
 gloo-timers = { version = "0.3", features = ["futures"] }
 js-sys = "0.3"
-web-sys = { version = "0.3", features = ["Window", "Location", "History"] }
+# `IntersectionObserver` and friends: the unread indicator has to know whether
+# the messages are actually on screen, not merely rendered (#86). `Document` and
+# `Element` come with it — the observer needs a target and the document's own
+# visibility for the background-tab case.
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Location",
+    "History",
+    "Document",
+    "Element",
+    "IntersectionObserver",
+    "IntersectionObserverInit",
+    "IntersectionObserverEntry",
+    "VisibilityState",
+] }
 
 [features]
 default = ["web"]
