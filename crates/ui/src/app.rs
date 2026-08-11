@@ -416,6 +416,36 @@ pub fn RootApp() -> Element {
         }
     });
 
+    // Session death, handled once wherever it is noticed.
+    //
+    // It used to be handled only inside the games-list poll, so whether a dead
+    // session cleared up depended on which request happened to meet the 401
+    // first. Any other one turned it into an error string and showed it, over a
+    // board that was still on screen — the account was gone and the app looked
+    // like it was working.
+    use_effect(move || {
+        if SESSION_INVALID() {
+            // Reset first: clearing below writes signals this effect does not
+            // read, but leaving the flag set would stop a *later* session ever
+            // being noticed.
+            *SESSION_INVALID.write() = false;
+            crate::local_storage::clear_tokens();
+            clear_session_state(
+                session,
+                game,
+                game_summaries,
+                websocket_game_id,
+                dragging_tile_id,
+                selected_blank_letter,
+                staged_placements,
+                selected_cell,
+                exchange_mode,
+                exchange_selected,
+                direction_override,
+            );
+        }
+    });
+
     if !game_list_polling_started() {
         game_list_polling_started.set(true);
         let server_url = server_url.clone();
@@ -425,30 +455,13 @@ pub fn RootApp() -> Element {
                 let Some(token) = session().map(|current| current.session_token.clone()) else {
                     continue;
                 };
-                match load_game_summaries(&server_url, Some(&token)).await {
-                    Ok(summaries) => game_summaries.set(summaries),
-                    Err(err) if err == SESSION_INVALID_MESSAGE => {
-                        // The session died server-side — idle or absolute
-                        // expiry, a password change elsewhere, or the account
-                        // being deleted. Drop to the login modal cleanly, and
-                        // clear what belonged to it: the modal used to appear
-                        // over a still-visible board.
-                        crate::local_storage::clear_tokens();
-                        clear_session_state(
-                            session,
-                            game,
-                            game_summaries,
-                            websocket_game_id,
-                            dragging_tile_id,
-                            selected_blank_letter,
-                            staged_placements,
-                            selected_cell,
-                            exchange_mode,
-                            exchange_selected,
-                            direction_override,
-                        );
-                    }
-                    Err(_) => {}
+                // Errors are deliberately dropped. A dead session is handled
+                // by the effect above, which sees it whichever request met the
+                // 401 — this one, a move, a chat send — and anything else is a
+                // transient failure a poll running every ten seconds will
+                // retry anyway.
+                if let Ok(summaries) = load_game_summaries(&server_url, Some(&token)).await {
+                    game_summaries.set(summaries);
                 }
             }
         });
@@ -2013,7 +2026,27 @@ pub(crate) async fn fetch_player_rating_history(
 /// games-list poll can tell "the session is gone server-side" apart from an
 /// ordinary request failure and drop to the login modal instead of retrying
 /// forever.
-pub(crate) const SESSION_INVALID_MESSAGE: &str = "__session_invalid__";
+/// Returned by any request that gets a 401, and matched by the handler that
+/// clears the session.
+///
+/// It reads as a sentence rather than as `__session_invalid__`, because it
+/// leaks: a dozen callers do `error_message.set(Some(error))` with no idea this
+/// value is special, and until they all route through `SESSION_INVALID`
+/// below, one of them will occasionally win the race and put this on screen.
+/// Observed on 2026-08-11 as `__session_invalid__` sitting above the board.
+/// A sentinel that is also a decent message costs nothing and cannot embarrass
+/// anybody.
+pub(crate) const SESSION_INVALID_MESSAGE: &str = "Your session has ended — please sign in again.";
+
+/// Set the moment any request is told the session is invalid.
+///
+/// The clearing itself needs signals a request helper does not have, so this
+/// records the fact and the app effect acts on it — the same split as
+/// `SERVER_BUILD`. Before this, session death was only handled where the
+/// games-list poll happened to notice it first; every other caller turned a
+/// 401 into a string and showed it, leaving a dead session apparently working
+/// behind a stale board.
+pub(crate) static SESSION_INVALID: GlobalSignal<bool> = Signal::global(|| false);
 
 /// Best-effort explicit log-out: asks the server to delete this session now.
 /// The caller clears its local state regardless, so a failure (offline,
@@ -3141,6 +3174,7 @@ where
     mark_online();
     if !response.status().is_success() {
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            *SESSION_INVALID.write() = true;
             return Err(SESSION_INVALID_MESSAGE.to_string());
         }
         let status = response.status().as_u16();
@@ -3184,6 +3218,7 @@ where
     mark_online();
     if !response.ok() {
         if response.status() == 401 {
+            *SESSION_INVALID.write() = true;
             return Err(SESSION_INVALID_MESSAGE.to_string());
         }
         let status = response.status();
