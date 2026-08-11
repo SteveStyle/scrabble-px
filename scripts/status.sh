@@ -81,13 +81,24 @@ behind_main() {
   sha="${version#*+}"
   [[ -z "$version" || "$sha" == "$version" ]] && { echo ""; return; }
   git rev-parse -q --verify "$sha^{commit}" > /dev/null 2>&1 || { echo "unknown commit"; return; }
-  local n
-  n="$(git rev-list --count "$sha..origin/main" 2>/dev/null || true)"
-  case "$n" in
+  # Changes, not commits. A merge commit is not a change — it is bookkeeping
+  # about how changes arrived — and counting it made this line disagree with
+  # the release preview below, which has always used `--no-merges`. Two numbers
+  # for the same range, a few rows apart: 16 against 9, and no way to tell from
+  # the report which was wrong.
+  #
+  # The merges are still shown rather than hidden, so somebody comparing this
+  # against `git log` finds their own number here instead of a third one.
+  local changes merges
+  changes="$(git rev-list --count --no-merges "$sha..origin/main" 2>/dev/null || true)"
+  merges="$(git rev-list --count --merges "$sha..origin/main" 2>/dev/null || true)"
+  local suffix=""
+  [[ -n "$merges" && "$merges" != "0" ]] && suffix=" (+$merges merges)"
+  case "$changes" in
     "" ) echo "" ;;
-    0  ) echo "up to date with main" ;;
-    1  ) echo "1 commit behind main" ;;
-    *  ) echo "$n commits behind main" ;;
+    0  ) echo "up to date with main$suffix" ;;
+    1  ) echo "1 change behind main$suffix" ;;
+    *  ) echo "$changes changes behind main$suffix" ;;
   esac
 }
 
@@ -95,9 +106,9 @@ echo "==> Environments"
 PROD_V="$(version_of "$PROD_URL")"
 REHEARSAL_V="$(version_of "$REHEARSAL_URL")"
 PREVIEW_V="$(version_of "$PREVIEW_URL")"
-printf '    %-12s %-18s %-28s %s\n' "production" "${PROD_V:-unreachable}" "$(behind_main "$PROD_V")" "what users have"
-printf '    %-12s %-18s %-28s %s\n' "rehearsal" "${REHEARSAL_V:-not running}" "$(behind_main "$REHEARSAL_V")" "what the release gate checks"
-printf '    %-12s %-18s %-28s %s\n' "preview" "${PREVIEW_V:-not running}" "$(behind_main "$PREVIEW_V")" "what you last looked at"
+printf '    %-12s %-18s %-36s %s\n' "production" "${PROD_V:-unreachable}" "$(behind_main "$PROD_V")" "what users have"
+printf '    %-12s %-18s %-36s %s\n' "rehearsal" "${REHEARSAL_V:-not running}" "$(behind_main "$REHEARSAL_V")" "what the release gate checks"
+printf '    %-12s %-18s %-36s %s\n' "preview" "${PREVIEW_V:-not running}" "$(behind_main "$PREVIEW_V")" "what you last looked at"
 echo
 
 # What a release from `main` would put out, right now.
@@ -151,7 +162,9 @@ else
   RANGE="prod-$LAST_PROD_TAG..origin/main"
   COMMIT_COUNT="$(git rev-list --count --no-merges "$RANGE" 2>/dev/null || echo 0)"
   printf '    %-12s %s\n' "version" "$MAIN_VERSION  (production has $LAST_PROD_TAG)"
-  printf '    %-12s %s\n' "commits" "$COMMIT_COUNT on main since prod-$LAST_PROD_TAG"
+  MERGE_COUNT="$(git rev-list --count --merges "$RANGE" 2>/dev/null || echo 0)"
+  printf '    %-12s %s\n' "changes" \
+    "$COMMIT_COUNT on main since prod-$LAST_PROD_TAG$( [[ "$MERGE_COUNT" != "0" ]] && printf ' (+%s merges)' "$MERGE_COUNT" )"
 
   # Issues referenced by those commits, in the order they were merged.
   SHIPPING="$(git log "$RANGE" --no-merges -E --format=%s 2>/dev/null \
