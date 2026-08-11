@@ -52,7 +52,29 @@ start_server() {
     
     echo "Starting backend server..."
     cd "$REPO_DIR"
-    nohup cargo run -p server-game >"$LOGDIR/server.log" 2>&1 &
+    # Rate limits raised, as preview does (docker-compose.preview.yml). The
+    # defaults are sized for the production VM, and the e2e suite comes from one
+    # address registering a player per test — so three tests in, the rest are
+    # refused and the suite reports a broken client instead of a busy limiter.
+    # Measured on dev before this: register once, then 429 for the next four.
+    #
+    # **Rehearsal is where the real numbers are checked**, because that is the
+    # environment load testing measures. Production-shaped limits belong where
+    # something is being measured against production, not in the two places
+    # whose job is to let you look at a change.
+    #
+    # Overridable: set any of these before running this script to exercise
+    # limiting on purpose.
+    nohup env \
+        TILE_LITE_ELITE_LIMIT_REGISTER_PER_MIN="${TILE_LITE_ELITE_LIMIT_REGISTER_PER_MIN:-6000}" \
+        TILE_LITE_ELITE_LIMIT_REGISTER_BURST="${TILE_LITE_ELITE_LIMIT_REGISTER_BURST:-1000}" \
+        TILE_LITE_ELITE_LIMIT_AUTH_PER_MIN="${TILE_LITE_ELITE_LIMIT_AUTH_PER_MIN:-6000}" \
+        TILE_LITE_ELITE_LIMIT_AUTH_BURST="${TILE_LITE_ELITE_LIMIT_AUTH_BURST:-1000}" \
+        TILE_LITE_ELITE_LIMIT_SESSION_PER_MIN="${TILE_LITE_ELITE_LIMIT_SESSION_PER_MIN:-6000}" \
+        TILE_LITE_ELITE_LIMIT_SESSION_BURST="${TILE_LITE_ELITE_LIMIT_SESSION_BURST:-1000}" \
+        TILE_LITE_ELITE_LIMIT_GLOBAL_PER_MIN="${TILE_LITE_ELITE_LIMIT_GLOBAL_PER_MIN:-60000}" \
+        TILE_LITE_ELITE_LIMIT_GLOBAL_BURST="${TILE_LITE_ELITE_LIMIT_GLOBAL_BURST:-10000}" \
+        cargo run -p server-game >"$LOGDIR/server.log" 2>&1 &
     local server_pid=$!
     echo $server_pid > "$PIDFILE_SERVER"
     
