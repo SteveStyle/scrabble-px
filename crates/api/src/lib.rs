@@ -74,7 +74,7 @@ use serde::{Deserialize, Serialize};
 // moves" for which changes bump this.
 pub const API_VERSION: ApiVersion = ApiVersion {
     major: 2,
-    minor: 10,
+    minor: 11,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

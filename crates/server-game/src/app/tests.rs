@@ -2826,7 +2826,7 @@ async fn claimed_seat_rejects_actions_from_a_different_player() {
         },
     )
     .await;
-    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
 
     // Alice can.
     let accepted = send_json_auth(
@@ -2950,7 +2950,7 @@ async fn claimed_game_only_starts_for_a_seat_owner() {
         &StartGameRequest::default(),
     )
     .await;
-    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
 
     let accepted = send_json_auth(
         app,
@@ -3175,7 +3175,7 @@ async fn a_non_participant_cannot_chat() {
         },
     )
     .await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -3192,7 +3192,11 @@ async fn get_game_rejects_unauthenticated_and_unrelated_callers() {
         &format!("/games/{}", started.game.id),
     )
     .await;
-    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        unauthenticated.status(),
+        StatusCode::UNAUTHORIZED,
+        "nobody is signed in, so signing in is the answer"
+    );
 
     let unrelated = send_empty_auth(
         app,
@@ -3201,7 +3205,16 @@ async fn get_game_rejects_unauthenticated_and_unrelated_callers() {
         Some(&mallory.session_token),
     )
     .await;
-    assert_eq!(unrelated.status(), StatusCode::UNAUTHORIZED);
+    // 403, not 401. Mallory's session is perfectly good; she is simply not in
+    // this game. Answering 401 tells a client its session is invalid, and a
+    // client that acts on that signs the player out — which is what happened:
+    // the games list includes open invitations, so every newly registered
+    // player opened one, was told 401, and was logged straight back out.
+    assert_eq!(
+        unrelated.status(),
+        StatusCode::FORBIDDEN,
+        "a signed-in caller who is not in the game is forbidden, not unauthenticated"
+    );
 }
 
 #[tokio::test]
@@ -4597,7 +4610,7 @@ async fn starting_a_game_is_rejected_for_a_seated_non_creator() {
         &StartGameRequest::default(),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

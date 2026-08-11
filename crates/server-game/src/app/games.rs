@@ -341,9 +341,16 @@ pub(crate) async fn get_game(
         .ok_or_else(|| ApiProblem::not_found("Game not found"))?;
     let access = resolve_viewer_access(game, caller_player_id.as_deref());
     if access == ViewerAccess::Rejected {
-        return Err(ApiProblem::unauthorized(
-            "Sign in and be part of this game to view it",
-        ));
+        // 401 only when there is nobody to be. A signed-in caller who is not
+        // in this game is *authenticated and not allowed*, which is 403 — see
+        // docs/4.3's status table. Answering 401 told the client its session
+        // was invalid, and a client that acts on that logs the caller out for
+        // opening somebody else's game. Every new player meets this, because
+        // the games list includes open invitations they may not view.
+        return Err(match caller_player_id {
+            None => ApiProblem::unauthorized("Sign in to view this game"),
+            Some(_) => ApiProblem::forbidden("You are not part of this game"),
+        });
     }
     let mut dto = game_dto_with_invitation_status(&state, game).await?;
     drop(games);
@@ -395,7 +402,7 @@ pub(crate) async fn start_game(
         }
 
         if !caller_may_manage_game(game, caller_player_id.as_deref()) {
-            return Err(ApiProblem::unauthorized(
+            return Err(ApiProblem::forbidden(
                 "Only the game's creator can start it",
             ));
         }
@@ -485,7 +492,7 @@ pub(crate) async fn submit_action(
             && seat.kind == api::SeatKind::Human
             && caller_player_id.as_deref() != seat.player_id.as_deref()
         {
-            return Err(ApiProblem::unauthorized(
+            return Err(ApiProblem::forbidden(
                 "This seat belongs to a different player",
             ));
         }
@@ -588,7 +595,7 @@ pub(crate) async fn post_chat_message(
             .iter()
             .find(|participant| participant.player_id.as_deref() == Some(caller_player_id.as_str()))
             .map(|participant| participant.display_name.clone())
-            .ok_or_else(|| ApiProblem::unauthorized("Only seated players can chat in this game"))?;
+            .ok_or_else(|| ApiProblem::forbidden("Only seated players can chat in this game"))?;
 
         game.post_chat_message(&caller_player_id, &display_name, request.body)
             .map_err(ApiProblem::bad_request)?;
