@@ -811,8 +811,17 @@ button:disabled {
    it never grows and shifts the tiles below it no matter which of those is
    showing or how long the text runs. Tall enough for the two-line case
    (headline+score, plus a cross-words detail line). */
+/* A fixed reserve, not `min-height`: this sits directly above the rack, and a
+   slot that grew when a preview appeared would shift the tiles out from under
+   a thumb mid-move. The cost is that the height must suit the *tallest* state
+   and is therefore slack in every other one.
+
+   The tallest state is a legal-move banner: 8px of padding either side, a
+   title line, and a detail line — a little over 50px. 80px left roughly 20px
+   of air above the rack in every state, which on a phone is the scarce
+   direction. */
 .preview-slot {
-    height: 80px;
+    height: 60px;
     margin-bottom: 10px;
     overflow: hidden;
 }
