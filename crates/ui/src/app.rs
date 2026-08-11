@@ -399,6 +399,28 @@ pub fn RootApp() -> Element {
         });
     }
 
+    // The reacting half of the build-id header. `note_server_build` records that
+    // a response came from a different build; this decides what to do about it,
+    // because it has the signals to say so and a request helper does not.
+    //
+    // It does not reload on the header. That describes the *server*, and the
+    // bundle comes from a different container — inside a deploy window the
+    // server is already new while the old bundle is still being served, so
+    // reloading would fetch the old bundle, see the header again, and loop.
+    // `watch_for_new_bundle` polls `/version.txt`, which is served alongside
+    // the bundle and therefore knows what is actually being served, and
+    // reloads only once they differ.
+    //
+    // So the header supplies the trigger this check never had: it used to hang
+    // off offline-recovery, which meant it reached nobody who had not first
+    // lost the server and got it back.
+    #[cfg(target_arch = "wasm32")]
+    use_effect(move || {
+        if SERVER_BUILD_CHANGED() {
+            watch_for_new_bundle(info_message, None);
+        }
+    });
+
     if !game_list_polling_started() {
         game_list_polling_started.set(true);
         let server_url = server_url.clone();
@@ -2920,6 +2942,88 @@ fn backend_is_unreachable(status: u16) -> bool {
     (502..=504).contains(&status)
 }
 
+/// The build this client was compiled from, matching what the server stamps on
+/// every response. `None` on a build with no id, where the comparison below
+/// cannot be made and correctly is not.
+const CLIENT_BUILD_ID: Option<&str> = option_env!("TILE_LITE_ELITE_BUILD_ID");
+
+/// Set when a response arrives from a server running a different build.
+///
+/// The reload is *not* done here. A request helper has no signals to explain
+/// itself with, and reloading straight off this header would be wrong anyway:
+/// the header describes the **server**, while the bundle is served by a
+/// different container. Inside a deploy window the server is new while the old
+/// bundle is still being served, so reloading would fetch the old bundle,
+/// see the new header again, and loop.
+///
+/// So this records a fact — *something moved* — and the app effect that owns
+/// the UI confirms against `/version.txt`, which is served alongside the bundle
+/// and therefore knows what is actually being served, before reloading.
+static SERVER_BUILD_CHANGED: GlobalSignal<bool> = Signal::global(|| false);
+
+/// The generic half of a response: the parts every caller handles identically,
+/// whatever it was asking for.
+///
+/// It exists because the two HTTP clients this crate uses — `reqwest` on the
+/// desktop, `gloo` in the browser — share no response type, so "read the
+/// headers we care about" had been written out at each of six call sites. That
+/// duplication is why there was nowhere obvious to put the build-id check, and
+/// why `Retry-After` had to be changed in six places when its meaning moved.
+struct ResponseHeaders {
+    retry_after: Option<String>,
+    build_id: Option<String>,
+}
+
+impl ResponseHeaders {
+    /// Does the generic handling, and hands back the retry hint for whatever
+    /// message the caller is building. Content handling stays with the caller;
+    /// this is only the envelope.
+    fn handle(self) -> Option<String> {
+        note_server_build(self.build_id.as_deref());
+        self.retry_after
+    }
+}
+
+/// `reqwest`'s headers come back as bytes that may not be text; `gloo`'s come
+/// back as `Option<String>` already. This is the difference, kept in one place
+/// so the two call shapes above can look the same.
+#[cfg(not(target_arch = "wasm32"))]
+fn header_string(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+/// Records that the server is running a build this client is not.
+///
+/// Two silences, both deliberate. A server with no build id sets no header, and
+/// a client with no build id cannot compare — in either case we cannot tell new
+/// code from old, and the honest response is to do nothing rather than guess.
+fn note_server_build(served: Option<&str>) {
+    if *SERVER_BUILD_CHANGED.peek() {
+        return;
+    }
+    if build_differs(served, CLIENT_BUILD_ID) {
+        *SERVER_BUILD_CHANGED.write() = true;
+    }
+}
+
+/// Split from `note_server_build` so it can be tested: `CLIENT_BUILD_ID` is
+/// fixed at compile time and unset under `cargo test`, so a test going through
+/// it could only ever see the "cannot tell" case.
+///
+/// Answers **only** the question "do I know these are different". Both unknowns
+/// are `false`, which is what makes the caller's silence the right silence: not
+/// knowing must never be treated as a change, or an unidentified build would
+/// reload on every response forever.
+fn build_differs(served: Option<&str>, ours: Option<&str>) -> bool {
+    match (served, ours) {
+        (Some(served), Some(ours)) => !served.is_empty() && !ours.is_empty() && served != ours,
+        _ => false,
+    }
+}
+
 fn mark_offline() -> String {
     *IS_ONLINE.write() = false;
     UNREACHABLE_MESSAGE.to_string()
@@ -3016,11 +3120,11 @@ where
             return Err(SESSION_INVALID_MESSAGE.to_string());
         }
         let status = response.status().as_u16();
-        let retry_after = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
+        let retry_after = ResponseHeaders {
+            retry_after: header_string(response.headers(), "retry-after"),
+            build_id: header_string(response.headers(), "x-build-id"),
+        }
+        .handle();
         let msg = response
             .json::<api::ApiError>()
             .await
@@ -3059,7 +3163,11 @@ where
             return Err(SESSION_INVALID_MESSAGE.to_string());
         }
         let status = response.status();
-        let retry_after = response.headers().get("retry-after");
+        let retry_after = ResponseHeaders {
+            retry_after: response.headers().get("retry-after"),
+            build_id: response.headers().get("x-build-id"),
+        }
+        .handle();
         let msg = response
             .json::<api::ApiError>()
             .await
@@ -3157,11 +3265,11 @@ where
     mark_online();
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let retry_after = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
+        let retry_after = ResponseHeaders {
+            retry_after: header_string(response.headers(), "retry-after"),
+            build_id: header_string(response.headers(), "x-build-id"),
+        }
+        .handle();
         let msg = response
             .json::<api::ApiError>()
             .await
@@ -3195,7 +3303,11 @@ where
     mark_online();
     if !response.ok() {
         let status = response.status();
-        let retry_after = response.headers().get("retry-after");
+        let retry_after = ResponseHeaders {
+            retry_after: response.headers().get("retry-after"),
+            build_id: response.headers().get("x-build-id"),
+        }
+        .handle();
         let msg = response
             .json::<api::ApiError>()
             .await
@@ -3226,11 +3338,11 @@ where
     mark_online();
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let retry_after = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
+        let retry_after = ResponseHeaders {
+            retry_after: header_string(response.headers(), "retry-after"),
+            build_id: header_string(response.headers(), "x-build-id"),
+        }
+        .handle();
         let msg = response
             .json::<api::ApiError>()
             .await
@@ -3263,7 +3375,11 @@ where
     mark_online();
     if !response.ok() {
         let status = response.status();
-        let retry_after = response.headers().get("retry-after");
+        let retry_after = ResponseHeaders {
+            retry_after: response.headers().get("retry-after"),
+            build_id: response.headers().get("x-build-id"),
+        }
+        .handle();
         let msg = response
             .json::<api::ApiError>()
             .await
@@ -4105,6 +4221,44 @@ fn shuffle_order(order: &mut [usize]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A different build on the server is what triggers the update check. This
+    /// is the whole of that decision, and the interesting half is when it says
+    /// **no**.
+    ///
+    /// A tab that had been idle across a deploy used to never notice at all:
+    /// the check hung off offline-recovery, so it needed the client to have
+    /// lost the server and got it back. A tab holding no connection never does.
+    #[test]
+    fn a_different_server_build_is_noticed() {
+        assert!(
+            build_differs(Some("b2d4e10"), Some("a1c9f02")),
+            "a server running different code is the case this exists for"
+        );
+        assert!(
+            !build_differs(Some("a1c9f02"), Some("a1c9f02")),
+            "the same build is not a reason to reload"
+        );
+    }
+
+    /// Not knowing is never a change.
+    ///
+    /// A server with no build id sets no header; a client with no build id has
+    /// nothing to compare. Either way the honest answer is "cannot tell", and
+    /// it must not be reported as a difference — a build that answered "yes" to
+    /// an unknown would reload on every response, forever, which is a worse
+    /// failure than the staleness this fixes.
+    #[test]
+    fn an_unknown_build_is_never_treated_as_a_change() {
+        assert!(!build_differs(None, Some("a1c9f02")), "server said nothing");
+        assert!(!build_differs(Some("a1c9f02"), None), "we have no id");
+        assert!(!build_differs(None, None), "neither end knows");
+        assert!(
+            !build_differs(Some(""), Some("a1c9f02")),
+            "empty is not an id"
+        );
+        assert!(!build_differs(Some("a1c9f02"), Some("")), "nor is ours");
+    }
 
     /// A tab left open across a deploy used to stick on `HTTP 502` and never
     /// retry. `web` (Caddy) and `server` are separate containers, so while

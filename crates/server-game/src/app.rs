@@ -283,6 +283,23 @@ pub fn build_router(state: AppState) -> Router {
         .merge(limited)
         .merge(admin_routes)
         .layer(CorsLayer::permissive())
+        // Every response says which build produced it, so a client can notice
+        // that the server has moved without asking a question of its own. It
+        // is a header rather than a body field because it belongs to *any*
+        // response, not to one endpoint: putting it in `/health` would mean
+        // clients polling `/health` on a timer to learn about an event that
+        // happens a few times a week.
+        //
+        // A client compares this against its own build id and, if they differ,
+        // confirms against `/version.txt` before reloading — that file is
+        // served alongside the bundle, so it knows what is *actually* being
+        // served, which this header cannot. See docs/3.3 and `crates/ui`'s
+        // `note_server_build`.
+        //
+        // Omitted entirely on a build with no id (a local `cargo run`), since
+        // "I cannot tell you" is better said by silence than by a value that
+        // never changes.
+        .layer(build_id_header())
         // One INFO-level span per request (method, path, status, latency)
         // with no per-handler code — this alone covers "what happened and
         // when" for the whole HTTP surface; the tracing calls sprinkled
@@ -290,6 +307,34 @@ pub fn build_router(state: AppState) -> Router {
         // (which player, which game, why a request was rejected).
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// The build this server was compiled from — the same id `app_version` appends,
+/// on its own rather than with the release number, because what a client needs
+/// is "is this the code I have", and the id answers that exactly.
+pub(crate) const BUILD_ID: Option<&str> = option_env!("TILE_LITE_ELITE_BUILD_ID");
+
+/// Stamps `x-build-id` on every response. `Option` so an unidentified build
+/// sets no header at all rather than a misleading constant.
+fn build_id_header()
+-> tower_http::set_header::SetResponseHeaderLayer<Option<axum::http::HeaderValue>> {
+    build_id_header_for(BUILD_ID)
+}
+
+/// Split from `build_id_header` so the behaviour can be tested. `BUILD_ID` is
+/// fixed at compile time and unset under `cargo test`, so a test that went
+/// through it could only ever observe the empty case — which is the half that
+/// matters least.
+fn build_id_header_for(
+    id: Option<&str>,
+) -> tower_http::set_header::SetResponseHeaderLayer<Option<axum::http::HeaderValue>> {
+    tower_http::set_header::SetResponseHeaderLayer::overriding(
+        axum::http::HeaderName::from_static("x-build-id"),
+        match id {
+            Some(id) if !id.is_empty() => axum::http::HeaderValue::from_str(id).ok(),
+            _ => None,
+        },
+    )
 }
 
 /// The `Major.Minor.Patch` release version from Cargo.toml, plus an

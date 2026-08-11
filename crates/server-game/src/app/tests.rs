@@ -1720,6 +1720,69 @@ async fn a_full_hashing_pool_varies_its_retry_hint() {
     );
 }
 
+/// Every response carries the build that produced it, whatever it was asking
+/// for. That is the point of a header rather than a field on one endpoint: a
+/// client learns the server moved from traffic it was sending anyway, instead
+/// of polling something on a timer for an event that happens a few times a
+/// week.
+#[tokio::test]
+async fn every_response_carries_the_build_id() {
+    let app = Router::new()
+        .route("/anything", get(|| async { "ok" }))
+        .layer(build_id_header_for(Some("a1c9f02")));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/anything")
+                .body(Body::empty())
+                .expect("a valid request"),
+        )
+        .await
+        .expect("the router should answer");
+
+    assert_eq!(
+        response
+            .headers()
+            .get("x-build-id")
+            .expect("every response is stamped")
+            .to_str()
+            .expect("an ASCII header"),
+        "a1c9f02"
+    );
+}
+
+/// A build with no id says nothing, rather than saying something constant.
+///
+/// The difference matters at the other end: a client compares this against its
+/// own id and reloads when they differ. A placeholder that never changes would
+/// be indistinguishable from "the server is running your build" — so silence
+/// is the honest answer, and the client's own "cannot tell, do nothing" path
+/// is the one that should handle it.
+#[tokio::test]
+async fn an_unidentified_build_sets_no_header() {
+    for id in [None, Some("")] {
+        let app = Router::new()
+            .route("/anything", get(|| async { "ok" }))
+            .layer(build_id_header_for(id));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/anything")
+                    .body(Body::empty())
+                    .expect("a valid request"),
+            )
+            .await
+            .expect("the router should answer");
+
+        assert!(
+            response.headers().get("x-build-id").is_none(),
+            "an unidentified build ({id:?}) should say nothing at all"
+        );
+    }
+}
+
 pub(super) async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {
     read_json(
         send_json(
