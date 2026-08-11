@@ -156,15 +156,41 @@ MAIN_VERSION="$(git show origin/main:Cargo.toml 2>/dev/null | grep -m1 '^version
 LAST_PROD_TAG="$(git tag --list 'prod-[0-9]*' 2>/dev/null \
   | sed 's/^prod-//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 || true)"
 
-if [[ -z "$LAST_PROD_TAG" ]]; then
-  printf '    %s\n' "no prod-* tag yet, so there is nothing to compare against"
+# What to measure from: the commit production is *running*, not the newest tag.
+#
+# They agree almost always, and disagree exactly when it matters. `rollback.sh`
+# puts production back to the previous images without moving any tag —
+# correctly, since the tag records a release that did happen — so after a
+# rollback the newest tag is ahead of what is live. Measuring from the tag then
+# omits everything between them, including the change that was rolled back,
+# which is the one somebody is most likely to be asking about.
+#
+# `/health` is already read above for the Environments block, so this costs
+# nothing. Falls back to the tag when production cannot be reached, or reports
+# a commit this checkout does not have — and says which it used either way,
+# because silently answering a different question is the fault being fixed.
+PROD_SHA="${PROD_V#*+}"
+BASE_REF=""
+BASE_NOTE=""
+PROD_VERSION="$LAST_PROD_TAG"
+if [[ -n "$PROD_V" && "$PROD_SHA" != "$PROD_V" ]] \
+  && git rev-parse -q --verify "$PROD_SHA^{commit}" > /dev/null 2>&1; then
+  BASE_REF="$PROD_SHA"
+  PROD_VERSION="${PROD_V%%+*}"
+elif [[ -n "$LAST_PROD_TAG" ]]; then
+  BASE_REF="prod-$LAST_PROD_TAG"
+  BASE_NOTE="  (from the newest tag — production did not answer)"
+fi
+
+if [[ -z "$BASE_REF" ]]; then
+  printf '    %s\n' "nothing to compare against: production did not answer and there is no prod-* tag"
 else
-  RANGE="prod-$LAST_PROD_TAG..origin/main"
+  RANGE="$BASE_REF..origin/main"
   COMMIT_COUNT="$(git rev-list --count --no-merges "$RANGE" 2>/dev/null || echo 0)"
-  printf '    %-12s %s\n' "version" "$MAIN_VERSION  (production has $LAST_PROD_TAG)"
+  printf '    %-12s %s\n' "version" "$MAIN_VERSION  (production has $PROD_VERSION)$BASE_NOTE"
   MERGE_COUNT="$(git rev-list --count --merges "$RANGE" 2>/dev/null || echo 0)"
   printf '    %-12s %s\n' "changes" \
-    "$COMMIT_COUNT on main since prod-$LAST_PROD_TAG$( [[ "$MERGE_COUNT" != "0" ]] && printf ' (+%s merges)' "$MERGE_COUNT" )"
+    "$COMMIT_COUNT on main since $BASE_REF$( [[ "$MERGE_COUNT" != "0" ]] && printf ' (+%s merges)' "$MERGE_COUNT" )"
 
   # Issues referenced by those commits, in the order they were merged.
   SHIPPING="$(git log "$RANGE" --no-merges -E --format=%s 2>/dev/null \
@@ -201,7 +227,7 @@ else
     # The same judgement check-release-version.sh makes at deploy time, made
     # here instead — before the work of a preview and a rehearsal, rather than
     # after it.
-    if [[ -n "$FUNCTIONAL" && "${MAIN_VERSION%.*}" == "${LAST_PROD_TAG%.*}" ]]; then
+    if [[ -n "$FUNCTIONAL" && "${MAIN_VERSION%.*}" == "${PROD_VERSION%.*}" ]]; then
       printf '    %-12s %s\n' "warning" "functional change in a patch bump — see docs/3.3, \"Releases are branches\""
     fi
   fi
