@@ -54,6 +54,11 @@ enum Command {
         #[command(subcommand)]
         action: GamesAction,
     },
+    /// What the database holds, day by day.
+    ///
+    /// Recorded by a sweep that runs when somebody uses the service, so a
+    /// missing day means the service was quiet — not that anything broke.
+    Size,
 }
 
 #[derive(Subcommand)]
@@ -110,6 +115,7 @@ fn main() {
     let result = match cli.command {
         Command::Users { action } => run_users(&client, &cli.server, output, action),
         Command::Games { action } => run_games(&client, &cli.server, output, action),
+        Command::Size => run_size(&client, &cli.server, output),
     };
 
     if let Err(error) = result {
@@ -137,6 +143,58 @@ impl Output {
             println!("{human}");
         }
     }
+}
+
+/// Prints the daily record newest first, so today is the first line read.
+fn run_size(
+    client: &reqwest::blocking::Client,
+    server: &str,
+    output: Output,
+) -> Result<(), String> {
+    let rows: Vec<api::AdminDatabaseSizeDto> = check_response(
+        client
+            .get(format!("{server}/admin/database-size"))
+            .send()
+            .map_err(fmt_err)?,
+    )?
+    .json()
+    .map_err(fmt_err)?;
+    if output.json {
+        return print_json(&rows);
+    }
+    if rows.is_empty() {
+        println!(
+            "Nothing recorded yet — the first row is written the next time somebody lists their games."
+        );
+        return Ok(());
+    }
+    print_table(
+        &[
+            "DAY",
+            "PLAYERS",
+            "SESSIONS",
+            "GAMES",
+            "INVITES",
+            "CHAT",
+            "IN MEMORY",
+            "DB BYTES",
+        ],
+        rows.iter()
+            .map(|row| {
+                vec![
+                    row.recorded_on.clone(),
+                    row.players.to_string(),
+                    row.sessions.to_string(),
+                    row.games.to_string(),
+                    row.invitations.to_string(),
+                    row.chat_messages.to_string(),
+                    row.games_in_memory.to_string(),
+                    row.database_bytes.to_string(),
+                ]
+            })
+            .collect(),
+    );
+    Ok(())
 }
 
 fn run_users(

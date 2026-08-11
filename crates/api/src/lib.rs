@@ -74,7 +74,7 @@ use serde::{Deserialize, Serialize};
 // moves" for which changes bump this.
 pub const API_VERSION: ApiVersion = ApiVersion {
     major: 2,
-    minor: 11,
+    minor: 12,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -689,6 +689,24 @@ pub struct InvitationPreviewDto {
 /// `/auth/validate` returns to the player themselves) because rating is an
 /// operator-facing join, not part of a player's own identity payload —
 /// a player reads their rating from `/players/{id}/stats` instead.
+/// One day's record of what the database holds — see migration 0007 and #90.
+///
+/// A gap in the series means the service was quiet that day, not that anything
+/// broke: the row is written by a sweep that only runs when somebody uses the
+/// service, which is the accepted cost of having no scheduler on the VM.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminDatabaseSizeDto {
+    pub recorded_on: String,
+    pub recorded_at: i64,
+    pub players: i64,
+    pub sessions: i64,
+    pub games: i64,
+    pub invitations: i64,
+    pub chat_messages: i64,
+    pub database_bytes: i64,
+    pub games_in_memory: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AdminPlayerSummaryDto {
     pub id: String,

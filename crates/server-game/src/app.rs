@@ -172,6 +172,7 @@ pub fn build_router(state: AppState) -> Router {
     // play, which would otherwise expose these to the whole LAN too).
     let admin_routes = Router::new()
         .route("/admin/users", get(admin_list_users))
+        .route("/admin/database-size", get(admin_list_database_size))
         .route("/admin/users/{player_id}", delete(admin_delete_user))
         .route(
             "/admin/users/{player_id}/reset-password",

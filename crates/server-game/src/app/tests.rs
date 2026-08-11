@@ -1972,6 +1972,78 @@ fn the_decoy_hash_is_a_real_argon2_hash() {
     );
 }
 
+/// The daily record is written once a day, and counts what is there.
+///
+/// "Once a day" is the day's primary key plus `insert or ignore`, not a
+/// check-then-write — so this calls the sweep repeatedly and expects one row.
+/// A check-then-write would pass a single-threaded test and still double-write
+/// under two concurrent callers, which is exactly what `list_games` invites.
+#[tokio::test]
+async fn the_database_size_is_recorded_once_a_day() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    register_player(app.clone(), "SizeAlice").await;
+    register_player(app.clone(), "SizeBob").await;
+
+    // Through persistence rather than the sweep, deliberately: the sweep logs
+    // and swallows failures, so a broken query there reads as "no rows yet"
+    // instead of as an error. It did exactly that while this was being written
+    // — the count named a table that does not exist and the test simply saw
+    // zero. Asserting against the layer that can fail is what makes it say so.
+    for _ in 0..3 {
+        persistence::record_database_size(&state.db, 0)
+            .await
+            .expect("recording should succeed");
+    }
+
+    let rows = persistence::list_database_size_history(&state.db, 10)
+        .await
+        .expect("the history should be readable");
+    assert_eq!(
+        rows.len(),
+        1,
+        "three sweeps in one day should leave one row"
+    );
+
+    let today = &rows[0];
+    assert_eq!(
+        today.players, 2,
+        "both registered players should be counted"
+    );
+    assert!(
+        today.sessions >= 2,
+        "registering signs you in, so there should be a session each: {}",
+        today.sessions
+    );
+    assert!(
+        today.database_bytes > 0,
+        "page_count * page_size should be a real size, got {}",
+        today.database_bytes
+    );
+}
+
+/// A day with no requests records nothing, and that is not a fault.
+///
+/// The sweep runs off `list_games`, so a quiet day leaves a gap. Pinned because
+/// #89 will compare days and must read a gap as "quiet" rather than "broken" —
+/// and because somebody tempted to add a scheduler should see that the absence
+/// is a decision.
+#[tokio::test]
+async fn a_day_with_no_traffic_records_nothing() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+
+    let rows = persistence::list_database_size_history(&state.db, 10)
+        .await
+        .expect("the history should be readable");
+    assert!(
+        rows.is_empty(),
+        "nothing should be recorded until something runs the sweep"
+    );
+}
+
 pub(super) async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {
     read_json(
         send_json(

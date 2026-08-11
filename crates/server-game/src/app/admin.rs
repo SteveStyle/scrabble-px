@@ -1,5 +1,34 @@
 use super::*;
 
+/// The daily record of what the database holds (#90).
+///
+/// Read here rather than anywhere public: it is production data, and this is
+/// where production questions are already asked. No thresholds and no
+/// comparison — those are #89, and they need this to have been running a while
+/// before they can be written honestly.
+pub(crate) async fn admin_list_database_size(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<api::AdminDatabaseSizeDto>>, ApiProblem> {
+    let rows = persistence::list_database_size_history(&state.db, 90)
+        .await
+        .map_err(ApiProblem::from_sqlx)?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| api::AdminDatabaseSizeDto {
+                recorded_on: r.recorded_on,
+                recorded_at: r.recorded_at,
+                players: r.players,
+                sessions: r.sessions,
+                games: r.games,
+                invitations: r.invitations,
+                chat_messages: r.chat_messages,
+                database_bytes: r.database_bytes,
+                games_in_memory: r.games_in_memory,
+            })
+            .collect(),
+    ))
+}
+
 pub(crate) async fn require_loopback(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     request: Request,

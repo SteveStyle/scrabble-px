@@ -18,6 +18,9 @@ pub(crate) async fn list_games(
     expire_overdue_turns(&state).await;
     send_move_time_reminders(&state).await;
     expire_old_terminal_games(&state).await;
+    // Measurement, on the same lazy path and for the same reason: no scheduler
+    // exists on the VM, and this runs whenever anybody uses the service.
+    super::sweeps::record_database_size(&state).await;
     if let Err(error) = persistence::delete_expired_sessions(&state.db).await {
         tracing::error!(%error, "failed to delete expired sessions");
     }
