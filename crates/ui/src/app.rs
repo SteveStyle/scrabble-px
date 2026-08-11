@@ -238,6 +238,10 @@ pub fn RootApp() -> Element {
             if let Some(token) = crate::local_storage::load_token() {
                 match validate_session(&server_url, &token).await {
                     Ok(player) => {
+                        // A new session: whatever 401'd before was the old
+                        // one, and leaving the flag set would have this session
+                        // cleared out from under it.
+                        *SESSION_INVALID.write() = false;
                         session.set(Some(api::PlayerSessionDto {
                             player_id: player.id,
                             session_token: token.clone(),
@@ -424,11 +428,16 @@ pub fn RootApp() -> Element {
     // board that was still on screen — the account was gone and the app looked
     // like it was working.
     use_effect(move || {
-        if SESSION_INVALID() {
-            // Reset first: clearing below writes signals this effect does not
-            // read, but leaving the flag set would stop a *later* session ever
-            // being noticed.
-            *SESSION_INVALID.write() = false;
+        // `session.peek()`, not `session()`: this effect must not subscribe to
+        // the signal it is about to clear. And it must not write
+        // `SESSION_INVALID` either — reading and writing one signal in a single
+        // effect is the "read and write in the same scope" loop Dioxus flags,
+        // which the reconnect effect above already guards against with `peek`.
+        //
+        // Nothing resets the flag here. Clearing sets `session` to `None`, so
+        // this condition stops holding on its own; the flag is cleared where a
+        // *new* session is established, which is the moment it stops being true.
+        if SESSION_INVALID() && session.peek().is_some() {
             crate::local_storage::clear_tokens();
             clear_session_state(
                 session,
@@ -666,6 +675,8 @@ pub fn RootApp() -> Element {
                             stay,
                         );
                         let token = new_session.session_token.clone();
+                        // As above: a fresh session invalidates the flag.
+                        *SESSION_INVALID.write() = false;
                         session.set(Some(new_session));
 
                         let server_url = server_url_for_login.clone();
@@ -2048,6 +2059,11 @@ pub(crate) const SESSION_INVALID_MESSAGE: &str = "Your session has ended — ple
 /// behind a stale board.
 pub(crate) static SESSION_INVALID: GlobalSignal<bool> = Signal::global(|| false);
 
+/// A 401 on a request that carried no token: this needed signing in, which is
+/// not the same as a session having ended. Kept separate so nothing mistakes an
+/// ordinary signed-out state for something going wrong.
+pub(crate) const NOT_SIGNED_IN_MESSAGE: &str = "Sign in to do that.";
+
 /// Best-effort explicit log-out: asks the server to delete this session now.
 /// The caller clears its local state regardless, so a failure (offline,
 /// already-gone) just means the row gets cleaned up later by idle expiry —
@@ -3174,8 +3190,16 @@ where
     mark_online();
     if !response.status().is_success() {
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            *SESSION_INVALID.write() = true;
-            return Err(SESSION_INVALID_MESSAGE.to_string());
+            // Only a request that *carried* a token can be told its session
+            // died. Without one a 401 means "this needs signing in", which is
+            // ordinary on a signed-out tab — and reporting it as a session
+            // ending told somebody who had just opened the app that their
+            // session had expired, over a login form they had not used yet.
+            if token.is_some() {
+                *SESSION_INVALID.write() = true;
+                return Err(SESSION_INVALID_MESSAGE.to_string());
+            }
+            return Err(NOT_SIGNED_IN_MESSAGE.to_string());
         }
         let status = response.status().as_u16();
         let retry_after = ResponseHeaders {
@@ -3218,8 +3242,16 @@ where
     mark_online();
     if !response.ok() {
         if response.status() == 401 {
-            *SESSION_INVALID.write() = true;
-            return Err(SESSION_INVALID_MESSAGE.to_string());
+            // Only a request that *carried* a token can be told its session
+            // died. Without one a 401 means "this needs signing in", which is
+            // ordinary on a signed-out tab — and reporting it as a session
+            // ending told somebody who had just opened the app that their
+            // session had expired, over a login form they had not used yet.
+            if token.is_some() {
+                *SESSION_INVALID.write() = true;
+                return Err(SESSION_INVALID_MESSAGE.to_string());
+            }
+            return Err(NOT_SIGNED_IN_MESSAGE.to_string());
         }
         let status = response.status();
         let retry_after = ResponseHeaders {
