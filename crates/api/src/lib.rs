@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 // changes to tabs that are already open, because api skew was still the
 // only reload trigger when they were written. The last bump that will ever
 // need to do that: the same release moves client-update delivery onto a
-// hash of the bundle (`/version.txt`), so from here a client-only change
+// build id in `/version.txt`, so from here a client-only change
 // moves nothing here and this number goes back to meaning the contract.
 // Carries the 502 fix (a proxy 502 no longer counts as "the server is up")
 // and the switch itself.

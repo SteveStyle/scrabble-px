@@ -226,12 +226,6 @@ pub fn RootApp() -> Element {
         bootstrapped.set(true);
         let server_url = server_url.clone();
         spawn(async move {
-            // Record which bundle we loaded with before anything can decide
-            // to reload — the watcher has nothing to compare against until
-            // this has run.
-            #[cfg(target_arch = "wasm32")]
-            record_loaded_bundle().await;
-
             if !apply_version_check(
                 check_api_version(&server_url).await,
                 info_message,
@@ -359,8 +353,9 @@ pub fn RootApp() -> Element {
                 // version describes the wire contract, and a client can
                 // change without it — a bug fix in `crates/ui` has no
                 // business touching it, and used to reach nobody who already
-                // had the app open. `version.txt` is a hash of the bundle, so
-                // this reloads exactly when there is different code to run.
+                // had the app open. `version.txt` holds the web container's
+                // build id, so this reloads exactly when there is different
+                // code to run.
                 #[cfg(target_arch = "wasm32")]
                 watch_for_new_bundle(info_message, None);
                 is_reconnecting.set(false);
@@ -416,7 +411,7 @@ pub fn RootApp() -> Element {
     // lost the server and got it back.
     #[cfg(target_arch = "wasm32")]
     use_effect(move || {
-        if SERVER_BUILD_CHANGED() {
+        if build_differs(SERVER_BUILD().as_deref(), CLIENT_BUILD_ID) {
             watch_for_new_bundle(info_message, None);
         }
     });
@@ -2348,14 +2343,17 @@ const BUNDLE_POLL_MS: u64 = 3000;
 #[cfg(target_arch = "wasm32")]
 const BUNDLE_POLL_ATTEMPTS: usize = 20;
 
-/// The build identity of the bundle this origin is serving *right now*,
-/// from the `/version.txt` written into the web image at build time (see
-/// the Dockerfile). `None` if it can't be read, which covers the moment the
-/// web container is mid-restart — in which case the answer to "would
-/// reloading help?" is "can't tell", and the caller correctly declines to
-/// reload.
+/// The build id of the **web container** — the one serving this bundle —
+/// from the `/version.txt` written into its image (see the Dockerfile).
+///
+/// This is the one question a running tab asks that does not go to the server,
+/// and it has to be: the server can only report its own build, and during a
+/// deploy the two containers are briefly on different commits. `None` if it
+/// cannot be read — the web container mid-restart, or a dev build that wrote
+/// no file — in which case "would reloading help?" is answered "cannot tell",
+/// and the caller declines rather than guesses.
 #[cfg(target_arch = "wasm32")]
-async fn fetch_served_bundle_version() -> Option<String> {
+async fn fetch_web_build_id() -> Option<String> {
     let response = Request::get("/version.txt").send().await.ok()?;
     if !response.ok() {
         return None;
@@ -2374,16 +2372,22 @@ async fn fetch_served_bundle_version() -> Option<String> {
 /// match, so the watcher would reload, get the same fallback again, and
 /// spin: precisely the loop this check exists to prevent.
 ///
-/// The id is a hex digest of the bundle's contents (see the Dockerfile), so
-/// anything that isn't plain hex of a sane length is treated as "no answer".
-/// HTML fails on the leading `<`, and also on its spaces and newlines.
+/// The id is a git commit id (see the Dockerfile), so anything that is not
+/// plain hex of a sane length is treated as "no answer". HTML fails on the
+/// leading `<`, and also on its spaces and newlines.
+///
+/// **The lower bound is 7, not 8.** `git rev-parse --short` gives seven
+/// characters and that is what a deploy stamps, so a bound of 8 would reject
+/// every real id — leaving the client permanently unable to tell, silently
+/// never reloading, with nothing failing to say so. That is exactly the
+/// failure this whole mechanism exists to remove, so it is asserted below.
 // Deliberately not `#[cfg(target_arch = "wasm32")]` like its caller: keeping
 // it target-independent is what lets the tests below run under a normal
 // `cargo test`, which is the only place this logic is actually exercised.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn parse_served_version(body: &str) -> Option<String> {
     let id = body.trim();
-    let plausible = (8..=64).contains(&id.len()) && id.chars().all(|c| c.is_ascii_hexdigit());
+    let plausible = (7..=64).contains(&id.len()) && id.chars().all(|c| c.is_ascii_hexdigit());
     plausible.then(|| id.to_string())
 }
 
@@ -2403,47 +2407,47 @@ fn parse_served_version(body: &str) -> Option<String> {
 /// naturally handles skew that a reload can't fix at all — a fresh load
 /// already has the current bundle, so if the versions match we poll, give up,
 /// and fall back to telling the user, which is all that was ever possible.
-/// The bundle id this tab loaded with.
-///
-/// Recorded on first read rather than compiled in, because the id is a hash
-/// of the built bundle and nothing can contain its own hash. "What we are
-/// running" is therefore whatever `/version.txt` said when we started, and
-/// anything different later means new code is being served.
+/// True while a watcher is running, so a header arriving on every response
+/// cannot start a second one alongside the first.
 #[cfg(target_arch = "wasm32")]
-static LOADED_BUNDLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-/// Reads and remembers the bundle id, if it hasn't been recorded already.
-/// Called once at startup so the watcher has a baseline to compare against.
-#[cfg(target_arch = "wasm32")]
-pub async fn record_loaded_bundle() {
-    if let Some(served) = fetch_served_bundle_version().await {
-        let _ = LOADED_BUNDLE.set(served);
-    }
-}
+static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(target_arch = "wasm32")]
 fn watch_for_new_bundle(mut info_message: Signal<Option<String>>, give_up_message: Option<String>) {
+    use std::sync::atomic::Ordering;
+    // The header arrives on every response, so without this a busy tab would
+    // start a watcher every few seconds and run them all at once.
+    if WATCHING.swap(true, Ordering::SeqCst) {
+        return;
+    }
     spawn(async move {
-        // No baseline (the startup read failed, e.g. the origin has no
-        // version.txt) means we cannot tell new code from old, so decline to
-        // reload rather than guess — the same call the unreadable case makes.
-        let Some(running) = LOADED_BUNDLE.get().cloned() else {
+        // Our own build, compiled in. Without one — a dev build that set no
+        // TILE_LITE_ELITE_BUILD_ID — there is nothing to compare against, and
+        // "cannot tell" must never become "reload".
+        let Some(ours) = CLIENT_BUILD_ID else {
+            WATCHING.store(false, Ordering::SeqCst);
             if let Some(message) = give_up_message {
                 info_message.set(Some(message));
             }
             return;
         };
         for _ in 0..BUNDLE_POLL_ATTEMPTS {
-            if let Some(served) = fetch_served_bundle_version().await
-                && served != running
-            {
-                if let Some(window) = web_sys::window() {
-                    let _ = window.location().reload();
+            if let Some(web) = fetch_web_build_id().await {
+                let server = SERVER_BUILD.peek().clone();
+                // The containers disagreeing means a deploy is in flight. Wait:
+                // whichever of them moved first, the other is about to follow,
+                // and reloading now lands this tab on a half-updated pair.
+                let mid_deploy = server.as_deref().is_some_and(|server| server != web);
+                if !mid_deploy && web != ours {
+                    if let Some(window) = web_sys::window() {
+                        let _ = window.location().reload();
+                    }
+                    return;
                 }
-                return;
             }
             sleep_ms(BUNDLE_POLL_MS).await;
         }
+        WATCHING.store(false, Ordering::SeqCst);
         if let Some(message) = give_up_message {
             info_message.set(Some(message));
         }
@@ -2945,21 +2949,24 @@ fn backend_is_unreachable(status: u16) -> bool {
 /// The build this client was compiled from, matching what the server stamps on
 /// every response. `None` on a build with no id, where the comparison below
 /// cannot be made and correctly is not.
+// Only the browser reloads, so only the wasm build reads this. Kept
+// target-independent rather than cfg'd out, so the comparison below can be
+// tested under a plain `cargo test` — which is the only place it is exercised
+// at all.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 const CLIENT_BUILD_ID: Option<&str> = option_env!("TILE_LITE_ELITE_BUILD_ID");
 
-/// Set when a response arrives from a server running a different build.
+/// The build the server said it was running, on the most recent response.
 ///
-/// The reload is *not* done here. A request helper has no signals to explain
-/// itself with, and reloading straight off this header would be wrong anyway:
-/// the header describes the **server**, while the bundle is served by a
-/// different container. Inside a deploy window the server is new while the old
-/// bundle is still being served, so reloading would fetch the old bundle,
-/// see the new header again, and loop.
+/// Kept rather than reduced to a flag, because the *value* is half of the
+/// deploy-window test: the web container and the server disagreeing is what
+/// tells a tab an upgrade is in flight and it should wait rather than reload.
 ///
-/// So this records a fact — *something moved* — and the app effect that owns
-/// the UI confirms against `/version.txt`, which is served alongside the bundle
-/// and therefore knows what is actually being served, before reloading.
-static SERVER_BUILD_CHANGED: GlobalSignal<bool> = Signal::global(|| false);
+/// The reload is not decided here. A request helper has no signals to explain
+/// itself with, and this header describes the **server** while the bundle comes
+/// from a different container — so on its own it can say that something moved,
+/// never that new code is ready for this tab.
+static SERVER_BUILD: GlobalSignal<Option<String>> = Signal::global(|| None);
 
 /// The generic half of a response: the parts every caller handles identically,
 /// whatever it was asking for.
@@ -3016,12 +3023,13 @@ fn header_string(headers: gloo_net::http::Headers, name: &str) -> Option<String>
 /// a client with no build id cannot compare — in either case we cannot tell new
 /// code from old, and the honest response is to do nothing rather than guess.
 fn note_server_build(served: Option<&str>) {
-    if *SERVER_BUILD_CHANGED.peek() {
+    let Some(served) = served else {
+        return;
+    };
+    if SERVER_BUILD.peek().as_deref() == Some(served) {
         return;
     }
-    if build_differs(served, CLIENT_BUILD_ID) {
-        *SERVER_BUILD_CHANGED.write() = true;
-    }
+    *SERVER_BUILD.write() = Some(served.to_string());
 }
 
 /// Split from `note_server_build` so it can be tested: `CLIENT_BUILD_ID` is
@@ -3032,6 +3040,7 @@ fn note_server_build(served: Option<&str>) {
 /// are `false`, which is what makes the caller's silence the right silence: not
 /// knowing must never be treated as a change, or an unidentified build would
 /// reload on every response forever.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn build_differs(served: Option<&str>, ours: Option<&str>) -> bool {
     match (served, ours) {
         (Some(served), Some(ours)) => !served.is_empty() && !ours.is_empty() && served != ours,
@@ -4375,8 +4384,26 @@ mod tests {
 
     /// The length actually produced by the Dockerfile, so the two cannot
     /// drift into disagreeing about what a valid id looks like.
+    ///
+    /// **Seven characters is the real case.** `version.txt` holds the build id
+    /// — a `git rev-parse --short` commit id — and every one this project has
+    /// ever deployed is seven. The bound used to start at 8, from when the file
+    /// held a 16-character digest, and leaving it there while changing what the
+    /// file contains would have rejected every genuine id: the client would
+    /// read "cannot tell" forever, decline to reload forever, and report
+    /// nothing. A silent no-op is the failure this mechanism exists to remove,
+    /// so it is pinned here rather than left to be noticed in production.
     #[test]
     fn served_version_accepts_the_length_the_build_writes() {
+        for id in ["3d821e9", "8a5d71d", "b717733"] {
+            assert_eq!(
+                parse_served_version(id),
+                Some(id.to_string()),
+                "{id} is a real deployed build id and must be readable"
+            );
+        }
+        // The previous format, still valid: nothing needs it, but a bound that
+        // rejected it would mean the check had drifted the other way.
         assert!(parse_served_version("0123456789abcdef").is_some());
     }
 

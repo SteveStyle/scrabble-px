@@ -14,15 +14,15 @@ flowchart TB
     subgraph build["Build — one commit, two images"]
         direction LR
         serverimg["server image<br/>build id compiled in"]:::repo
-        webimg["web image<br/>bundle + version.txt<br/>a hash of the bundle"]:::repo
+        webimg["web image<br/>bundle + version.txt<br/>holding the build id"]:::repo
     end
 
     commit -->|"built in as<br/>the build id"| serverimg
-    commit -->|"built in, and hashed<br/>into version.txt"| webimg
+    commit -->|"built in, and written<br/>into version.txt"| webimg
 
     server["server container<br/>answers /auth, /games, ..."]:::env
     web["web container - Caddy<br/>serves the bundle and version.txt"]:::env
-    tab["browser tab<br/>its own id, compiled in<br/>the bundle id it loaded with"]:::env
+    tab["browser tab<br/>knows its own build id"]:::env
 
     serverimg --> server
     webimg --> web
@@ -37,11 +37,11 @@ flowchart TB
 
     ask["GET /version.txt<br/>the one question only<br/>the web container can answer"]:::env
     ask --> web
-    web -->|"the bundle id being served now"| serving
+    web -->|"the build id it is serving"| serving
 
-    serving{"different from the one<br/>I loaded with?"}:::gate
-    serving -->|"not yet - web is still<br/>catching up mid-deploy"| ask
-    serving -->|"yes - new code is really there"| reload["reload the tab"]:::gate
+    serving{"same as the server?"}:::gate
+    serving -->|"no - a deploy is in flight,<br/>wait for them to agree"| ask
+    serving -->|"yes - and not mine,<br/>so new code is really there"| reload["reload the tab"]:::gate
 
     classDef gate fill:#fbe9dc,stroke:#b06a2c,color:#7a4318
     classDef env fill:#e4eff8,stroke:#39698c,color:#12303f
