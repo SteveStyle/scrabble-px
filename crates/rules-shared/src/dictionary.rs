@@ -6,6 +6,13 @@ use crate::model::{Alphabet, Letter, LetterMask, VariantRules, mask_insert};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::tiered::TieredDictionary;
 
+/// The denied words are removed from all of these — see `wordlists` — and the
+/// removal happens in the `*_word_list()` accessors below rather than at each
+/// use, so the dictionary the server validates against and the text it serves
+/// to clients are the same list. Filtering only the first would leave the web
+/// client, which builds its own dictionary from that text, still holding the
+/// words this exists to remove.
+///
 /// Embedded at compile time for every non-wasm target (the server, and the
 /// desktop client) — for those, this is free: no network cost, and disk
 /// space isn't a constraint the way page-load size is. The wasm/web client
@@ -40,25 +47,29 @@ const SPANISH_WORD_FILE: &str = include_str!("spanish.txt");
 /// has this text compiled in to begin with.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn sowpods_word_list() -> &'static str {
-    SOWPODS_WORD_FILE
+    static FILTERED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FILTERED.get_or_init(|| crate::wordlists::without_denied(SOWPODS_WORD_FILE))
 }
 
 /// Same as `sowpods_word_list`, for ENABLE2K.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn enable2k_word_list() -> &'static str {
-    ENABLE2K_WORD_FILE
+    static FILTERED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FILTERED.get_or_init(|| crate::wordlists::without_denied(ENABLE2K_WORD_FILE))
 }
 
 /// Same as `sowpods_word_list`, for German.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn german_word_list() -> &'static str {
-    GERMAN_WORD_FILE
+    static FILTERED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FILTERED.get_or_init(|| crate::wordlists::without_denied(GERMAN_WORD_FILE))
 }
 
 /// Same as `sowpods_word_list`, for Spanish.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn spanish_word_list() -> &'static str {
-    SPANISH_WORD_FILE
+    static FILTERED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FILTERED.get_or_init(|| crate::wordlists::without_denied(SPANISH_WORD_FILE))
 }
 
 pub trait Dictionary {
@@ -165,7 +176,7 @@ pub struct WordListDictionary {
 impl WordListDictionary {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Self {
-        Self::from_static_word_list(SOWPODS_WORD_FILE)
+        Self::from_static_word_list(sowpods_word_list())
     }
 
     /// Builds a dictionary from word-list text fetched at runtime (one
@@ -310,19 +321,19 @@ fn build(text: &'static str, rules: VariantRules) -> TieredDictionary {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub static SOWPODS: LazyLock<TieredDictionary> =
-    LazyLock::new(|| build(SOWPODS_WORD_FILE, VariantRules::official()));
+    LazyLock::new(|| build(sowpods_word_list(), VariantRules::official()));
 
 #[cfg(not(target_arch = "wasm32"))]
 pub static ENABLE2K: LazyLock<TieredDictionary> =
-    LazyLock::new(|| build(ENABLE2K_WORD_FILE, VariantRules::north_american()));
+    LazyLock::new(|| build(enable2k_word_list(), VariantRules::north_american()));
 
 #[cfg(not(target_arch = "wasm32"))]
 pub static GERMAN: LazyLock<TieredDictionary> =
-    LazyLock::new(|| build(GERMAN_WORD_FILE, VariantRules::german()));
+    LazyLock::new(|| build(german_word_list(), VariantRules::german()));
 
 #[cfg(not(target_arch = "wasm32"))]
 pub static SPANISH: LazyLock<TieredDictionary> =
-    LazyLock::new(|| build(SPANISH_WORD_FILE, VariantRules::spanish()));
+    LazyLock::new(|| build(spanish_word_list(), VariantRules::spanish()));
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn is_word(word: &str) -> bool {

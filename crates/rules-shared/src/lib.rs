@@ -7,6 +7,7 @@ pub mod model;
 pub mod score;
 pub mod tiered;
 pub mod validate;
+pub mod wordlists;
 
 pub use board::{BoardCell, BoardState, EmptyCell, FilledCell};
 pub use cache::{
