@@ -1656,6 +1656,70 @@ async fn spanish_game_plays_carro_with_two_ordinary_r_tiles() {
     assert_eq!(updated.participants[0].score, (3 + 1 + 1 + 1 + 1) * 2);
 }
 
+/// A full hashing pool refuses with a *varied* retry hint, not a flat one.
+///
+/// This refusal fires precisely when several callers are hashing at once —
+/// that is its trigger condition, not a coincidence — so everyone it refuses is
+/// simultaneous by definition. Telling them all the same number sends them back
+/// together, into a pool that is still full. The limiter learned this; this
+/// path had a hardcoded `1` until it shared the limiter's `retry_after`.
+///
+/// A zero-permit semaphore makes the refusal deterministic: every acquire times
+/// out after `HASH_PERMIT_WAIT` rather than being raced for.
+///
+/// Sampled rather than range-checked, because the range alone would pass
+/// against the flat `1` this exists to remove. Eight samples over three
+/// possible values collide entirely about once in two thousand runs; the range
+/// is asserted too, since a hint outside it is wrong however varied.
+#[tokio::test]
+async fn a_full_hashing_pool_varies_its_retry_hint() {
+    let database_url = test_database_url();
+    let mut state = create_test_state(&database_url).await;
+    state.hash_limit = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let app = build_router(state);
+
+    let mut seen = std::collections::HashSet::new();
+    for attempt in 0..8 {
+        let response = send_json(
+            app.clone(),
+            Method::POST,
+            "/auth/register",
+            &RegisterPlayerRequest {
+                display_name: format!("busy{attempt}"),
+                email: format!("busy{attempt}@example.com"),
+                password: "correct horse battery staple".to_string(),
+                stay_logged_in: false,
+            },
+        )
+        .await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a caller who cannot get a hashing permit is refused, not queued"
+        );
+        let retry: u64 = response
+            .headers()
+            .get("retry-after")
+            .expect("a refusal a client can act on carries Retry-After")
+            .to_str()
+            .expect("an ASCII header")
+            .parse()
+            .expect("a whole number of seconds");
+        assert!(
+            (1..=3).contains(&retry),
+            "told to wait {retry}s, which is outside the jittered range"
+        );
+        seen.insert(retry);
+    }
+
+    assert!(
+        seen.len() > 1,
+        "every refusal said the same thing ({seen:?}), so everyone refused at \
+         once would come back at once"
+    );
+}
+
 pub(super) async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {
     read_json(
         send_json(

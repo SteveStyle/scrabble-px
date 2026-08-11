@@ -431,7 +431,21 @@ where
         Arc::clone(&state.hash_limit).acquire_owned(),
     )
     .await
-    .map_err(|_| ApiProblem::unavailable("The server is busy — please try again.", 1))?
+    // Jittered, not a flat 1. This refusal fires precisely when several callers
+    // are hashing at once — that is the condition, not a coincidence — so the
+    // callers refused are simultaneous by definition. Telling them all the same
+    // number sends them back together, into a pool that is still full.
+    //
+    // Rounding does not apply here as it does to the limiter: there is no true
+    // remaining wait being truncated. `HASH_PERMIT_WAIT` is what the caller
+    // actually waited, and a second is a reasonable floor for "try again".
+    // Only the synchronisation needed fixing.
+    .map_err(|_| {
+        ApiProblem::unavailable(
+            "The server is busy — please try again.",
+            super::throttle::retry_after(0),
+        )
+    })?
     .map_err(|_| ApiProblem::internal("hashing capacity unavailable"))?;
 
     tokio::task::spawn_blocking(move || {

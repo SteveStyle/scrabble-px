@@ -242,6 +242,12 @@ const RETRY_JITTER_SECONDS: u64 = 2;
 /// still reports 1, and zero is never offered, since zero invites the
 /// immediate retry a limited caller should not make.
 ///
+/// Shared with `auth::with_hash_permit`, which refuses for a different reason
+/// and needs the same treatment: a full hashing pool refuses callers who are
+/// hashing *at the same moment*, so they are simultaneous by definition and
+/// would otherwise all be told the same number. One implementation rather than
+/// two, because two would drift.
+///
 /// **Then jitter.** The three keyed tiers stagger themselves — each caller's
 /// bucket refreshes from its own spend — but `global` is one bucket for the
 /// whole service, with a 50ms period, so every caller it refuses computes the
@@ -249,7 +255,7 @@ const RETRY_JITTER_SECONDS: u64 = 2;
 /// return together, into a service that was already short of room. Rounding up
 /// on its own would make that worse, by turning a spread of truncated values
 /// into a uniform one.
-fn retry_after(wait_time: u64) -> u32 {
+pub(crate) fn retry_after(wait_time: u64) -> u32 {
     let seconds = wait_time
         .saturating_add(1)
         .saturating_add(rand::thread_rng().gen_range(0..=RETRY_JITTER_SECONDS));
