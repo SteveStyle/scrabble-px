@@ -1082,6 +1082,14 @@ button:disabled {
    `input` it replaced did). */
 .name-autocomplete {
     position: relative;
+    /* Lifts the whole field, dropdown included, above whatever the page draws
+       after it. `z-index` on the dropdown alone was not enough: it only orders
+       against siblings inside its own stacking context, and the suggestion list
+       ended up painted *behind* the "+ Invite by name" buttons that follow it
+       in the document — present, unclipped, correctly sized, and invisible.
+       Positioning this wrapper gives the list a stacking context that starts
+       above that later content. */
+    z-index: 30;
     flex: 1 1 auto;
     min-width: 120px;
 }
@@ -1167,6 +1175,21 @@ button:disabled {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* The one cell that must not clip its own contents.
+   `.player-table td`'s `overflow: hidden` is there so a long display name
+   ends in an ellipsis rather than pushing the column wide — right for a
+   roster of names, and fatal for this cell, which holds the name-autocomplete
+   whose suggestion list is absolutely positioned and therefore *outside* the
+   cell's box. The list rendered, sized and positioned correctly, and was
+   clipped to nothing: the search ran, the matches arrived, and the user saw
+   an empty box.
+   That is why invite-by-name worked when adding a seat to an existing game —
+   a plain div row, nothing clipping — and not in the pre-creation builder,
+   which lays its seats out in a table. */
+.player-table td.seat-draft-name-cell {
+    overflow: visible;
 }
 
 .player-table th {

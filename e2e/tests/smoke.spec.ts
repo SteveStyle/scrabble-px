@@ -10,6 +10,45 @@ test('registers a new player and lands signed in', async ({ page }) => {
   await expectSignedIn(page);
 });
 
+test('the invite-by-name dropdown is visible, not merely rendered', async ({ page }) => {
+  // #76. The suggestion list is absolutely positioned, so it lives outside its
+  // cell's box — and the pre-creation builder lays seats out in a table whose
+  // cells set `overflow: hidden` to ellipsis long names. The list rendered,
+  // sized and positioned correctly, and was clipped to nothing.
+  //
+  // So this asserts what a person can *see*. Counting nodes, or asking whether
+  // the element exists, passes against the clipped version — which is exactly
+  // how this was missed three times while the DOM said everything was fine.
+  const me = uniqueName('dd');
+  await register(page, me);
+  await page.getByRole('button', { name: 'Play Friend' }).click();
+
+  const field = page.locator('.name-autocomplete input').first();
+  await field.click();
+  // Their own name is guaranteed to match, so the suite does not depend on
+  // whatever other players happen to exist.
+  await field.type(me.slice(0, 6), { delay: 60 });
+
+  const item = page.locator('.name-autocomplete-item').first();
+  await expect(item).toBeVisible();
+
+  // Hit-test, not `toBeVisible`. Playwright calls a clipped element visible —
+  // it checks visibility styles and a non-empty box, neither of which an
+  // ancestor's `overflow: hidden` changes. Asking the browser what is actually
+  // painted at the suggestion's own centre is the only assertion here that
+  // fails against the clipped version; every cheaper one passed against it.
+  const box = await item.boundingBox();
+  expect(box).not.toBeNull();
+  const hit = await page.evaluate(
+    ({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      return el ? !!el.closest('.name-autocomplete-dropdown') : false;
+    },
+    { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 },
+  );
+  expect(hit, 'the suggestion is painted where it claims to be, not clipped away').toBe(true);
+});
+
 test('logs out and back in with the same credentials', async ({ page }) => {
   const name = uniqueName('login');
   await register(page, name);

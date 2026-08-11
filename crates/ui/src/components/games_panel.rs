@@ -476,7 +476,7 @@ pub fn GamesPanel(
                 },
                 DraftRow::Seat(index, draft) => rsx! {
                     tr { key: "{index}",
-                        td {
+                        td { class: "seat-draft-name-cell",
                             {reorder}
                             if draft.kind == AdditionalSeatKind::Named {
                                 NameAutocompleteInput {
