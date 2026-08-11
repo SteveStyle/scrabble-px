@@ -1395,6 +1395,22 @@ fn add_seat_row(
     }
 }
 
+/// What the last name lookup produced.
+///
+/// An enum rather than a list plus a flag, because the states are exclusive and
+/// the old pair could not express one of them: a failed search left the list
+/// empty and the flag untouched, rendering identically to "no such player".
+/// Telling somebody their friend does not exist because a token expired is the
+/// defect this shape prevents.
+#[derive(Clone, PartialEq)]
+enum NameSearch {
+    /// Nothing to show: fewer than two characters, or a suggestion was taken.
+    Idle,
+    Matches(Vec<String>),
+    NoMatch,
+    Failed,
+}
+
 /// A "Named" seat's display-name input, with a live filtered dropdown of
 /// matching registered players (`GET /players/search`) — verifying the
 /// name actually exists is otherwise only enforced late, when the
@@ -1419,8 +1435,7 @@ fn NameAutocompleteInput(
     token: Option<String>,
     placeholder: String,
 ) -> Element {
-    let mut suggestions = use_signal(Vec::<String>::new);
-    let mut searched_and_empty = use_signal(|| false);
+    let mut search = use_signal(|| NameSearch::Idle);
 
     let trigger_search = move |query: String| {
         let server_url = server_url.clone();
@@ -1428,16 +1443,20 @@ fn NameAutocompleteInput(
         spawn(async move {
             let trimmed = query.trim();
             if trimmed.len() < 2 {
-                suggestions.set(Vec::new());
-                searched_and_empty.set(false);
+                search.set(NameSearch::Idle);
                 return;
             }
-            if let Ok(names) =
-                crate::app::search_players(&server_url, trimmed, token.as_deref()).await
-            {
-                searched_and_empty.set(names.is_empty());
-                suggestions.set(names);
-            }
+            search.set(
+                match crate::app::search_players(&server_url, trimmed, token.as_deref()).await {
+                    Ok(names) if names.is_empty() => NameSearch::NoMatch,
+                    Ok(names) => NameSearch::Matches(names),
+                    // A 401, a dropped connection, a changed URL, a body that
+                    // will not parse. Previously this arm did not exist, so all
+                    // of them left whatever was last on screen — usually
+                    // nothing — and read exactly like "no such player".
+                    Err(_) => NameSearch::Failed,
+                },
+            );
         });
     };
 
@@ -1453,9 +1472,9 @@ fn NameAutocompleteInput(
                     trigger_search(query);
                 },
             }
-            if !suggestions().is_empty() {
+            if let NameSearch::Matches(names) = search() {
                 div { class: "name-autocomplete-dropdown",
-                    for suggestion in suggestions() {
+                    for suggestion in names {
                         button {
                             class: "name-autocomplete-item",
                             r#type: "button",
@@ -1469,14 +1488,23 @@ fn NameAutocompleteInput(
                             onmousedown: move |event| {
                                 event.prevent_default();
                                 on_change.call(suggestion.clone());
-                                suggestions.set(Vec::new());
+                                search.set(NameSearch::Idle);
                             },
                             "{suggestion}"
                         }
                     }
                 }
-            } else if searched_and_empty() {
+            } else if search() == NameSearch::NoMatch {
                 span { class: "name-autocomplete-empty", "No matching player" }
+            } else if search() == NameSearch::Failed {
+                // Deliberately not phrased as a refusal. The lookup is a
+                // convenience — the server resolves the name when the
+                // invitation is sent, and enforces it there — so a failed
+                // search should not imply the name is wrong or that sending is
+                // pointless.
+                span { class: "name-autocomplete-empty",
+                    "Couldn't check names just now — type the full name and we'll confirm it when you send"
+                }
             }
         }
     }

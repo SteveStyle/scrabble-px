@@ -182,7 +182,17 @@ pub(crate) async fn create_game(
             ParticipantState {
                 seat_number: seat_number as u8,
                 kind: seat.kind,
-                display_name: seat.display_name,
+                // The invitee's name as *they* registered it, not as the
+                // inviter typed it. Names match case-insensitively, so
+                // inviting "steve" finds Steve — and without this the seat
+                // would carry "steve" for the life of the game, which is
+                // somebody else's name for them. Adding a seat to an existing
+                // game already resolves this way (invitations.rs); creating a
+                // game did not.
+                display_name: named_invitees
+                    .get(&(seat_number as u8))
+                    .map(|player| player.display_name.clone())
+                    .unwrap_or(seat.display_name),
                 player_id,
                 engine_id: seat.engine_id,
                 score: 0,

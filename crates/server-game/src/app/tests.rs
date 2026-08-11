@@ -1783,6 +1783,65 @@ async fn an_unidentified_build_sets_no_header() {
     }
 }
 
+/// An invitation typed in the wrong case reaches the right player, and the
+/// seat then carries the name *they* registered.
+///
+/// Names match case-insensitively — `get_player_by_name` folds, backed by a
+/// unique index — so inviting "steve" finds Steve. Without correcting the seat
+/// afterwards the game would carry the inviter's spelling for its whole life,
+/// showing one player somebody else's idea of their name. Adding a seat to an
+/// existing game already resolved this way; creating a game did not.
+#[tokio::test]
+async fn a_named_seat_takes_the_invitees_own_spelling() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state);
+
+    let alice = register_player(app.clone(), "AliceCase").await;
+    register_player(app.clone(), "BobCase").await;
+
+    let created: GameStateDto = read_json(
+        send_json_auth(
+            app.clone(),
+            Method::POST,
+            "/games",
+            Some(&alice.session_token),
+            &CreateGameRequest {
+                seats: vec![
+                    CreateSeatRequest {
+                        kind: SeatKind::Human,
+                        display_name: "AliceCase".to_string(),
+                        engine_id: None,
+                        claim: Some(SeatClaim::Creator),
+                    },
+                    CreateSeatRequest {
+                        kind: SeatKind::Human,
+                        // Both fields as the inviter typed them, which is what
+                        // the client sends.
+                        display_name: "bobcase".to_string(),
+                        engine_id: None,
+                        claim: Some(SeatClaim::Named {
+                            display_name: "bobcase".to_string(),
+                        }),
+                    },
+                ],
+                seed: Some(1),
+                variant: None,
+                language: None,
+                board_layout: None,
+                move_time_limit_seconds: None,
+            },
+        )
+        .await,
+    )
+    .await;
+
+    assert_eq!(
+        created.participants[1].display_name, "BobCase",
+        "the seat should carry the name Bob registered, not the one Alice typed"
+    );
+}
+
 pub(super) async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {
     read_json(
         send_json(
