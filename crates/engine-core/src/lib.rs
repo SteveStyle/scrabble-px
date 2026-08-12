@@ -370,6 +370,87 @@ mod tests {
         );
     }
 
+    /// The case the whole mechanism exists for, against the **real** greylist:
+    /// a position where the highest-scoring move forms a greylisted word, and
+    /// the engine takes the lesser one instead.
+    ///
+    /// Every other test here injects its own predicate, which means none of
+    /// them touches `is_avoided_by_engines` or the committed list at all. That
+    /// gap could fail *open* without a single test noticing: `contains` guards
+    /// its "callers pass an uppercase word" contract with a `debug_assert`,
+    /// which is compiled out of release builds, so a word arriving in a form
+    /// the list does not match would simply be played. An injected closure
+    /// comparing two strings cannot detect that; only going through the real
+    /// list can.
+    ///
+    /// An empty board and a rack of Z, E, X, which the dictionary allows
+    /// exactly two words from: ZEX at 38, which is greylisted, and EX at 18,
+    /// which is not. Two options rather than many, so the assertion is "it
+    /// played the other one" rather than "it played something else".
+    ///
+    /// The control matters as much as the result. Without asserting that the
+    /// unrestrained engine really does prefer ZEX, this test would still pass
+    /// if the position stopped being one where a greylisted word wins — and
+    /// would then be proving nothing while looking green.
+    #[test]
+    fn the_bot_declines_a_greylisted_word_that_would_have_won() {
+        use rules_shared::{MoveCandidate, RulesEngine};
+
+        let rules = VariantRules::official();
+        let state = GameState::new(&rules, &*SOWPODS);
+        let mut rack = Rack::default();
+        for letter in ['Z', 'E', 'X'] {
+            rack.add_letter(Letter::from(letter));
+        }
+        let request = || EngineRequest {
+            state: &state,
+            seat_number: 0,
+            rack: &rack,
+            rules: &rules,
+            time_budget_ms: None,
+        };
+        let engine = RulesEngine {
+            rules: &rules,
+            dictionary: &*SOWPODS,
+        };
+        let word_of = |candidate: &MoveCandidate| {
+            engine
+                .validate_game_move(&state, Some(&rack), candidate)
+                .expect("the chosen move validated once already")
+                .preview
+                .main_word
+        };
+
+        // Control: unrestrained, the best move forms a greylisted word.
+        let (unrestrained, _) = GreedyEngine::best_move(&request(), &|_| false);
+        let (best, best_score) = unrestrained.expect("ZEX is playable on an empty board");
+        let best_word = word_of(&best);
+        assert!(
+            rules_shared::wordlists::is_avoided_by_engines(&best_word),
+            "control failed: the top move here is {best_word}, which is not greylisted, \
+             so this position no longer tests anything"
+        );
+
+        // The real engine, through the committed list rather than an injected one.
+        let response = GreedyEngine::new().choose_action(request());
+        let EngineAction::Place(played) = response.action else {
+            panic!(
+                "the engine passed, though EX was available: {:?}",
+                response.action
+            );
+        };
+        let played_word = word_of(&played);
+
+        assert!(
+            !rules_shared::wordlists::is_avoided_by_engines(&played_word),
+            "the engine played {played_word}, which is greylisted"
+        );
+        assert!(
+            response.diagnostics.chosen_score.unwrap() < best_score,
+            "declining the best move should cost score, but it did not"
+        );
+    }
+
     #[test]
     fn greedy_engine_plays_opening_move_when_available() {
         let rules = VariantRules::official();
