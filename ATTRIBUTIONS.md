@@ -55,17 +55,40 @@ in `crates/rules-shared/src/dictionary.rs`.
 
 ### `sowpods.txt` — 267,752 words
 
-- **Upstream:** unrecorded
-- **Licence:** unrecorded
-- **Notes:** This file predates the rest of the project. It arrived with the
-  original `scrabble` crate (commit `6be7eb6`, 19 September 2025) and has
-  been carried forward byte-identically ever since; no record survives of
-  where it was obtained. SOWPODS is the informal name for the international
-  tournament word list, which in its current form is published as Collins
-  Scrabble Words and is copyright HarperCollins. Widely-mirrored copies
-  circulate freely, but that is not a licence, and this one's provenance
-  cannot be established. Replacing it with a list of known origin is an
-  open question, not a settled decision.
+- **Upstream:** not recorded at the time; **identified by comparison**
+  2026-08-12 as the widely-mirrored SOWPODS list, matched against
+  <https://raw.githubusercontent.com/jesstess/Scrabble/master/scrabble/sowpods.txt>
+  (267,751 words, SHA-256
+  `8fa1b8384c6121b2cd16697f68c46569570b788204ca2633a79b2b61ef71886b`)
+- **Licence:** unrecorded, and see below — identifying the source does not
+  supply one
+- **Edition:** CSW2007, the list the name SOWPODS actually refers to. Dated
+  from the data rather than a label: 124 two-letter words with `OK`, `EW` and
+  `ZE` absent puts it before CSW2019, which added exactly those three;
+  `EMOJI` and `TWERK` absent puts it before CSW2015; `QI` and `ZA` present
+  puts it at CSW2007 or later. The word count matches CSW2007's 267,751.
+- **Deviation from that source: one word.** Ours adds `FRACKS` and is
+  otherwise identical after normalisation — verified by running the upstream
+  file through `import-wordlist` and diffing, which reported that single
+  difference. The addition was made by hand before this project began: until
+  commit `25e9e09` (app 0.4.12) the file read `FRACK, FRACKS, FRACKING,
+  FRACKINGS`, grouped by inflection family instead of alphabetically, which
+  is what somebody does when inserting a word under the one it belongs with.
+  It also carried a stray blank line. Both were fixed by that commit, which is
+  why this file is *not* byte-identical to the one that arrived with the
+  original `scrabble` crate (`6be7eb6`, 19 September 2025).
+- **Why that word:** the upstream list carries `FRACK`, `FRACKING` and
+  `FRACKINGS` but not `FRACKS`, which reads as an omission in it rather than
+  a deliberate exclusion — a verb whose third-person singular is missing. The
+  hand edit appears to have been a correction.
+- **Notes:** SOWPODS is the informal name for the international tournament
+  word list, published in its current form as Collins Scrabble Words and
+  copyright HarperCollins. Matching a mirror establishes **provenance, not a
+  licence**: knowing which circulating copy this descends from says nothing
+  about the right to redistribute it, and `jesstess/Scrabble` is itself a
+  mirror rather than an origin. Replacing it with a list of known origin
+  remains an open question, and is now a better-informed one — the edition is
+  known, so a replacement can be compared against it rather than guessed at.
 
 ## Greylist generation
 
