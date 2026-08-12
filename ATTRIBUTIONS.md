@@ -67,6 +67,33 @@ in `crates/rules-shared/src/dictionary.rs`.
   cannot be established. Replacing it with a list of known origin is an
   open question, not a settled decision.
 
+## Greylist generation
+
+`crates/rules-shared/src/wordlists/greylist.txt` is generated, not written. It
+is the list of words no engine will choose; it does not change any dictionary,
+so nothing here affects what a person may play.
+
+- **Tool:** [`rustrict`](https://github.com/finnbear/rustrict) **0.7.38**,
+  pinned exactly in `crates/rules-shared/Cargo.toml`
+- **Licence:** MIT OR Apache-2.0
+- **Used as:** a dev-dependency of the `generate-greylist` example only. It is
+  not linked into the server, the desktop client or the wasm client — the
+  generated list is committed as plain text and that is what ships.
+- **Predicate:** `is(Type::ANY)` — anything it flags, at any severity — over
+  `sowpods.txt` and `enable2k.txt` combined, plus the curated stems in
+  `greylist-stems.txt`. 2,581 words, 0.96% of the 268,214 in those two lists.
+
+The version is pinned because the output is committed: a regenerated list that
+silently differed would be indistinguishable from an edited one. Record a new
+version here when changing it, along with the resulting count.
+
+The stems are the project's own judgement, drafted against measured recall gaps
+in the tool (it flags `NEGROES` but not `NEGRO`). They are not derived from any
+third-party list, though LDNOOBW's `en` file was consulted as a cross-check.
+
+`denylist.txt` is empty and has no attribution to make. See
+`docs/3.5-word-lists-and-dictionaries.md` for why the greylist was filled first.
+
 ## Rules and board
 
 The premium-square layout (`house_premiums()` in

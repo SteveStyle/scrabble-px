@@ -134,8 +134,9 @@ fn contains(list: &HashSet<String>, word: &str) -> bool {
         "word lists are looked up without normalising, so callers must pass an \
          uppercase, trimmed word — see the note on `contains`"
     );
-    // Both lists ship empty, and an empty list can never match: worth checking
-    // before hashing the word at all.
+    // An empty list can never match, so it is worth saying so before hashing
+    // the word at all — the denylist still ships empty, and it is consulted for
+    // every word of every move the engine considers.
     !list.is_empty() && list.contains(word)
 }
 
@@ -234,17 +235,91 @@ mod tests {
         assert_eq!(kept, vec!["ASSASSIN", "BASEMENT", "SCUNTHORPE"]);
     }
 
-    /// An empty list changes nothing at all.
+    /// What actually ships: a populated greylist and an empty denylist.
     ///
-    /// This is the shipped state — both files are deliberately empty until
-    /// somebody sources them — so it is the behaviour actually in production,
-    /// and it must be a no-op rather than an accidental filter.
+    /// That combination is deliberate rather than half-finished. What an engine
+    /// will never play is the *union* of the two lists, so a full greylist
+    /// alone already stops a bot playing anything offensive; the denylist only
+    /// decides what a *person* may play, and taking words away from people is
+    /// the half that needs somebody's judgement. Filling the greylist first is
+    /// therefore the whole protection at none of the risk, and this pins it so
+    /// an empty greylist cannot return unnoticed.
     #[test]
-    fn an_empty_list_leaves_the_word_list_untouched() {
+    fn the_greylist_ships_populated_and_the_denylist_empty() {
+        assert!(
+            denylist().is_empty(),
+            "the denylist is still to be curated — see wordlists/README.md"
+        );
+        assert!(
+            greylist().len() > 2_000,
+            "the greylist is generated and should hold ~2,500 words, found {}",
+            greylist().len()
+        );
+
+        // An empty denylist must be a no-op rather than an accidental filter.
         let words = "ASSASSIN\nBASEMENT\nSCUNTHORPE";
         assert_eq!(remove_denied(words), words);
-        assert!(denylist().is_empty(), "shipped empty, see the README");
-        assert!(greylist().is_empty(), "shipped empty, see the README");
+    }
+
+    /// The generator's judgement, pinned where a person can see it.
+    ///
+    /// These are the accidents that a stem file makes easy: `MONG*` catching
+    /// MONGOOSE, `SCAT*` catching SCATTER, `GYP*` catching GYPSUM, `ABO*`
+    /// catching ABOARD. Each is an ordinary word, and each was a real candidate
+    /// during drafting — the exclusions and exact-match entries in
+    /// `greylist-stems.txt` exist because of them. If somebody later loosens a
+    /// stem, this says so.
+    ///
+    /// The words below are only ever *greyed*, never denied, so being wrong
+    /// here costs the bot some vocabulary rather than costing a person a move.
+    /// It is still worth holding: a bot that will not play BUTTERFLY is a bug.
+    #[test]
+    fn stem_expansion_does_not_catch_ordinary_words() {
+        for innocent in [
+            "ABOARD",
+            "ABODE",
+            "ABOUT",
+            "MONGOOSE",
+            "MONGER",
+            "MONGREL",
+            "SCATTER",
+            "SCATHE",
+            "GYPSUM",
+            "GYPSOPHILA",
+            "WOGGLE",
+            "DAGOBA",
+            "NEGRONI",
+            "WELSH",
+            "ASSASSIN",
+            "BASEMENT",
+            "BUTTERFLY",
+            "PASSENGER",
+            "CLASSROOM",
+        ] {
+            assert!(
+                !greylist().contains(innocent),
+                "{innocent} is an ordinary word — a stem in greylist-stems.txt has gone too wide"
+            );
+        }
+    }
+
+    /// The base words rustrict misses, which are the reason the stem file
+    /// exists at all.
+    ///
+    /// rustrict flags NEGROES, NEGROID and NEGROIDS but not NEGRO; POOFTER but
+    /// not POOF; SMUTTY but not SMUT; and misses MONG entirely. A bot playing
+    /// one of these in front of a child is the failure the greylist is for, so
+    /// the gap being closed is worth asserting rather than assuming.
+    #[test]
+    fn the_base_words_rustrict_misses_are_greylisted() {
+        for missed in [
+            "NEGRO", "MONG", "POOF", "POON", "SMUT", "ABO", "WOG", "DAGO", "LEZ",
+        ] {
+            assert!(
+                greylist().contains(missed),
+                "{missed} is not greylisted — regenerate with the generate-greylist example"
+            );
+        }
     }
 
     /// Lookup takes the word as given, matches exactly, and short-circuits on
