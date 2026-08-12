@@ -57,7 +57,8 @@ const MIN_WORD_LENGTH: usize = 2;
 /// broke.
 ///
 /// Normalising here, once, rather than at every startup is the same argument
-/// commit `25e9e09` made when it stopped construction re-sorting a 267,000-line
+/// commit `25e9e09` (app 0.4.12) made when it stopped construction re-sorting a
+/// 267,000-line
 /// file in every process to fix two defective bytes.
 pub fn normalise(text: &str, alphabet: &Alphabet) -> String {
     let writable: HashSet<char> = alphabet.chars().collect();
