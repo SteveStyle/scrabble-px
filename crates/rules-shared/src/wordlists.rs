@@ -7,6 +7,82 @@
 
 use std::collections::HashSet;
 
+use crate::model::Alphabet;
+
+/// The longest word any board can hold, and so the longest worth importing.
+///
+/// Counted in characters rather than tiles, which is a simplification for
+/// Spanish: a 16-character word using a CH/LL/RR digraph would occupy 15
+/// squares and is dropped anyway. That is the behaviour the committed lists
+/// were built with, and no such word survives in the upstream data, so this
+/// records the existing line rather than moving it.
+const MAX_WORD_LENGTH: usize = 15;
+
+/// Shorter than this cannot be played at all.
+const MIN_WORD_LENGTH: usize = 2;
+
+/// Puts an imported word list into the exact **form** the committed files hold.
+///
+/// This is the single definition of what a word list must look like, applied
+/// where a list is imported *and* asserted where one is committed — see
+/// `every_word_list_is_a_fixed_point_of_the_normaliser` in `dictionary.rs`.
+/// Having one function on both sides is the point: a second copy of these rules
+/// would drift, and the drift would be silent.
+///
+/// In order:
+///
+/// 1. **Uppercase.** The board holds uppercase graphemes, so the dictionary
+///    must. This also handles German `ß`, which Unicode uppercases to `SS` —
+///    exactly right here, because German sets have no `ß` tile and such words
+///    are physically played as two `S` tiles. No special case needed.
+/// 2. **Inside the alphabet.** Drops any word using a character this edition
+///    cannot write, which is why an `Alphabet` is required rather than assumed:
+///    Spanish files `Ñ` and has no `K` or `W`, German adds `Ä Ö Ü`. Taking the
+///    real alphabet from `VariantRules` means this filter cannot disagree with
+///    what the engine believes the letters are.
+/// 3. **Playable length**, 2 to 15.
+/// 4. **Sorted and deduped in byte order.** Byte order is code-point order for
+///    UTF-8, which is the order the prefix cursor's binary search assumes. A
+///    locale-aware sort is *not* equivalent: German collation files `Ä` beside
+///    `A`, which would break lookups on the two non-ASCII lists while leaving
+///    the two ASCII ones looking perfect.
+///
+/// **Deliberately does not remove denied words.** That is `remove_denied`, kept
+/// separate and applied as its own step so the first deviation of a list from
+/// its upstream source is a commit of its own, with the diff as the record of
+/// what was taken out and when. Folding it in here would make the committed
+/// file "source minus denied" from the very first commit, and nothing would
+/// show the moment it stopped being the source. Form and content are also
+/// different questions, and separating them means a failure says which one
+/// broke.
+///
+/// Normalising here, once, rather than at every startup is the same argument
+/// commit `25e9e09` made when it stopped construction re-sorting a 267,000-line
+/// file in every process to fix two defective bytes.
+pub fn normalise(text: &str, alphabet: &Alphabet) -> String {
+    let writable: HashSet<char> = alphabet.chars().collect();
+
+    let mut words: Vec<String> = text
+        .lines()
+        .map(|line| line.trim().to_uppercase())
+        .filter(|word| {
+            let length = word.chars().count();
+            (MIN_WORD_LENGTH..=MAX_WORD_LENGTH).contains(&length)
+                && word.chars().all(|c| writable.contains(&c))
+        })
+        .collect();
+
+    words.sort_unstable();
+    words.dedup();
+
+    // Trailing newline, so the output is a well-formed text file and the
+    // committed lists are fixed points of this function rather than differing
+    // from it by one invisible byte.
+    let mut out = words.join("\n");
+    out.push('\n');
+    out
+}
+
 /// Removed from every dictionary: invalid for everyone, human and engine.
 const DENYLIST_FILE: &str = include_str!("wordlists/denylist.txt");
 
@@ -85,10 +161,17 @@ pub fn is_avoided_by_engines(word: &str) -> bool {
 /// Removes the denied words from a word list, keeping everything else exactly
 /// as it was — same order, same line endings.
 ///
-/// Applied where a dictionary is built *and* where the raw text is served to
-/// clients, which build their own from it. Filtering only the first would leave
-/// the web client with the words this exists to remove.
-pub fn without_denied(word_list: &str) -> String {
+/// An **import step**, not a runtime filter: run by the importer, its result
+/// committed, and the diff is the record of what was removed. Deliberately kept
+/// out of `normalise` so that removal is a commit of its own rather than
+/// something a list has silently had done to it since before its first commit
+/// — see the note there.
+///
+/// Every committed list is checked against the denylist by
+/// `no_committed_word_list_holds_a_denied_word`, so a denylist that grows
+/// without the lists being regenerated fails the build rather than quietly
+/// leaving the words in play.
+pub fn remove_denied(word_list: &str) -> String {
     if denylist().is_empty() {
         return word_list.to_string();
     }
@@ -159,7 +242,7 @@ mod tests {
     #[test]
     fn an_empty_list_leaves_the_word_list_untouched() {
         let words = "ASSASSIN\nBASEMENT\nSCUNTHORPE";
-        assert_eq!(without_denied(words), words);
+        assert_eq!(remove_denied(words), words);
         assert!(denylist().is_empty(), "shipped empty, see the README");
         assert!(greylist().is_empty(), "shipped empty, see the README");
     }

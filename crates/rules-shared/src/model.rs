@@ -255,6 +255,20 @@ impl Alphabet {
     pub fn is_empty(&self) -> bool {
         self.graphemes.is_empty()
     }
+
+    /// Every character appearing in any of this alphabet's graphemes.
+    ///
+    /// Deliberately not the graphemes themselves. Spanish's CH/LL/RR are
+    /// genuine digraph tiles, but a word list is plain unannotated text, so
+    /// `C`, `H`, `L` and `R` are all ordinary members of it — a word is
+    /// writable in an edition if every one of its characters appears here,
+    /// regardless of how it would be tiled.
+    ///
+    /// Used by `wordlists::normalise` to decide which imported words this
+    /// edition can hold at all.
+    pub fn chars(&self) -> impl Iterator<Item = char> + '_ {
+        self.graphemes.iter().flat_map(|grapheme| grapheme.chars())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
