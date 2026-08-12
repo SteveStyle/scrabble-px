@@ -132,7 +132,24 @@ SCATS
 # call, 2026-08-12.
 TWINKIE*        # 2 words
 
-# ESCORT* and DOMINATION* were struck on the same pass: ESCORT, ESCORTAGE,
-# ESCORTED, ESCORTING, ESCORTS and DOMINATION, DOMINATIONS are ordinary words
-# whose other sense needs context a board cannot supply, and DOMINATIONS is in
-# the dictionary as a rank of angels. Eight words the bot may play.
+# ---------------------------------------------------------------------------
+# Struck. Proposed in the first draft, removed on review.
+#
+# Recorded here because removing a stem is as much a decision as adding one,
+# and this file is where the judgement lives — a commit message is harder to
+# find a year later. Written without the trailing glob so that no line here
+# can be mistaken for an entry, or become one by losing its `#`.
+#
+# Nothing below was ever taken out of a dictionary. These were our own
+# proposals to keep words away from the bot; striking one simply lets the bot
+# play them again, and people could play them all along.
+# ---------------------------------------------------------------------------
+#
+# ESCORT, ESCORTAGE, ESCORTAGES, ESCORTED, ESCORTING, ESCORTS — 2026-08-12
+#   Ordinary words. A naval escort, escorting somebody home; ESCORTAGE is the
+#   act of escorting. The other sense needs context a board cannot supply.
+#
+# DOMINATION, DOMINATIONS — 2026-08-12
+#   An ordinary noun — world domination, domination of a market. DOMINATIONS
+#   is in the dictionary as a rank of angels rather than for any modern
+#   reading.
