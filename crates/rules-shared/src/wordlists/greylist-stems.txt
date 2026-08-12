@@ -4,10 +4,14 @@
 # committed and reviewed rather than recomputed. See
 # docs/3.5-word-lists-and-dictionaries.md, "Generating the greylist".
 #
-# REVIEW STATUS, 2026-08-12. The owner has been through the marginal rows:
-# ESCORT* and DOMINATION* struck, TWINKIE* kept. The contested rows below —
-# WELCH*, SODOM*, NONG, the GYP family and the MONGOL family — are still as
-# drafted and have not been ruled on.
+# REVIEWED IN FULL by the owner, 2026-08-12. ESCORT* and DOMINATION* struck as
+# ordinary words; everything else kept, including the contested rows — WELCH*,
+# SODOM*, NONG, the GYP family and the MONGOL family — and TWINKIE*, on the
+# grounds that a trademark is not a competing legitimate sense.
+#
+# So every entry below is a decision, not a proposal. Adding one is cheap and
+# safe; removing one lets the bot play those words, so it wants the same look
+# these got.
 #
 # WHY THIS FILE EXISTS. rustrict catches most of what the greylist wants, but
 # its recall gaps are arbitrary: it flags NEGROES, NEGROID and NEGROIDS but not
