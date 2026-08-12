@@ -1,9 +1,13 @@
 # Stems the greylist generator expands, and the words it must not catch.
 #
-# DRAFT, 2026-08-12 — for the owner to strike through. Nothing here is
-# generated: this file is the judgement, which is why it is committed and
-# reviewed rather than recomputed. See docs/3.5-word-lists-and-dictionaries.md,
-# "Generating the greylist".
+# Nothing here is generated: this file is the judgement, which is why it is
+# committed and reviewed rather than recomputed. See
+# docs/3.5-word-lists-and-dictionaries.md, "Generating the greylist".
+#
+# REVIEW STATUS, 2026-08-12. The owner has been through the marginal rows:
+# ESCORT* and DOMINATION* struck, TWINKIE* kept. The contested rows below —
+# WELCH*, SODOM*, NONG, the GYP family and the MONGOL family — are still as
+# drafted and have not been ruled on.
 #
 # WHY THIS FILE EXISTS. rustrict catches most of what the greylist wants, but
 # its recall gaps are arbitrary: it flags NEGROES, NEGROID and NEGROIDS but not
@@ -116,10 +120,15 @@ SCATS
 
 
 # ---------------------------------------------------------------------------
-# Marginal. Ordinary words with a second meaning. These are the likeliest
-# strikes — each one is a word the bot will simply never play.
+# Reviewed and kept, where the innocent reading did not survive a look.
 # ---------------------------------------------------------------------------
 
-ESCORT*         # 6 words. An ordinary word; also a car.
-DOMINATION*     # 2 words. An ordinary word.
-TWINKIE*        # 2 words. Also a snack cake.
+# The snack is a trademark, so it is not why the word is in a Scrabble
+# dictionary — there is no clean common-noun sense to protect here. Owner's
+# call, 2026-08-12.
+TWINKIE*        # 2 words
+
+# ESCORT* and DOMINATION* were struck on the same pass: ESCORT, ESCORTAGE,
+# ESCORTED, ESCORTING, ESCORTS and DOMINATION, DOMINATIONS are ordinary words
+# whose other sense needs context a board cannot supply, and DOMINATIONS is in
+# the dictionary as a rank of angels. Eight words the bot may play.

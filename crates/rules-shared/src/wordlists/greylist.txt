@@ -7,7 +7,7 @@
 # Sources: rustrict 0.7.38 `is(Type::ANY)`, plus the curated stems
 # in greylist-stems.txt. Edit the stems, not this file.
 #
-# 2581 words, 0.96% of the 268214 in sowpods and enable2k combined.
+# 2573 words, 0.96% of the 268214 in sowpods and enable2k combined.
 #
 # See docs/3.5-word-lists-and-dictionaries.md.
 ABO
@@ -561,8 +561,6 @@ DOGGINGS
 DOITIT
 DOLCETTO
 DOLCETTOS
-DOMINATION
-DOMINATIONS
 DOMINATRIX
 DOMINATRIXES
 DONG
@@ -643,12 +641,6 @@ EROTICISING
 EROTICS
 EROTISM
 EROTISMS
-ESCORT
-ESCORTAGE
-ESCORTAGES
-ESCORTED
-ESCORTING
-ESCORTS
 EUNUCH
 EUNUCHS
 EUROPEANISE
