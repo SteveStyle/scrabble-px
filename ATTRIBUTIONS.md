@@ -14,18 +14,31 @@ import to one uppercase word per line, at most 15 letters, restricted to
 that edition's alphabet — so none of them is byte-identical to its upstream
 file.
 
-They are also stored sorted and deduped, so dictionary construction can
-trust the file rather than re-establishing those properties on every
-startup. Re-normalise with `LC_ALL=C sort -u` and **never** a locale-aware
-sort: byte order matches the code-point order the prefix cursor's binary
-search assumes, whereas German collation would file `Ä` beside `A` and
-silently break lookups on the two non-ASCII lists. The invariant is
-enforced by `every_compiled_in_word_list_is_sorted_deduped_and_blank_free`
-in `crates/rules-shared/src/dictionary.rs`.
+They are also stored sorted and deduped in byte order, so dictionary
+construction can trust the file rather than re-establishing those properties
+on every startup. Re-normalise with the `import-wordlist` example, never a
+locale-aware sort: byte order matches the code-point order the prefix
+cursor's binary search assumes, whereas German collation would file `Ä`
+beside `A` and silently break lookups on the two non-ASCII lists. The
+invariant is enforced by
+`every_word_list_is_a_fixed_point_of_the_normaliser` in
+`crates/rules-shared/src/dictionary.rs` — each committed list must be exactly
+what `normalise` produces from it.
+
+**Every entry below was re-verified on 2026-08-12** by fetching the upstream
+file, running it through `import-wordlist`, and comparing: all three of known
+origin reproduce the committed list byte-for-byte, and `sowpods.txt` differs
+from its source by one word (see its entry). The checksums are of the
+upstream files as fetched that day, so a later mismatch means upstream moved
+rather than that we did.
 
 ### `enable2k.txt` — 169,266 words
 
-- **Upstream:** <https://github.com/BartMassey/wordlists> (`enable2k.txt.gz`)
+- **Upstream:** <https://github.com/BartMassey/wordlists> (`enable2k.txt.gz`),
+  SHA-256 `2c1093669cd16439bdb0a693a0058626c9c9f82e59244c9b0bde89515d44d3ad`
+- **Verified 2026-08-12:** 173,528 words in, 169,266 out, byte-identical to
+  the committed file — and 173,528 is exactly the import count recorded below,
+  so this is the same upstream the original import used.
 - **Licence:** ENABLE2K was placed in the public domain by its creators; the
   hosting repository is MIT. See `README-enable2k.txt` upstream for the
   original distribution's own statement.
@@ -36,7 +49,14 @@ in `crates/rules-shared/src/dictionary.rs`.
 
 ### `german.txt` — 590,511 words
 
-- **Upstream:** <https://github.com/enz/german-wordlist> (the `words` file)
+- **Upstream:** <https://github.com/enz/german-wordlist> (the `words` file),
+  SHA-256 `445c8e09e0efe63e76beadc25607f521c7e09893ac68d585a822c7c6ecbebf7b`
+- **Verified 2026-08-12:** 685,789 words in, 590,511 out, byte-identical to
+  the committed file. Note the input count does not match the 675,522 recorded
+  below — yet the output does, exactly. Either that figure was measured
+  differently at import or upstream has since added words this edition's
+  alphabet cannot write. The reproduction is the fact worth trusting; the
+  historical count is not.
 - **Licence:** CC0 (public domain dedication)
 - **Notes:** Built for word games, so proper nouns, abbreviations and
   archaic spellings are already excluded. Uppercased with ß → SS, since
@@ -47,7 +67,10 @@ in `crates/rules-shared/src/dictionary.rs`.
 ### `spanish.txt` — 635,090 words
 
 - **Upstream:** <https://github.com/words/an-array-of-spanish-words>
-  (`index.json`)
+  (`index.json`), SHA-256
+  `c43d6d90db76f9fa38f6885227895562bde7c4c70cd6cfe23b37f369c1f7b4a1`
+- **Verified 2026-08-12:** 636,598 words in, 635,090 out, byte-identical to
+  the committed file.
 - **Licence:** MIT
 - **Notes:** The upstream README states the list is derived from the
   Letterpress word list; that further derivation has not been verified
@@ -104,7 +127,7 @@ so nothing here affects what a person may play.
   generated list is committed as plain text and that is what ships.
 - **Predicate:** `is(Type::ANY)` — anything it flags, at any severity — over
   `sowpods.txt` and `enable2k.txt` combined, plus the curated stems in
-  `greylist-stems.txt`. 2,581 words, 0.96% of the 268,214 in those two lists.
+  `greylist-stems.txt`. 2,573 words, 0.96% of the 268,214 in those two lists.
 
 The version is pinned because the output is committed: a regenerated list that
 silently differed would be indistinguishable from an edited one. Record a new
