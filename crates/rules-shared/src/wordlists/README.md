@@ -10,6 +10,12 @@ dictionary is ever re-sourced.
 | --- | --- | --- | --- |
 | `denylist.txt` | everyone, human and bot | slurs and hate speech only | removed from the dictionaries — the word is not valid, and no engine can enumerate it |
 | `greylist.txt` | engines only | profanities and vulgar slang | dictionaries unchanged; a person may play these, an engine never chooses one |
+| `greylist-stems.txt` | the generator | stems to expand, and their exclusions | not consulted at run time; it is the input that makes `greylist.txt` reproducible |
+
+**What a bot will never play is the union of the first two**, because
+`is_avoided_by_engines` consults both. So the boundary between them decides only
+what a *person* may play — which is why the greylist can be filled in while the
+denylist is still empty, and why that is the safe order to do it in.
 
 **The difference is the subject, not the severity.** A person choosing to play a
 rude word is expressing themselves; a machine doing it reads as the game
@@ -49,37 +55,40 @@ Both files are empty. The mechanism is built and tested; the contents are
 deliberately not invented, because a list assembled from memory would be both
 wrong and unaccountable.
 
-**`rustrict` is the most promising generator.** It is a Rust crate that
-classifies a word by *type* (offensive, profane, sexual, mean) and *severity*
-(mild, moderate, severe) — which is the two-tier split already, from somebody
-else's judgement rather than ours:
+The process is settled and written up in
+[`docs/3.5-word-lists-and-dictionaries.md`](../../../../docs/3.5-word-lists-and-dictionaries.md),
+"Generating the denylist and the greylist". In short, and measured rather than
+assumed (rustrict 0.7.38 against sowpods, 2026-08-11):
 
-- denylist ≈ `Type::OFFENSIVE` at `Level::Severe` — slurs and hate speech
-- greylist ≈ anything `Censor::from_str(word).is_clean()` rejects
+**`greylist.txt` is generated**, from `rustrict` plus the curated stems in
+`greylist-stems.txt`. rustrict's `isnt(Type::ANY)` is the "clean" predicate —
+note `is_clean()` does not exist in the crate — and it flags 2,431 words. The
+stems exist because its recall gaps are arbitrary: it flags `NEGROES`,
+`NEGROID` and `NEGROIDS` but not `NEGRO`, `SMUTTY` but not `SMUT`, and misses
+`MONG` entirely. Together they come to about 2,570 words, 0.96% of the
+dictionary.
 
-Generate both by running every word in each dictionary through it and keeping
-the matches, then **commit the result as plain text**. That keeps the
-auditability these files exist for while the judgement comes from a maintained,
-published source. Record the crate version here when you do — a regenerated list
-that silently differs is worse than no list.
+**`denylist.txt` must be curated by a person.** rustrict cannot generate it at
+any threshold — it is a chat moderator built to defeat evasion, so on isolated
+dictionary words it fires on stems and topics. `OFFENSIVE | SEVERE` denies
+`HOLOCAUST`, `SLAVERY`, `JEW`, `ANTIRACIST`, `AUTISTIC`, `NIGGARDLY`, `QUEER`
+and `SCUNTHORPE` — the last being this file's own cautionary example, arriving
+through the generator rather than through the matcher. Even the much narrower
+`OFFENSIVE & SEVERE` intersection denies `NIGGLE`, `NIGER`, `NIQAB`, `HOAR`,
+`FAGOTTO` and six Māori words including `TAONGA`. That 185-word intersection is
+the right *candidate set* to review; it is not a list.
 
-Two cautions if you take that route. Its matching is deliberately
-evasion-resistant (leetspeak, padding), which is the opposite of what a word
-list wants: check what it does to `SCUNTHORPE`, `ASSASSIN` and `BASEMENT`
-before trusting the output. And its line is not Collins' line, so the denylist
-would no longer be defensible by pointing at the governing bodies — which was
-the original argument for the narrow scope.
+Record the crate version in `ATTRIBUTIONS.md` when generating — a regenerated
+list that silently differs is worse than no list.
 
-Alternatives, if it does not suit:
-
-- **`denylist.txt`** — the 2020 Collins/NASPA removals. Those bodies drew this
-  line already, at slurs rather than at profanity, and adopting their line beats
-  inventing one.
-- **`greylist.txt`** — LDNOOBW ("the big list of naughty words") is open source
-  and categorised by language and severity, so the profanity tier can be taken
-  without the slur tier. Expect to trim it: its entries include phrases and
-  variants, and only single words playable on a board matter. Trimming *down* is
-  safe here in a way it would not be for a validity list.
+On the alternatives: the **2020 Collins/NASPA removals** remain the most
+defensible source for `denylist.txt`, because those bodies drew the line at
+slurs rather than profanity and adopting their line beats inventing one.
+**LDNOOBW** ("the big list of naughty words") is worth cross-checking against —
+it catches `NEGRO`, `MONG`, `POOF` and `POON`, which rustrict misses — but it
+has **no slurs sub-list**: it is one flat file per language, `en` is 403 lines,
+of which 279 are single words and 165 are playable. Expect to pick from it by
+hand.
 
 Record where a list came from, in this file, when it is filled in. A word list
 with no provenance is a word list nobody can argue with later.

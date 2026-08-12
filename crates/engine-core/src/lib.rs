@@ -61,9 +61,9 @@ pub struct EngineDiagnostics {
 /// included. Every word the placement forms is checked, not just the one the
 /// engine was aiming for.
 ///
-/// The list is handed in rather than read here: the shipped greylist is empty,
-/// deliberately, until somebody sources it, so a test going through the real
-/// one could only ever observe "nothing is avoided".
+/// The list is handed in rather than read here so a test can state the case it
+/// means — which word is declined and which is played — instead of depending on
+/// whichever words the generated greylist happens to hold this month.
 fn move_is_avoided_by(
     validated: &rules_shared::model::ValidatedMove,
     avoid: &dyn Fn(&str) -> bool,
@@ -135,9 +135,9 @@ impl GreedyEngine {
     /// many candidates it looked at.
     ///
     /// The list is handed in rather than read here for the same reason
-    /// `move_is_avoided_by` takes one: the shipped greylist is empty, so a test
-    /// going through the real one could only ever observe "nothing is avoided",
-    /// and the selection rule below is worth testing directly.
+    /// `move_is_avoided_by` takes one: the selection rule below is worth testing
+    /// against a list a test controls, rather than against whichever words the
+    /// generated greylist happens to hold.
     fn best_move(
         request: &EngineRequest<'_>,
         avoid: &dyn Fn(&str) -> bool,
@@ -227,8 +227,8 @@ mod tests {
     /// A word the engine should decline is declined — including when it is a
     /// cross word rather than the one being aimed for.
     ///
-    /// Against an injected list, because the shipped greylist is empty until
-    /// somebody sources it (see `rules-shared/src/wordlists/README.md`). This
+    /// Against an injected list, so the case is stated rather than borrowed from
+    /// the generated one (see `rules-shared/src/wordlists/README.md`). This
     /// is the predicate on its own; `the_next_best_move_is_played_when_the_best_is_avoided`
     /// covers the selection that uses it.
     #[test]
@@ -278,11 +278,15 @@ mod tests {
         );
     }
 
-    /// With the shipped lists — both empty — the engine behaves exactly as it
-    /// did. That is the state in production today, so it is worth pinning:
-    /// the mechanism must be a no-op until somebody fills the files in.
+    /// The engine still plays against the real, populated greylist.
+    ///
+    /// Worth pinning because the failure mode of a list this size is not a
+    /// wrong move, it is *no* move — a greylist wide enough to eliminate every
+    /// candidate would show up as a bot that passes, which reads as the engine
+    /// being broken rather than as the list being too long. This goes through
+    /// the shipped list rather than an injected one for exactly that reason.
     #[test]
-    fn an_empty_greylist_changes_nothing() {
+    fn the_engine_still_plays_against_the_real_greylist() {
         let rules = VariantRules::official();
         let state = GameState::new(&rules, &*SOWPODS);
         let engine = GreedyEngine::new();
@@ -299,7 +303,7 @@ mod tests {
         });
         assert!(
             matches!(response.action, EngineAction::Place(_)),
-            "an empty greylist must not stop the engine playing"
+            "the greylist must not leave the engine with nothing to play"
         );
     }
 

@@ -7,6 +7,83 @@
 
 use std::collections::HashSet;
 
+use crate::model::Alphabet;
+
+/// The longest word any board can hold, and so the longest worth importing.
+///
+/// Counted in characters rather than tiles, which is a simplification for
+/// Spanish: a 16-character word using a CH/LL/RR digraph would occupy 15
+/// squares and is dropped anyway. That is the behaviour the committed lists
+/// were built with, and no such word survives in the upstream data, so this
+/// records the existing line rather than moving it.
+const MAX_WORD_LENGTH: usize = 15;
+
+/// Shorter than this cannot be played at all.
+const MIN_WORD_LENGTH: usize = 2;
+
+/// Puts an imported word list into the exact **form** the committed files hold.
+///
+/// This is the single definition of what a word list must look like, applied
+/// where a list is imported *and* asserted where one is committed — see
+/// `every_word_list_is_a_fixed_point_of_the_normaliser` in `dictionary.rs`.
+/// Having one function on both sides is the point: a second copy of these rules
+/// would drift, and the drift would be silent.
+///
+/// In order:
+///
+/// 1. **Uppercase.** The board holds uppercase graphemes, so the dictionary
+///    must. This also handles German `ß`, which Unicode uppercases to `SS` —
+///    exactly right here, because German sets have no `ß` tile and such words
+///    are physically played as two `S` tiles. No special case needed.
+/// 2. **Inside the alphabet.** Drops any word using a character this edition
+///    cannot write, which is why an `Alphabet` is required rather than assumed:
+///    Spanish files `Ñ` and has no `K` or `W`, German adds `Ä Ö Ü`. Taking the
+///    real alphabet from `VariantRules` means this filter cannot disagree with
+///    what the engine believes the letters are.
+/// 3. **Playable length**, 2 to 15.
+/// 4. **Sorted and deduped in byte order.** Byte order is code-point order for
+///    UTF-8, which is the order the prefix cursor's binary search assumes. A
+///    locale-aware sort is *not* equivalent: German collation files `Ä` beside
+///    `A`, which would break lookups on the two non-ASCII lists while leaving
+///    the two ASCII ones looking perfect.
+///
+/// **Deliberately does not remove denied words.** That is `remove_denied`, kept
+/// separate and applied as its own step so the first deviation of a list from
+/// its upstream source is a commit of its own, with the diff as the record of
+/// what was taken out and when. Folding it in here would make the committed
+/// file "source minus denied" from the very first commit, and nothing would
+/// show the moment it stopped being the source. Form and content are also
+/// different questions, and separating them means a failure says which one
+/// broke.
+///
+/// Normalising here, once, rather than at every startup is the same argument
+/// commit `25e9e09` (app 0.4.12) made when it stopped construction re-sorting a
+/// 267,000-line
+/// file in every process to fix two defective bytes.
+pub fn normalise(text: &str, alphabet: &Alphabet) -> String {
+    let writable: HashSet<char> = alphabet.chars().collect();
+
+    let mut words: Vec<String> = text
+        .lines()
+        .map(|line| line.trim().to_uppercase())
+        .filter(|word| {
+            let length = word.chars().count();
+            (MIN_WORD_LENGTH..=MAX_WORD_LENGTH).contains(&length)
+                && word.chars().all(|c| writable.contains(&c))
+        })
+        .collect();
+
+    words.sort_unstable();
+    words.dedup();
+
+    // Trailing newline, so the output is a well-formed text file and the
+    // committed lists are fixed points of this function rather than differing
+    // from it by one invisible byte.
+    let mut out = words.join("\n");
+    out.push('\n');
+    out
+}
+
 /// Removed from every dictionary: invalid for everyone, human and engine.
 const DENYLIST_FILE: &str = include_str!("wordlists/denylist.txt");
 
@@ -58,8 +135,9 @@ fn contains(list: &HashSet<String>, word: &str) -> bool {
         "word lists are looked up without normalising, so callers must pass an \
          uppercase, trimmed word — see the note on `contains`"
     );
-    // Both lists ship empty, and an empty list can never match: worth checking
-    // before hashing the word at all.
+    // An empty list can never match, so it is worth saying so before hashing
+    // the word at all — the denylist still ships empty, and it is consulted for
+    // every word of every move the engine considers.
     !list.is_empty() && list.contains(word)
 }
 
@@ -85,10 +163,17 @@ pub fn is_avoided_by_engines(word: &str) -> bool {
 /// Removes the denied words from a word list, keeping everything else exactly
 /// as it was — same order, same line endings.
 ///
-/// Applied where a dictionary is built *and* where the raw text is served to
-/// clients, which build their own from it. Filtering only the first would leave
-/// the web client with the words this exists to remove.
-pub fn without_denied(word_list: &str) -> String {
+/// An **import step**, not a runtime filter: run by the importer, its result
+/// committed, and the diff is the record of what was removed. Deliberately kept
+/// out of `normalise` so that removal is a commit of its own rather than
+/// something a list has silently had done to it since before its first commit
+/// — see the note there.
+///
+/// Every committed list is checked against the denylist by
+/// `no_committed_word_list_holds_a_denied_word`, so a denylist that grows
+/// without the lists being regenerated fails the build rather than quietly
+/// leaving the words in play.
+pub fn remove_denied(word_list: &str) -> String {
     if denylist().is_empty() {
         return word_list.to_string();
     }
@@ -151,17 +236,91 @@ mod tests {
         assert_eq!(kept, vec!["ASSASSIN", "BASEMENT", "SCUNTHORPE"]);
     }
 
-    /// An empty list changes nothing at all.
+    /// What actually ships: a populated greylist and an empty denylist.
     ///
-    /// This is the shipped state — both files are deliberately empty until
-    /// somebody sources them — so it is the behaviour actually in production,
-    /// and it must be a no-op rather than an accidental filter.
+    /// That combination is deliberate rather than half-finished. What an engine
+    /// will never play is the *union* of the two lists, so a full greylist
+    /// alone already stops a bot playing anything offensive; the denylist only
+    /// decides what a *person* may play, and taking words away from people is
+    /// the half that needs somebody's judgement. Filling the greylist first is
+    /// therefore the whole protection at none of the risk, and this pins it so
+    /// an empty greylist cannot return unnoticed.
     #[test]
-    fn an_empty_list_leaves_the_word_list_untouched() {
+    fn the_greylist_ships_populated_and_the_denylist_empty() {
+        assert!(
+            denylist().is_empty(),
+            "the denylist is still to be curated — see wordlists/README.md"
+        );
+        assert!(
+            greylist().len() > 2_000,
+            "the greylist is generated and should hold ~2,500 words, found {}",
+            greylist().len()
+        );
+
+        // An empty denylist must be a no-op rather than an accidental filter.
         let words = "ASSASSIN\nBASEMENT\nSCUNTHORPE";
-        assert_eq!(without_denied(words), words);
-        assert!(denylist().is_empty(), "shipped empty, see the README");
-        assert!(greylist().is_empty(), "shipped empty, see the README");
+        assert_eq!(remove_denied(words), words);
+    }
+
+    /// The generator's judgement, pinned where a person can see it.
+    ///
+    /// These are the accidents that a stem file makes easy: `MONG*` catching
+    /// MONGOOSE, `SCAT*` catching SCATTER, `GYP*` catching GYPSUM, `ABO*`
+    /// catching ABOARD. Each is an ordinary word, and each was a real candidate
+    /// during drafting — the exclusions and exact-match entries in
+    /// `greylist-stems.txt` exist because of them. If somebody later loosens a
+    /// stem, this says so.
+    ///
+    /// The words below are only ever *greyed*, never denied, so being wrong
+    /// here costs the bot some vocabulary rather than costing a person a move.
+    /// It is still worth holding: a bot that will not play BUTTERFLY is a bug.
+    #[test]
+    fn stem_expansion_does_not_catch_ordinary_words() {
+        for innocent in [
+            "ABOARD",
+            "ABODE",
+            "ABOUT",
+            "MONGOOSE",
+            "MONGER",
+            "MONGREL",
+            "SCATTER",
+            "SCATHE",
+            "GYPSUM",
+            "GYPSOPHILA",
+            "WOGGLE",
+            "DAGOBA",
+            "NEGRONI",
+            "WELSH",
+            "ASSASSIN",
+            "BASEMENT",
+            "BUTTERFLY",
+            "PASSENGER",
+            "CLASSROOM",
+        ] {
+            assert!(
+                !greylist().contains(innocent),
+                "{innocent} is an ordinary word — a stem in greylist-stems.txt has gone too wide"
+            );
+        }
+    }
+
+    /// The base words rustrict misses, which are the reason the stem file
+    /// exists at all.
+    ///
+    /// rustrict flags NEGROES, NEGROID and NEGROIDS but not NEGRO; POOFTER but
+    /// not POOF; SMUTTY but not SMUT; and misses MONG entirely. A bot playing
+    /// one of these in front of a child is the failure the greylist is for, so
+    /// the gap being closed is worth asserting rather than assuming.
+    #[test]
+    fn the_base_words_rustrict_misses_are_greylisted() {
+        for missed in [
+            "NEGRO", "MONG", "POOF", "POON", "SMUT", "ABO", "WOG", "DAGO", "LEZ",
+        ] {
+            assert!(
+                greylist().contains(missed),
+                "{missed} is not greylisted — regenerate with the generate-greylist example"
+            );
+        }
     }
 
     /// Lookup takes the word as given, matches exactly, and short-circuits on
