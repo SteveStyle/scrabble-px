@@ -117,6 +117,64 @@ sed -i '/alias sadev=/d;/alias sapre=/d' ~/.bashrc 2>/dev/null || true
 } >> ~/.bashrc
 echo "    written to ~/.bashrc — new shell, or 'source ~/.bashrc', to pick them up"
 
+echo "==> SQLite shortcuts (dbdev, dbpre, dbprod)"
+# For anything the admin CLI does not cover. All three are `-readonly`: an
+# inspection session cannot write, whichever environment it lands in, and
+# production is one keystroke away from preview.
+#
+# A **throwaway container, from a prebuilt image** — deliberately not a
+# long-lived one. A permanent container holds the volume even while stopped,
+# and `deploy-preview.sh reset` does `down -v`, so it would break wiping
+# preview until somebody remembered to remove it. Baking a 5MB image instead
+# gets the speed without the lifecycle: 0.8s per query against 3.3s for
+# `apk add` every time, and nothing holds the volume between uses.
+#
+# dbdev is a plain alias because dev's database is a file in the checkout. The
+# other two are functions: the query has to reach sqlite3 *inside* the
+# container rather than being appended to `docker run`, and they drop `-it`
+# when given one, so `dbpre "select ..."` works in a pipeline as well as
+# interactively.
+python3 - "$REPO_DIR" <<'PYEOF'
+import re, sys, pathlib
+repo = sys.argv[1]
+rc = pathlib.Path.home() / ".bashrc"
+text = rc.read_text() if rc.exists() else ""
+# Drop any previous block, marked so re-running replaces rather than appends.
+text = re.sub(r"\n?# >>> tile-lite-elite sqlite >>>.*?# <<< tile-lite-elite sqlite <<<\n",
+              "\n", text, flags=re.S)
+block = f'''
+# >>> tile-lite-elite sqlite >>>
+alias dbdev='sqlite3 -readonly {repo}/data/tile-lite-elite.sqlite3'
+
+# Built on first use, then reused. `docker image rm tle-sqlite` to refresh it.
+_tle_sqlite_image() {{
+  docker image inspect tle-sqlite >/dev/null 2>&1 && return 0
+  printf 'FROM alpine\\nRUN apk add --no-cache sqlite\\n' \\
+    | docker build -q -t tle-sqlite - >/dev/null
+}}
+
+_tle_sqlite_in_volume() {{
+  local volume="$1"; shift
+  _tle_sqlite_image || return 1
+  local tty=""; [ $# -eq 0 ] && [ -t 0 ] && tty="-it"
+  docker run --rm $tty -v "$volume":/data tle-sqlite \\
+    sqlite3 -readonly /data/tile-lite-elite.sqlite3 "$@"
+}}
+
+dbpre() {{ _tle_sqlite_in_volume tile-lite-elite-preview-data "$@"; }}
+
+# Production, over ssh. alpine + apk there rather than a built image: it is
+# used rarely, and building one on the VM is not worth the disk.
+dbprod() {{
+  ssh -t tile-lite-elite "docker run --rm -i -v tile-lite-elite-data:/data alpine sh -c \\
+    'apk add --no-cache sqlite >/dev/null 2>&1 && exec sqlite3 -readonly /data/tile-lite-elite.sqlite3'"
+}}
+# <<< tile-lite-elite sqlite <<<
+'''
+rc.write_text(text.rstrip("\n") + "\n" + block)
+print("    written to ~/.bashrc")
+PYEOF
+
 cat <<EOF
 
 ==> Tooling setup done. Two manual steps left (see docs/3.1-setup.md):
