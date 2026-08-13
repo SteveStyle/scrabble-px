@@ -98,6 +98,25 @@ else
     echo "    already installed: $(docker --version)"
 fi
 
+echo "==> Admin CLI aliases (sadev, sapre)"
+# The VM has `sa`, written into its ~/.bashrc by deploy.sh, because the admin
+# CLI has to run where 127.0.0.1 is the server's own loopback. The same problem
+# exists here in two flavours, so there are two aliases rather than one:
+#
+#   sadev   dev runs natively on :3000, which is the CLI's default, so this is
+#           just admin.sh — which also builds the CLI if it is stale.
+#   sapre   preview runs in a container, and the host's 127.0.0.1 is not the
+#           container's, so admin.sh cannot reach it. It has to run inside.
+#
+# Delete-then-append, like deploy.sh's, so re-running updates a stale line
+# rather than leaving two that disagree.
+sed -i '/alias sadev=/d;/alias sapre=/d' ~/.bashrc 2>/dev/null || true
+{
+  echo "alias sadev='$REPO_DIR/scripts/admin.sh'"
+  echo "alias sapre='docker compose -f $REPO_DIR/docker-compose.preview.yml exec server tile-lite-elite-admin'"
+} >> ~/.bashrc
+echo "    written to ~/.bashrc — new shell, or 'source ~/.bashrc', to pick them up"
+
 cat <<EOF
 
 ==> Tooling setup done. Two manual steps left (see docs/3.1-setup.md):
