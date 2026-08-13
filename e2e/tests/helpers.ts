@@ -1,4 +1,4 @@
-import { Page, expect } from '@playwright/test';
+import { Browser, Page, expect } from '@playwright/test';
 
 // Every player these tests create starts with this prefix, so
 // scripts/e2e-clean.sh (and the global teardown) can find and remove them.
@@ -65,4 +65,41 @@ export async function expectSignedIn(page: Page) {
 // The blocking auth modal is what a signed-out visitor gets.
 export async function expectSignedOut(page: Page) {
   await expect(page.locator('.auth-panel')).toBeVisible();
+}
+
+/// Two signed-in players in one started game, in separate browser contexts.
+///
+/// Needed because unread only counts messages you *received* — the #86 rework
+/// stopped marking your own (`games.rs` filters the caller out of
+/// `last_message_received_at`). A single player in a bot game cannot receive
+/// anything, and Greedy Bot does not chat, so there is no cheaper rig than two
+/// real accounts.
+export async function startTwoPlayerGame(browser: Browser) {
+  const hostContext = await browser.newContext();
+  const guestContext = await browser.newContext();
+  const host = await hostContext.newPage();
+  const guest = await guestContext.newPage();
+
+  const guestName = uniqueName('guest');
+  await register(guest, guestName);
+  await register(host, uniqueName('host'));
+
+  await host.getByRole('button', { name: 'Play Friend' }).click();
+  const field = host.locator('.name-autocomplete input').first();
+  await field.click();
+  await field.type(guestName.slice(0, 10), { delay: 40 });
+  await expect(host.locator('.name-autocomplete-item').first()).toBeVisible();
+  await host.locator('.name-autocomplete-item').first().click();
+  await host.getByRole('button', { name: 'Invite', exact: true }).click();
+
+  await guest.getByRole('button', { name: 'Refresh' }).click();
+  await guest.getByRole('button', { name: 'Accept' }).click();
+  await host.getByRole('button', { name: 'Start', exact: true }).click();
+  await expect(host.locator('.rack-panel')).toBeVisible();
+
+  // The guest has to have the game open to reach its chat composer.
+  await guest.getByRole('button', { name: 'Refresh' }).click();
+  await guest.locator('.game-row').first().click();
+
+  return { host, guest, hostContext, guestContext };
 }

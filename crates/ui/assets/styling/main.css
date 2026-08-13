@@ -378,20 +378,6 @@ button:disabled {
     outline-offset: 2px;
 }
 
-.chat-panel-unread {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 6px;
-    font-size: 0.8rem;
-    color: var(--gold);
-}
-
-.chat-panel-unread-mail {
-    font-size: 0.95rem;
-    line-height: 1;
-}
-
 /* Marks a message nobody has read yet, and fades as it earns being read.
    Keyed on *unread* rather than on the element being created, which is what it
    used to key on because the watermark advanced the moment a message arrived

@@ -8,6 +8,7 @@ import {
   uniqueName,
   authTab,
   TEST_PASSWORD,
+  startTwoPlayerGame,
 } from './helpers';
 
 // A signed-out user is shown a blocking auth modal; everything else needs a
@@ -19,24 +20,25 @@ test('registers a new player and lands signed in', async ({ page }) => {
   await expectSignedIn(page);
 });
 
-test('unread chat survives being off screen, and clears once watched', async ({ page }) => {
+test('unread chat survives being off screen, and clears once watched', async ({ browser }) => {
   // #86. The watermark used to advance the instant a message arrived into an
   // open game — "watching the panel counts as reading it" — so a message
   // landing in a background tab, or in a panel scrolled off a phone, was marked
   // read by nobody. The whole issue is that visible is not the same as seen.
-  await register(page, uniqueName('unread'));
-  await page.getByRole('button', { name: 'Play Greedy Bot' }).click();
-  await page.getByRole('button', { name: 'Start', exact: true }).click();
-  // The game has to be up before the chat composer exists.
-  await expect(page.locator('.rack-panel')).toBeVisible();
+  //
+  // Two accounts, because the rework also stopped marking *your own* messages
+  // unread, which is what a single player in a bot game can only ever produce.
+  const { host, guest, hostContext, guestContext } = await startTwoPlayerGame(browser);
 
-  await page.getByPlaceholder('Say something...').fill('does anyone read these');
-  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await guest.getByPlaceholder('Say something...').fill('does anyone read these');
+  await guest.getByRole('button', { name: 'Send', exact: true }).click();
 
-  // Marked unread in all three places, from one signal.
-  await expect(page.locator('.chat-message-unread')).toHaveCount(1);
-  await expect(page.locator('.rack-scores-unread')).toHaveCount(1);
-  await expect(page.locator('.chat-panel-unread')).toHaveCount(1);
+  // Marked unread in both places, from one signal. (There was a third, an
+  // envelope above the messages; it was removed during the rework because the
+  // game already carries one and its appearing and disappearing made
+  // everything below it jump.)
+  await expect(host.locator('.chat-message-unread')).toHaveCount(1);
+  await expect(host.locator('.rack-scores-unread')).toHaveCount(1);
 
   // Scroll the chat out of view for longer than the ten seconds. Nothing may
   // clear: the clock only runs while somebody could actually be looking, and on
@@ -47,31 +49,42 @@ test('unread chat survives being off screen, and clears once watched', async ({ 
   // would have passed against a broken implementation. The hidden-tab half is
   // `document.hidden` in `chat_messages_are_visible`, covered by SeenClock's
   // own tests; this covers the wiring.
-  await page.setViewportSize({ width: 900, height: 400 });
-  await page.evaluate(() => {
+  await host.setViewportSize({ width: 900, height: 400 });
+  await host.evaluate(() => {
     document.querySelector('.board-panel')?.scrollIntoView({ block: 'start' });
     window.scrollTo(0, 0);
   });
-  await page.waitForTimeout(2_000);
-  await expect(
-    page.locator('.chat-message-unread').first(),
-    'the fade must be paused while the messages are off screen',
-  ).toHaveCSS('animation-play-state', 'paused');
+  // Read the *pseudo-element*: the rework moved the fade to an `::after`
+  // overlay driven by an inline `--chat-fade-state`, so asserting
+  // `animation-play-state` on the message itself inspects an element that no
+  // longer animates and passes whatever the implementation does.
+  await expect
+    .poll(
+      () =>
+        host.evaluate(() => {
+          const message = document.querySelector('.chat-message-unread');
+          return message ? getComputedStyle(message, '::after').animationPlayState : null;
+        }),
+      { message: 'the fade must be paused while the messages are off screen', timeout: 5_000 },
+    )
+    .toBe('paused');
 
-  await page.waitForTimeout(12_000);
+  await host.waitForTimeout(12_000);
   await expect(
-    page.locator('.chat-message-unread'),
+    host.locator('.chat-message-unread'),
     'messages nobody can see must not be marked read',
   ).toHaveCount(1);
 
   // Back in view, and the clock resumes.
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await page.evaluate(() => document.querySelector('.chat-messages')?.scrollIntoView());
+  await host.setViewportSize({ width: 1280, height: 900 });
+  await host.evaluate(() => document.querySelector('.chat-messages')?.scrollIntoView());
 
-  // Now watched, so it clears — and all three clear together.
-  await expect(page.locator('.chat-message-unread')).toHaveCount(0, { timeout: 20_000 });
-  await expect(page.locator('.rack-scores-unread')).toHaveCount(0);
-  await expect(page.locator('.chat-panel-unread')).toHaveCount(0);
+  // Now watched, so it clears — and both clear together.
+  await expect(host.locator('.chat-message-unread')).toHaveCount(0, { timeout: 20_000 });
+  await expect(host.locator('.rack-scores-unread')).toHaveCount(0);
+
+  await hostContext.close();
+  await guestContext.close();
 });
 
 test('the invite-by-name dropdown is visible, not merely rendered', async ({ page }) => {
