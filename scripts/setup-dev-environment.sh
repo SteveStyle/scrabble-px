@@ -164,6 +164,18 @@ AGENTEOF
     echo "    written to ~/.bashrc — then 'ssh-add ~/.ssh/id_ed25519_gh' once per boot"
 fi
 
+echo "==> git: tell it where the agent lives"
+# VS Code runs git from a process that never sourced ~/.bashrc, so it has no
+# SSH_AUTH_SOCK and falls back to asking for the passphrase on every fetch and
+# every push. Setting it inside git's own ssh command fixes that for **any**
+# caller — VS Code, cron, a script, a shell that forgot to export it — because
+# git supplies the variable itself rather than inheriting it.
+#
+# Safe when no agent is running: ssh fails to reach the socket and falls back
+# to the key file exactly as it would have anyway.
+git config --global core.sshCommand 'env SSH_AUTH_SOCK="$HOME/.ssh/agent.sock" ssh'
+echo "    core.sshCommand set"
+
 echo "==> Admin CLI aliases (sadev, sapre)"
 # The VM has `sa`, written into its ~/.bashrc by deploy.sh, because the admin
 # CLI has to run where 127.0.0.1 is the server's own loopback. The same problem
