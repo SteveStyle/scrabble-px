@@ -74,7 +74,7 @@ use serde::{Deserialize, Serialize};
 // moves" for which changes bump this.
 pub const API_VERSION: ApiVersion = ApiVersion {
     major: 2,
-    minor: 12,
+    minor: 13,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -383,13 +383,19 @@ pub struct GameSummaryDto {
     /// Set when `relationship` is `InvitedByName` or `InvitedOpen` — the
     /// invitation to accept/reject directly from the list.
     pub invitation_id: Option<String>,
-    /// When the most recent chat message was sent, if there's ever been one
-    /// — deliberately separate from `last_activity_at` (moves), so the
-    /// client can tell "new chat" apart from "new move" and show an unread
-    /// indicator. The client compares this against its own locally-stored
-    /// "last seen" watermark per game; the server has no concept of read
-    /// receipts.
-    pub last_message_at: Option<i64>,
+    /// When the most recent message **from somebody else** was sent, if there
+    /// has been one — deliberately separate from `last_activity_at` (moves), so
+    /// the client can tell "new chat" apart from "new move" and show an unread
+    /// indicator. The client compares this against its own locally-stored "last
+    /// seen" watermark per game; the server has no concept of read receipts.
+    ///
+    /// **Caller-relative**, like `relationship` and `invitation_id`: your own
+    /// messages are excluded, because an unread mark for something you just
+    /// typed says nothing. Answering that here rather than shipping the sender
+    /// and making every client work it out keeps the question and its answer in
+    /// one place — and the client already knows the sender of every message it
+    /// has actually loaded, so the gap was only ever in the games list.
+    pub last_message_received_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

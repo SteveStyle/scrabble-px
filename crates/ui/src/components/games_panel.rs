@@ -363,14 +363,27 @@ pub fn GamesPanel(
                 return rsx! {};
             }
             let row_elements = rows.into_iter().map(|summary| {
-                let has_unread = has_unread_chat(&summary, &chat_watermarks);
-                let watermark = chat_watermarks.get(&summary.id).copied();
+                // The open game answers from its own live messages, which the
+                // WebSocket delivers as they are sent. Its summary is up to
+                // GAME_LIST_POLL_MS behind — ten seconds — and this row sits
+                // beside the rack indicator, so a stale one would visibly
+                // disagree with it. Every other row has only the summary,
+                // which is the best available for a game nobody is watching.
+                let has_unread = if current_game.as_ref().is_some_and(|g| g.id == summary.id) {
+                    // This game's own answer, not HAS_UNREAD_CHAT — that one
+                    // speaks for *every* game now, so reading it here lit the
+                    // open row whenever anything anywhere was unread. Invisible
+                    // with a single game, because the two values agree; the
+                    // moment there is a second, the open game claims its mail.
+                    crate::app::UNREAD_IS_THIS_GAME()
+                } else {
+                    has_unread_chat(&summary, &chat_watermarks)
+                };
                 game_row(
                     &summary,
                     selected_id.as_deref(),
                     show_invite_actions,
                     has_unread,
-                    watermark,
                     current_game.as_ref(),
                     viewer_player_id.as_deref(),
                     can_start,
@@ -726,9 +739,6 @@ fn game_row(
     selected_id: Option<&str>,
     show_invite_actions: bool,
     has_unread_chat: bool,
-    // The `created_at` of the last message counted as seen for this game.
-    // Anything after it is still unread, and says so.
-    chat_watermark: Option<i64>,
     current_game: Option<&GameStateDto>,
     viewer_player_id: Option<&str>,
     can_start: bool,
@@ -840,7 +850,26 @@ fn game_row(
                 div { class: "game-row-top",
                     span { class: "{badge_class}", "{status_label(&summary.status, ready)}" }
                     if has_unread_chat {
-                        span { class: "game-row-unread-mail", title: "New message", "✉" }
+                        // Same two colours as the rack indicator: gold when
+                        // this is the game you are in, clay when it is one you
+                        // are not. Reading the rack icon then tells you which
+                        // row to look for.
+                        button {
+                            class: if is_selected {
+                                "game-row-unread-mail game-row-unread-mail-here"
+                            } else {
+                                "game-row-unread-mail game-row-unread-mail-elsewhere"
+                            },
+                            title: "New message — click to read it",
+                            // The row's own click selects the game; this adds
+                            // the second half of the promise, scrolling to the
+                            // messages once the panel exists. Left to bubble so
+                            // the selection still happens exactly once.
+                            onclick: move |_| {
+                                *crate::app::SCROLL_CHAT_PENDING.write() = true;
+                            },
+                            "✉"
+                        }
                     }
                     span { class: "game-row-time", "{relative_time}" }
                 }
@@ -953,13 +982,14 @@ fn game_row(
                         }
                     }
                     if can_chat {
+                        // No unread banner above the messages. It appeared and
+                        // disappeared in the flow of the panel, so the message
+                        // list and everything under it jumped by its height at
+                        // the moment somebody was reading — and the same signal
+                        // is already in two calmer places: the game row's mail
+                        // icon, and the one beside the rack where the eye
+                        // already is while playing.
                         div { class: "chat-panel",
-                            if crate::app::HAS_UNREAD_CHAT() {
-                                div { class: "chat-panel-unread",
-                                    span { class: "chat-panel-unread-mail", "✉" }
-                                    span { "New message" }
-                                }
-                            }
                             div { class: "chat-messages",
                                 if messages.is_empty() {
                                     p { class: "chat-empty", "No messages yet" }
@@ -973,25 +1003,39 @@ fn game_row(
                                 for message in messages.iter().rev() {
                                     {
                                         let is_own = viewer_player_id == Some(message.player_id.as_str());
-                                        // Unread is now a real state that outlives arrival, so the
-                                        // highlight follows it instead of following the element being
-                                        // created. A message scrolled off a phone stays marked until
-                                        // somebody has actually had it in front of them.
-                                        let is_unread = chat_watermark
-                                            .is_none_or(|seen| message.created_at > seen);
-                                        let message_class = match (is_own, is_unread) {
-                                            (true, true) => "chat-message chat-message-own chat-message-unread",
-                                            (true, false) => "chat-message chat-message-own",
-                                            (false, true) => "chat-message chat-message-unread",
-                                            (false, false) => "chat-message",
+                                        // Each message ages on its own, against the shared
+                                        // visible-time clock: elapsed is how long *this* message
+                                        // has been in front of somebody. A later arrival no longer
+                                        // holds back an earlier one.
+                                        let elapsed = crate::app::CHAT_MESSAGE_ARRIVED_AT()
+                                            .get(&message.id)
+                                            .map(|arrived| {
+                                                (crate::app::CHAT_VISIBLE_MS() - arrived).max(0)
+                                            });
+                                        // Your own messages are never highlighted, however
+                                        // recently they were sent. The highlight means "this
+                                        // arrived for you"; you already know what you typed.
+                                        let is_unread = !is_own
+                                            && elapsed.is_some_and(|e| {
+                                                e < crate::seen_clock::SEEN_AFTER_MS
+                                            });
+                                        let message_class = if is_own {
+                                            "chat-message chat-message-own"
+                                        } else if is_unread {
+                                            "chat-message chat-message-unread"
+                                        } else {
+                                            "chat-message"
                                         };
-                                        // The fade *is* the seen clock made visible: same duration, and
-                                        // paused by the same rule, so what somebody watches finishing is
-                                        // the thing that marks the message read.
+                                        // The fade *is* this message's own clock made visible:
+                                        // same duration, paused by the same rule, and started with
+                                        // a negative delay equal to the time already spent — so a
+                                        // rebuilt element resumes where it was instead of
+                                        // announcing itself again.
                                         let fade = format!(
-                                            "animation-duration: {}ms; animation-play-state: {};",
+                                            "--chat-fade-duration: {}ms; --chat-fade-state: {}; --chat-fade-delay: -{}ms;",
                                             crate::seen_clock::SEEN_AFTER_MS,
                                             if crate::app::CHAT_IS_VISIBLE() { "running" } else { "paused" },
+                                            elapsed.unwrap_or(0),
                                         );
                                         rsx! {
                                             div { key: "{message.id}", class: "{message_class}", style: "{fade}",
@@ -1764,11 +1808,27 @@ fn is_ready_to_start(participants: &[ParticipantDto]) -> bool {
 /// yet (see `crate::local_storage::StoredChatWatermarks`). A game with no
 /// messages at all, or whose latest message matches our stored watermark,
 /// is never unread.
+/// Should a row show the unread-mail icon, for a game that is **not** open?
+///
+/// The open game does not use this: it has live messages, and asking the same
+/// question of a summary that is up to ten seconds old would let its row
+/// disagree with the rack indicator beside it. Both take the open game's answer
+/// from one place — see `HAS_UNREAD_CHAT`.
+///
+/// `last_message_received_at` already excludes the viewer's own messages — the
+/// server answers that, since the games list carries no messages for a client
+/// to check for itself.
+///
+/// Strictly newer than the watermark, not merely different from it: the
+/// watermark is the newest message *seen* of any sender, so sending a message
+/// and reading it pushes the mark past the last one received. An inequality
+/// would call that unread.
 fn has_unread_chat(summary: &GameSummaryDto, chat_watermarks: &HashMap<String, i64>) -> bool {
-    summary
-        .last_message_at
-        .as_ref()
-        .is_some_and(|latest| chat_watermarks.get(&summary.id) != Some(latest))
+    summary.last_message_received_at.is_some_and(|received| {
+        chat_watermarks
+            .get(&summary.id)
+            .is_none_or(|seen| received > *seen)
+    })
 }
 
 fn status_label(status: &GameStatus, ready_to_start: bool) -> &'static str {
@@ -2060,7 +2120,7 @@ mod tests {
             turn_started_at: 0,
             relationship: GameRelationship::Participant,
             invitation_id: None,
-            last_message_at,
+            last_message_received_at: last_message_at,
         }
     }
 
@@ -2081,6 +2141,27 @@ mod tests {
         let summary = summary_with_last_message_at(Some(100));
         let mut watermarks = HashMap::new();
         watermarks.insert("game-1".to_string(), 100);
+        assert!(!has_unread_chat(&summary, &watermarks));
+    }
+
+    /// Your own message must not light your own row.
+    ///
+    /// The server excludes it, so `last_message_received_at` is simply empty
+    /// when the only messages are yours — the case that previously lit the row
+    /// for something you had just typed.
+    #[test]
+    fn no_unread_chat_when_every_message_is_your_own() {
+        let summary = summary_with_last_message_at(None);
+        assert!(!has_unread_chat(&summary, &HashMap::new()));
+    }
+
+    /// Reading your own newest message pushes the watermark past the last one
+    /// received, which an inequality would report as unread.
+    #[test]
+    fn no_unread_chat_when_the_watermark_has_overtaken_the_last_received() {
+        let summary = summary_with_last_message_at(Some(100));
+        let mut watermarks = HashMap::new();
+        watermarks.insert("game-1".to_string(), 150);
         assert!(!has_unread_chat(&summary, &watermarks));
     }
 

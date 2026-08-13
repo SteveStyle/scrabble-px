@@ -15,11 +15,26 @@
 /// How long the messages must be visible before they count as read.
 pub const SEEN_AFTER_MS: i64 = 10_000;
 
-/// Accumulated watching time, across however many interruptions.
+/// Total time the chat has been in front of somebody, across however many
+/// interruptions — an accumulator, not a countdown.
 ///
 /// Suspending keeps what has been earned rather than discarding it: somebody
 /// who looks for six seconds, switches tab, and comes back needs four more, not
 /// ten. That is the whole reason this holds state instead of being a timeout.
+///
+/// **It never restarts.** Each message records this clock's reading when it
+/// arrived, and is seen once the clock has advanced `SEEN_AFTER_MS` beyond
+/// that. One accumulator serves every message, and each gets its own ten
+/// seconds without needing a timer of its own.
+///
+/// The earlier design restarted the whole clock on every arrival, which meant a
+/// brisk exchange kept everything unread while somebody was plainly reading it
+/// — a new message held back the ones already on screen. Per-message arrivals
+/// cure that: a new message delays only itself.
+///
+/// Seen-ness stays monotonic in arrival order, because a message that arrived
+/// earlier has a smaller reading to beat. That is what lets a single watermark
+/// — "everything up to here is read" — still express the state exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SeenClock {
     /// Watching time banked from earlier stretches.
@@ -51,23 +66,9 @@ impl SeenClock {
         }
     }
 
-    /// A new message arrived: start again from nothing.
-    ///
-    /// The owner chose this over letting the clock run on (2026-08-11). It is
-    /// the stricter reading of "seen" — each message earns its own ten seconds
-    /// — and it has a consequence worth knowing: during an exchange where
-    /// messages arrive faster than that, the indicator stays lit while somebody
-    /// is actively reading. Keeps watching if they are watching now, because
-    /// the new message is on screen too.
-    pub fn restart(&mut self, now_ms: i64) {
-        self.banked_ms = 0;
-        if self.visible_since.is_some() {
-            self.visible_since = Some(now_ms);
-        }
-    }
-
-    /// Total watching time, including the stretch in progress.
-    pub fn watched_ms(&self, now_ms: i64) -> i64 {
+    /// Total visible time, including the stretch in progress. Messages are
+    /// measured against this rather than against the wall clock.
+    pub fn visible_ms(&self, now_ms: i64) -> i64 {
         let running = self
             .visible_since
             .map(|since| (now_ms - since).max(0))
@@ -75,9 +76,10 @@ impl SeenClock {
         self.banked_ms + running
     }
 
-    /// Have the messages been watched for long enough to count as read?
-    pub fn is_seen(&self, now_ms: i64) -> bool {
-        self.watched_ms(now_ms) >= SEEN_AFTER_MS
+    /// Has a message that arrived at clock reading `arrived_at` been watched
+    /// long enough to count as read?
+    pub fn is_seen(&self, arrived_at: i64, now_ms: i64) -> bool {
+        self.visible_ms(now_ms) - arrived_at >= SEEN_AFTER_MS
     }
 }
 
@@ -90,8 +92,8 @@ mod tests {
     fn ten_seconds_of_watching_counts_as_seen() {
         let mut clock = SeenClock::new();
         clock.became_visible(0);
-        assert!(!clock.is_seen(9_999), "not yet, a millisecond short");
-        assert!(clock.is_seen(10_000));
+        assert!(!clock.is_seen(0, 9_999), "not yet, a millisecond short");
+        assert!(clock.is_seen(0, 10_000));
     }
 
     /// Nothing counts while the messages are not on screen.
@@ -101,8 +103,8 @@ mod tests {
     #[test]
     fn time_while_hidden_does_not_count() {
         let clock = SeenClock::new();
-        assert_eq!(clock.watched_ms(60_000), 0);
-        assert!(!clock.is_seen(60_000));
+        assert_eq!(clock.visible_ms(60_000), 0);
+        assert!(!clock.is_seen(0, 60_000));
     }
 
     /// Suspending banks the time rather than discarding it, and resuming
@@ -112,12 +114,12 @@ mod tests {
         let mut clock = SeenClock::new();
         clock.became_visible(0);
         clock.became_hidden(6_000);
-        assert_eq!(clock.watched_ms(30_000), 6_000, "the gap must not accrue");
-        assert!(!clock.is_seen(30_000));
+        assert_eq!(clock.visible_ms(30_000), 6_000, "the gap must not accrue");
+        assert!(!clock.is_seen(0, 30_000));
 
         clock.became_visible(30_000);
-        assert!(!clock.is_seen(33_999), "six banked plus not quite four");
-        assert!(clock.is_seen(34_000), "six banked plus four is ten");
+        assert!(!clock.is_seen(0, 33_999), "six banked plus not quite four");
+        assert!(clock.is_seen(0, 34_000), "six banked plus four is ten");
     }
 
     /// Several interruptions add up.
@@ -129,8 +131,8 @@ mod tests {
             clock.became_visible(start);
             clock.became_hidden(start + 2_000);
         }
-        assert_eq!(clock.watched_ms(500_000), 10_000);
-        assert!(clock.is_seen(500_000));
+        assert_eq!(clock.visible_ms(500_000), 10_000);
+        assert!(clock.is_seen(0, 500_000));
     }
 
     /// A repeated "visible" must not restart the stretch in progress.
@@ -147,34 +149,71 @@ mod tests {
         clock.became_visible(5_000);
         clock.became_visible(9_000);
         assert!(
-            clock.is_seen(10_000),
+            clock.is_seen(0, 10_000),
             "the stretch began at 0, not at 9,000"
         );
     }
 
-    /// A new message starts the ten seconds again.
+    /// Each message gets its own ten seconds, measured from its own arrival.
     #[test]
-    fn a_new_message_restarts_the_count() {
+    fn every_message_is_seen_on_its_own_schedule() {
         let mut clock = SeenClock::new();
         clock.became_visible(0);
-        assert!(!clock.is_seen(9_000));
-        clock.restart(9_000);
-        assert!(!clock.is_seen(18_999), "the new message earns its own ten");
-        assert!(clock.is_seen(19_000));
+
+        // One arrives immediately, the next four seconds later.
+        let first = clock.visible_ms(0);
+        let second = clock.visible_ms(4_000);
+
+        assert!(clock.is_seen(first, 10_000), "the first is seen at ten");
+        assert!(
+            !clock.is_seen(second, 10_000),
+            "the second has had only six"
+        );
+        assert!(clock.is_seen(second, 14_000), "and is seen at fourteen");
     }
 
-    /// Restarting while hidden discards the banked time and does not start a
-    /// stretch — the new message is not on screen either.
+    /// A new message must not hold back one already on screen.
+    ///
+    /// The failure this replaces: the clock restarted on every arrival, so a
+    /// brisk exchange kept everything unread while somebody was plainly reading
+    /// it. Nine seconds of watching were discarded by a message that had
+    /// nothing to do with the one being read.
     #[test]
-    fn a_new_message_while_hidden_starts_from_nothing() {
+    fn a_later_message_does_not_delay_an_earlier_one() {
         let mut clock = SeenClock::new();
         clock.became_visible(0);
-        clock.became_hidden(8_000);
-        clock.restart(20_000);
-        assert_eq!(clock.watched_ms(30_000), 0);
+        let first = clock.visible_ms(0);
 
-        clock.became_visible(30_000);
-        assert!(clock.is_seen(40_000));
+        // Something arrives at nine seconds — under the old design this reset
+        // the count and the first message stayed unread indefinitely.
+        let second = clock.visible_ms(9_000);
+
+        assert!(clock.is_seen(first, 10_000), "the first still lands at ten");
+        assert!(
+            !clock.is_seen(second, 10_000),
+            "the newcomer has had one second"
+        );
+        assert!(clock.is_seen(second, 19_000));
+    }
+
+    /// Time while hidden counts for no message, whenever it arrived.
+    #[test]
+    fn a_message_arriving_while_hidden_ages_only_once_seen() {
+        let mut clock = SeenClock::new();
+        clock.became_visible(0);
+        clock.became_hidden(2_000);
+
+        // Arrives during the gap: the clock is not moving, so it is stamped
+        // with the two seconds banked so far.
+        let arrived = clock.visible_ms(50_000);
+        assert_eq!(arrived, 2_000, "the gap must not accrue");
+
+        clock.became_visible(60_000);
+        assert!(
+            !clock.is_seen(arrived, 69_999),
+            "needs ten *visible* seconds"
+        );
+        assert!(clock.is_seen(arrived, 70_000));
     }
 
     /// A clock going backwards must not bank negative time.
@@ -187,6 +226,6 @@ mod tests {
         let mut clock = SeenClock::new();
         clock.became_visible(10_000);
         clock.became_hidden(5_000);
-        assert_eq!(clock.watched_ms(10_000), 0);
+        assert_eq!(clock.visible_ms(10_000), 0);
     }
 }

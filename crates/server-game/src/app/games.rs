@@ -65,6 +65,14 @@ pub(crate) async fn list_games(
             };
             let mut summary = game.to_summary_dto(last_activity_at);
             summary.relationship = relationship;
+            // The newest message this caller did not send. Their own never
+            // counts as unread.
+            summary.last_message_received_at = game
+                .messages
+                .iter()
+                .filter(|message| message.player_id != caller_player_id)
+                .map(|message| message.created_at)
+                .max();
             summaries.push(summary);
             continue;
         }

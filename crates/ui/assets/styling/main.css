@@ -7,6 +7,12 @@
     --clay: #c76848;
     --gold: #d4a23a;
     --sky: #9dc6d8;
+    /* Deep enough to read against the cream panels, where --sky alone is too
+       pale. Named for the pair it belongs to, like --oak/--oak-deep. Used by
+       the unread indicator for "a game you are not looking at": gold and clay
+       are both warm and were hard to tell apart at a glance, which defeated
+       the point of colouring them differently. */
+    --sky-deep: #3f7d9c;
     --moss: #8aa07b;
     --rose: #d98f8b;
     /* Deliberately outside the board's warm range: everything else here is
@@ -355,6 +361,21 @@ button:disabled {
     color: var(--gold);
     font-size: 1rem;
     line-height: 1;
+    /* A button that has to look like the label it replaced. */
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+}
+
+.game-row-unread-mail:focus-visible {
+    outline: 2px solid currentcolor;
+    outline-offset: 2px;
+}
+
+.rack-scores-unread:focus-visible {
+    outline: 2px solid var(--gold);
+    outline-offset: 2px;
 }
 
 .chat-panel-unread {
@@ -386,12 +407,10 @@ button:disabled {
    the message read. */
 @keyframes chat-message-arriving {
     from {
-        background: rgba(212, 162, 58, 0.55);
-        box-shadow: inset 0 0 0 2px var(--gold);
+        opacity: 1;
     }
     to {
-        background: transparent;
-        box-shadow: inset 0 0 0 2px transparent;
+        opacity: 0;
     }
 }
 
@@ -403,6 +422,7 @@ button:disabled {
 }
 
 .chat-message {
+    position: relative;
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
@@ -418,21 +438,45 @@ button:disabled {
 /* Only an unread message fades; a read one is simply a message. Duration and
    play state come from the element's own `style`, written by the component from
    the seen clock's constant and its visibility signal. */
-.chat-message-unread {
+/* The arrival wash is an overlay, not the message's own background.
+   Animating `background` meant the message sat at `transparent` while unread
+   and jumped to its resting colour the instant it was marked seen and this
+   class was dropped — a visible step at exactly the moment somebody was
+   looking. An overlay fading to nothing leaves the message's own colour
+   untouched throughout, so dropping the class changes nothing on screen.
+
+   It also stops the two resting colours needing two sets of keyframes: own
+   messages are terracotta and everyone else's are white, and one `to` colour
+   cannot land on both. */
+.chat-message-unread::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: rgba(212, 162, 58, 0.55);
+    box-shadow: inset 0 0 0 2px var(--gold);
     animation-name: chat-message-arriving;
     animation-timing-function: ease-out;
     animation-iteration-count: 1;
     animation-fill-mode: forwards;
+    /* Both set inline per message — the seen clock's duration, and paused
+       whenever the chat is not actually visible. */
+    animation-duration: var(--chat-fade-duration, 10000ms);
+    animation-play-state: var(--chat-fade-state, running);
+    /* Negative, so the fade starts partway through: how far depends on how long
+       this message has already been watched, which is what makes a rebuilt
+       element resume rather than restart. */
+    animation-delay: var(--chat-fade-delay, 0ms);
 }
 
 /* No animation, but the marking still has to work: without the fade an unread
    message keeps its highlight until the watermark advances, which is the state
    the fade was expressing anyway. */
 @media (prefers-reduced-motion: reduce) {
-    .chat-message-unread {
+    .chat-message-unread::after {
         animation: none;
-        background: rgba(212, 162, 58, 0.55);
-        box-shadow: inset 0 0 0 2px var(--gold);
+        opacity: 1;
     }
 }
 
@@ -457,11 +501,29 @@ button:disabled {
     color: rgba(35, 25, 15, 0.5);
 }
 
+/* Two colours, one meaning: gold is "the game you are in", clay is "a game you
+   are not". The rack indicator wears the same pair, so glancing at it tells you
+   which row to look for rather than only that something happened. */
 .game-row-unread-mail {
+    /* A button now, and it has to look like the label it replaced. */
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
     font-size: 1.3rem;
     color: var(--gold, #d4a23a);
     filter: drop-shadow(0 0 2px rgba(212, 162, 58, 0.6));
     animation: unread-mail-pulse 1.8s ease-in-out infinite;
+}
+
+.game-row-unread-mail-elsewhere,
+.rack-scores-unread-elsewhere {
+    color: var(--sky-deep, #3f7d9c);
+    filter: drop-shadow(0 0 2px rgba(63, 125, 156, 0.55));
+}
+
+.rack-scores-unread-here {
+    color: var(--gold, #d4a23a);
 }
 
 @keyframes unread-mail-pulse {

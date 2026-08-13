@@ -35,6 +35,8 @@ pub fn Home(
     on_drag_end_staged_tile: EventHandler<usize>,
     on_drop_board_cell: EventHandler<usize>,
     on_select_cell: EventHandler<usize>,
+    /// Take me to the unread messages, switching game if they are elsewhere.
+    on_show_unread: EventHandler<()>,
     on_move_selection: EventHandler<(DirectionDto, bool, bool)>,
     on_click_rack_tile: EventHandler<usize>,
     on_type_letter: EventHandler<char>,
@@ -308,9 +310,28 @@ pub fn Home(
                                 // playing. Same signal as the chat panel's own,
                                 // so the two cannot disagree.
                                 if crate::app::HAS_UNREAD_CHAT() {
-                                    span {
-                                        class: "rack-scores-unread",
-                                        title: "New message in this game",
+                                    // A button, not a label: it says there is a
+                                    // message somewhere below, so it should be
+                                    // the way to get there. Scrolling the panel
+                                    // into view is also what marks the message
+                                    // read, since the seen clock only counts
+                                    // time the chat is actually visible.
+                                    button {
+                                        // Colour says *where*: gold for this
+                                        // game, clay for another — the same
+                                        // colours the game rows use, so the two
+                                        // read as one signal rather than two.
+                                        class: if crate::app::UNREAD_IS_THIS_GAME() {
+                                            "rack-scores-unread rack-scores-unread-here"
+                                        } else {
+                                            "rack-scores-unread rack-scores-unread-elsewhere"
+                                        },
+                                        title: if crate::app::UNREAD_IS_THIS_GAME() {
+                                            "New message in this game — click to read it"
+                                        } else {
+                                            "New message in another game"
+                                        },
+                                        onclick: move |_| on_show_unread.call(()),
                                         "✉"
                                     }
                                 }

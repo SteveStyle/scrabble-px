@@ -505,8 +505,12 @@ pub fn RootApp() -> Element {
     // below is what replaces it.
     {
         let mut clock = use_signal(crate::seen_clock::SeenClock::new);
+        // When each message arrived, measured on the clock above rather than on
+        // the wall — so a message ages only while the chat is actually in front
+        // of somebody. Memory only: the watermark is what persists, and this is
+        // rebuilt from it whenever a game is opened.
+        let mut arrived_at = use_signal(HashMap::<String, i64>::new);
         let mut watching_game = use_signal(|| None::<String>);
-        let mut watching_latest = use_signal(|| None::<i64>);
 
         // One ticker, sampling. An observer would be the tidier way to learn
         // about visibility, but a clock has to be ticked anyway to notice that
@@ -523,24 +527,10 @@ pub fn RootApp() -> Element {
                     let visible = chat_messages_are_visible();
                     *CHAT_IS_VISIBLE.write() = visible;
 
-                    let Some(current_game) = game() else {
-                        continue;
-                    };
-                    let Some(latest) = current_game.messages.last().map(|m| m.created_at) else {
-                        continue;
-                    };
-
-                    // A different game, or a new message in this one, starts the
-                    // ten seconds again — the owner's call, and the stricter
-                    // reading of "seen": each message earns its own.
-                    if watching_game() != Some(current_game.id.clone())
-                        || watching_latest() != Some(latest)
-                    {
-                        watching_game.set(Some(current_game.id.clone()));
-                        watching_latest.set(Some(latest));
-                        clock.with_mut(|c| c.restart(now_ms));
-                    }
-
+                    // Advance the accumulator first, so everything below reads
+                    // the same instant. Done before the open-game check,
+                    // because the indicator now covers every game and must
+                    // keep working with none open.
                     clock.with_mut(|c| {
                         if visible {
                             c.became_visible(now_ms);
@@ -548,21 +538,156 @@ pub fn RootApp() -> Element {
                             c.became_hidden(now_ms);
                         }
                     });
+                    let visible_ms = clock.peek().visible_ms(now_ms);
+                    *CHAT_VISIBLE_MS.write() = visible_ms;
 
-                    let unread = chat_watermarks().get(&current_game.id) != Some(&latest);
-                    if *HAS_UNREAD_CHAT.peek() != unread {
-                        *HAS_UNREAD_CHAT.write() = unread;
+                    // A scroll asked for before its game had loaded.
+                    if *SCROLL_CHAT_PENDING.peek() && chat_panel_exists() {
+                        scroll_chat_into_view();
+                        *SCROLL_CHAT_PENDING.write() = false;
                     }
 
-                    if unread && clock.peek().is_seen(now_ms) {
+                    let Some(current_game) = game() else {
+                        // Nothing open, so no message is ageing — but other
+                        // games can still be unread, and this indicator now
+                        // speaks for all of them.
+                        let marks = chat_watermarks();
+                        let any = game_summaries().iter().any(|summary| {
+                            unread_for(
+                                summary.last_message_received_at,
+                                marks.get(&summary.id).copied(),
+                            )
+                        });
+                        if *HAS_UNREAD_CHAT.peek() != any {
+                            *HAS_UNREAD_CHAT.write() = any;
+                        }
+                        if *UNREAD_IS_THIS_GAME.peek() {
+                            *UNREAD_IS_THIS_GAME.write() = false;
+                        }
+                        let target = game_summaries().iter().find_map(|summary| {
+                            unread_for(
+                                summary.last_message_received_at,
+                                marks.get(&summary.id).copied(),
+                            )
+                            .then(|| summary.id.clone())
+                        });
+                        if *UNREAD_GAME_ID.peek() != target {
+                            *UNREAD_GAME_ID.write() = target;
+                        }
+                        continue;
+                    };
+
+                    // Switching games drops the stamps: they are readings of a
+                    // clock, and the messages they described are gone from view.
+                    if watching_game() != Some(current_game.id.clone()) {
+                        watching_game.set(Some(current_game.id.clone()));
+                        arrived_at.with_mut(|m| m.clear());
+                    }
+
+                    let watermark = chat_watermarks().get(&current_game.id).copied();
+                    let viewer = session().map(|current| current.player_id.clone());
+
+                    // Stamp anything not seen before with the clock's reading
+                    // now. Messages already under the watermark were read in an
+                    // earlier session and must not start again, so they are
+                    // stamped far enough back to be seen immediately.
+                    arrived_at.with_mut(|marks| {
+                        for message in &current_game.messages {
+                            if marks.contains_key(&message.id) {
+                                continue;
+                            }
+                            let already_read =
+                                watermark.is_some_and(|seen| message.created_at <= seen);
+                            marks.insert(
+                                message.id.clone(),
+                                if already_read {
+                                    visible_ms - crate::seen_clock::SEEN_AFTER_MS
+                                } else {
+                                    visible_ms
+                                },
+                            );
+                        }
+                    });
+                    *CHAT_MESSAGE_ARRIVED_AT.write() = arrived_at();
+
+                    // The watermark is the newest message that has had its ten
+                    // seconds. Monotonic, because an earlier arrival has an
+                    // earlier stamp to beat — which is what lets one high-water
+                    // mark stand for per-message state.
+                    let stamps = arrived_at();
+                    let mut seen_now = watermark;
+                    let seen_upto = current_game
+                        .messages
+                        .iter()
+                        .filter(|m| {
+                            stamps
+                                .get(&m.id)
+                                .is_some_and(|at| clock.peek().is_seen(*at, now_ms))
+                        })
+                        .map(|m| m.created_at)
+                        .max();
+                    if let Some(seen_upto) = seen_upto
+                        && watermark != Some(seen_upto)
+                    {
+                        seen_now = Some(seen_upto);
                         chat_watermarks.with_mut(|marks| {
-                            marks.insert(current_game.id.clone(), latest);
+                            marks.insert(current_game.id.clone(), seen_upto);
                         });
                         crate::local_storage::save_chat_watermarks(
                             &crate::local_storage::StoredChatWatermarks {
                                 last_seen: chat_watermarks(),
                             },
                         );
+                    }
+
+                    // One rule for "is anything unread", shared with the games
+                    // list: the newest message somebody else sent, later than
+                    // the watermark. Derived here from the *live* messages
+                    // rather than from the polled summary, which is up to
+                    // GAME_LIST_POLL_MS stale — ten seconds is far too long for
+                    // an indicator that should appear as the message does.
+                    //
+                    // Equivalent to asking whether any received message is
+                    // still inside its own ten seconds, because completion is
+                    // monotonic in arrival order. Stated once rather than
+                    // derived twice, so a later change cannot make the two
+                    // icons disagree.
+                    let last_received = current_game
+                        .messages
+                        .iter()
+                        .filter(|m| viewer.as_deref() != Some(m.player_id.as_str()))
+                        .map(|m| m.created_at)
+                        .max();
+                    // **Any** game, not just the open one. The games you are
+                    // not looking at are the ones worth alerting about; an
+                    // indicator that only ever spoke for the game already in
+                    // front of you told you what you could see.
+                    //
+                    // The open game answers from live messages, every other
+                    // from its summary — one rule, applied per game, then OR'd.
+                    let marks = chat_watermarks();
+                    let here = unread_for(last_received, seen_now);
+                    if *UNREAD_IS_THIS_GAME.peek() != here {
+                        *UNREAD_IS_THIS_GAME.write() = here;
+                    }
+                    let elsewhere = game_summaries().iter().find_map(|s| {
+                        (s.id != current_game.id
+                            && unread_for(s.last_message_received_at, marks.get(&s.id).copied()))
+                        .then(|| s.id.clone())
+                    });
+                    let unread = here || elsewhere.is_some();
+                    // This game first: if both are unread, the one in front of
+                    // you is the one a click should reach.
+                    let target = if here {
+                        Some(current_game.id.clone())
+                    } else {
+                        elsewhere
+                    };
+                    if *UNREAD_GAME_ID.peek() != target {
+                        *UNREAD_GAME_ID.write() = target;
+                    }
+                    if *HAS_UNREAD_CHAT.peek() != unread {
+                        *HAS_UNREAD_CHAT.write() = unread;
                     }
                 }
             });
@@ -656,6 +781,7 @@ pub fn RootApp() -> Element {
     let server_url_for_reject = server_url.clone();
     let server_url_for_refresh = server_url.clone();
     let server_url_for_select = server_url.clone();
+    let server_url_for_unread = server_url.clone();
     let server_url_for_start = server_url.clone();
     let server_url_for_exchange = server_url.clone();
     let server_url_for_pass = server_url.clone();
@@ -1473,6 +1599,38 @@ pub fn RootApp() -> Element {
                             direction_override(),
                             board_index,
                         );
+                    },
+                    on_show_unread: move |_| {
+                        // The icon promises messages, so it delivers them —
+                        // switching game if that is where they are. Anything
+                        // less makes the indicator a puzzle rather than a
+                        // pointer.
+                        let Some(target) = UNREAD_GAME_ID() else {
+                            return;
+                        };
+                        if game().is_some_and(|open| open.id == target) {
+                            scroll_chat_into_view();
+                            return;
+                        }
+                        // Elsewhere: load it, then scroll once it has rendered.
+                        // The panel does not exist yet at this instant, which
+                        // is what SCROLL_CHAT_PENDING is for.
+                        *SCROLL_CHAT_PENDING.write() = true;
+                        let server_url = server_url_for_unread.clone();
+                        let token = session().map(|current| current.session_token.clone());
+                        spawn(async move {
+                            is_loading.set(true);
+                            error_message.set(None);
+                            if let Ok(loaded) =
+                                load_game_by_id(&server_url, &target, token.as_deref()).await
+                            {
+                                info_message.set(None);
+                                game.set(Some(loaded));
+                            } else {
+                                *SCROLL_CHAT_PENDING.write() = false;
+                            }
+                            is_loading.set(false);
+                        });
                     },
                     on_select_cell: move |board_index: usize| {
                         if !can_submit_human_action || exchange_mode() {
@@ -3058,6 +3216,36 @@ fn backend_is_unreachable(status: u16) -> bool {
 /// obvious.
 pub static HAS_UNREAD_CHAT: GlobalSignal<bool> = Signal::global(|| false);
 
+/// Which game the indicator is pointing at, so clicking it can go there.
+pub static UNREAD_GAME_ID: GlobalSignal<Option<String>> = Signal::global(|| None);
+
+/// Scroll the chat into view as soon as there is a chat to scroll to.
+///
+/// Set when the destination is a game that is not open yet: selecting it is
+/// asynchronous, and the panel does not exist at the moment of the click. The
+/// ticker below retries until it does, which is simpler than threading a
+/// callback through the load.
+pub static SCROLL_CHAT_PENDING: GlobalSignal<bool> = Signal::global(|| false);
+
+/// Is the unread message in the game currently open, rather than another one?
+///
+/// Drives which colour the indicator wears: gold for "here", clay for
+/// "elsewhere", matching the mail icon on the game row it refers to. Only
+/// meaningful while `HAS_UNREAD_CHAT` is true.
+pub static UNREAD_IS_THIS_GAME: GlobalSignal<bool> = Signal::global(|| false);
+
+/// Total time the chat has been visible, which is what messages age against.
+/// Published so the panel can render each message's own progress without
+/// owning a second clock.
+pub static CHAT_VISIBLE_MS: GlobalSignal<i64> = Signal::global(|| 0);
+
+/// The reading of `CHAT_VISIBLE_MS` when each message arrived, by message id.
+/// A message's elapsed time is the difference between the two, which is what
+/// drives both its highlight and how far through its fade it should be — so a
+/// rebuilt element resumes rather than starting again.
+pub static CHAT_MESSAGE_ARRIVED_AT: GlobalSignal<HashMap<String, i64>> =
+    Signal::global(HashMap::new);
+
 /// Wall-clock milliseconds, from whichever clock the target has.
 ///
 /// Only ever used as a difference between two readings, so the epoch does not
@@ -3084,6 +3272,57 @@ fn now_millis() -> i64 {
 #[cfg(not(target_arch = "wasm32"))]
 fn chat_messages_are_visible() -> bool {
     true
+}
+
+/// Is a game unread: has somebody else's message arrived since the watermark?
+///
+/// The one rule, so the rack indicator and every games-list row give the same
+/// answer for the same game. Only the *input* differs — live messages for the
+/// game that is open, the polled summary for the rest.
+pub fn unread_for(last_received_at: Option<i64>, watermark: Option<i64>) -> bool {
+    last_received_at.is_some_and(|received| watermark.is_none_or(|seen| received > seen))
+}
+
+/// Is there a chat panel on the page yet? The pending-scroll retry needs to
+/// know, since a freshly selected game renders a moment after it loads.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn chat_panel_exists() -> bool {
+    false
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn chat_panel_exists() -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.query_selector(".chat-messages").ok().flatten())
+        .is_some()
+}
+
+/// Bring the chat into view — what the unread indicator beside the rack does
+/// when clicked.
+///
+/// The indicator sits by the rack because that is where the eye is during a
+/// game, but the panel it refers to can be a long way down the page on a phone.
+/// Telling somebody there is a message and leaving them to find it is half a
+/// feature.
+///
+/// Scrolling the panel into view also *is* the fix for the message being
+/// unread: `chat_messages_are_visible` starts returning true, the seen clock
+/// starts counting, and the mark clears on its own.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn scroll_chat_into_view() {}
+
+#[cfg(target_arch = "wasm32")]
+pub fn scroll_chat_into_view() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    if let Ok(Some(panel)) = document.query_selector(".chat-messages") {
+        panel.scroll_into_view();
+    }
 }
 
 /// Are the chat messages somewhere a person could actually see them?
