@@ -168,6 +168,11 @@ SSH_OPTS=(-n -i "$DEPLOY_SSH_KEY" -o ConnectTimeout=10)
 SCP_OPTS=(-i "$DEPLOY_SSH_KEY" -o ConnectTimeout=10)
 REMOTE="$DEPLOY_USER@$DEPLOY_HOST"
 
+# Prove the key works before spending anything on it — see ssh-preflight.sh.
+# shellcheck source=scripts/ssh-preflight.sh
+source "$(dirname "$0")/ssh-preflight.sh"
+require_ssh_access "$DEPLOY_SSH_KEY" "$REMOTE" || exit 1
+
 cd "$REPO_DIR"
 
 # Which script is this? deploy.sh runs from the working tree, not from the
