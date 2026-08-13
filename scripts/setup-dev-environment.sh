@@ -132,9 +132,36 @@ Host github.com
   User git
   IdentityFile ~/.ssh/id_ed25519_gh
   IdentitiesOnly yes
+  AddKeysToAgent yes
 SSHEOF
     chmod 600 ~/.ssh/config
     echo "    written to ~/.ssh/config"
+fi
+
+echo "==> ssh-agent"
+# The GitHub key carries a passphrase and the remotes are ssh, so without an
+# agent every push asks for it. One agent at a **fixed socket** rather than the
+# usual `eval $(ssh-agent)`: that exports a random path into one shell only,
+# and anything which does not read ~/.bashrc — a script, or a non-interactive
+# shell — then cannot reach it. A known path is reachable by exporting it.
+#
+# `ssh-add -l` exits 2 only when no agent answers; 1 means a live agent holding
+# nothing, which is fine and must not restart it.
+if grep -q "tile-lite-elite ssh-agent" ~/.bashrc 2>/dev/null; then
+    echo "    already configured"
+else
+    cat >> ~/.bashrc <<'AGENTEOF'
+
+# >>> tile-lite-elite ssh-agent >>>
+export SSH_AUTH_SOCK="$HOME/.ssh/agent.sock"
+ssh-add -l >/dev/null 2>&1
+if [ $? -eq 2 ]; then
+  rm -f "$SSH_AUTH_SOCK"
+  (umask 077; ssh-agent -a "$SSH_AUTH_SOCK" >/dev/null 2>&1)
+fi
+# <<< tile-lite-elite ssh-agent <<<
+AGENTEOF
+    echo "    written to ~/.bashrc — then 'ssh-add ~/.ssh/id_ed25519_gh' once per boot"
 fi
 
 echo "==> Admin CLI aliases (sadev, sapre)"
