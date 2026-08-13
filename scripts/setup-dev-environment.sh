@@ -164,6 +164,18 @@ AGENTEOF
     echo "    written to ~/.bashrc — then 'ssh-add ~/.ssh/id_ed25519_gh' once per boot"
 fi
 
+echo "==> git hooks"
+# The commit-msg hook refuses a subject without the version stamp, at the
+# moment it is written rather than six minutes later in CI — and while the
+# commit is still the tip, so the fix is an amend rather than a rebase.
+#
+# core.hooksPath rather than .git/hooks, so the hook is version-controlled and
+# a rebuilt machine gets it. CI still runs check-commit-stamp.sh: a hook lives
+# in a working copy and --no-verify skips it, so it is a convenience, not a
+# gate.
+git config core.hooksPath .githooks
+echo "    core.hooksPath = .githooks"
+
 echo "==> git: tell it where the agent lives"
 # VS Code runs git from a process that never sourced ~/.bashrc, so it has no
 # SSH_AUTH_SOCK and falls back to asking for the passphrase on every fetch and
