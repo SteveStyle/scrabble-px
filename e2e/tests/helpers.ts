@@ -67,6 +67,17 @@ export async function expectSignedOut(page: Page) {
   await expect(page.locator('.auth-panel')).toBeVisible();
 }
 
+/// Click a control that only appears once this player's games list has caught
+/// up with the other player, refreshing on each attempt rather than waiting out
+/// a single timeout.
+async function refreshUntilClickable(page: Page, name: 'Accept' | 'Start') {
+  await expect(async () => {
+    await page.getByRole('button', { name: 'Refresh' }).click();
+    await expect(page.getByRole('button', { name, exact: true })).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+  await page.getByRole('button', { name, exact: true }).click();
+}
+
 /// Two signed-in players in one started game, in separate browser contexts.
 ///
 /// Needed because unread only counts messages you *received* — the #86 rework
@@ -92,13 +103,20 @@ export async function startTwoPlayerGame(browser: Browser) {
   await host.locator('.name-autocomplete-item').first().click();
   await host.getByRole('button', { name: 'Invite', exact: true }).click();
 
-  await guest.getByRole('button', { name: 'Refresh' }).click();
-  await guest.getByRole('button', { name: 'Accept' }).click();
-  await host.getByRole('button', { name: 'Start', exact: true }).click();
+  // Each step waits on the *other* player's list catching up, which happens on
+  // a ten-second poll. A plain click hopes the poll lands inside its own
+  // timeout — true when the suite runs this test alone, false under parallel
+  // workers, which is exactly how this failed in CI and not locally. Refreshing
+  // on every attempt makes the handshake driven rather than hoped for.
+  await refreshUntilClickable(guest, 'Accept');
+  await refreshUntilClickable(host, 'Start');
   await expect(host.locator('.rack-panel')).toBeVisible();
 
   // The guest has to have the game open to reach its chat composer.
-  await guest.getByRole('button', { name: 'Refresh' }).click();
+  await expect(async () => {
+    await guest.getByRole('button', { name: 'Refresh' }).click();
+    await expect(guest.locator('.game-row').first()).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
   await guest.locator('.game-row').first().click();
 
   return { host, guest, hostContext, guestContext };

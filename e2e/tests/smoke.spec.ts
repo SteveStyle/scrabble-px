@@ -20,7 +20,17 @@ test('registers a new player and lands signed in', async ({ page }) => {
   await expectSignedIn(page);
 });
 
-test('unread chat survives being off screen, and clears once watched', async ({ browser }) => {
+test('unread chat survives being off screen, and clears once watched', async ({ browser }, testInfo) => {
+  // One project only. This test builds its own contexts, and
+  // `browser.newContext()` does not inherit project options — so the mobile
+  // project would run a byte-identical desktop copy, buying no coverage and
+  // doubling the chance of a flake. The off-screen case it cares about is
+  // simulated by resizing within the test regardless.
+  test.skip(
+    testInfo.project.name !== 'chromium',
+    'creates its own contexts, so another project would run an identical copy',
+  );
+
   // #86. The watermark used to advance the instant a message arrived into an
   // open game — "watching the panel counts as reading it" — so a message
   // landing in a background tab, or in a panel scrolled off a phone, was marked
@@ -28,6 +38,13 @@ test('unread chat survives being off screen, and clears once watched', async ({ 
   //
   // Two accounts, because the rework also stopped marking *your own* messages
   // unread, which is what a single player in a bot game can only ever produce.
+  // The requirement is about *time passing* — a 12-second wait to prove the
+  // messages stay unread, plus the ten-second clock afterwards. That lands a
+  // few seconds under the 30s default, which is not a margin: it passed alone
+  // and failed in the full suite, where parallel workers make everything
+  // slower. Tripled rather than trimmed, because the waits are the test.
+  test.slow();
+
   const { host, guest, hostContext, guestContext } = await startTwoPlayerGame(browser);
 
   await guest.getByPlaceholder('Say something...').fill('does anyone read these');
