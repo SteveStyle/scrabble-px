@@ -161,8 +161,22 @@ if [ $? -eq 2 ]; then
 fi
 # <<< tile-lite-elite ssh-agent <<<
 AGENTEOF
-    echo "    written to ~/.bashrc — then 'ssh-add ~/.ssh/id_ed25519_gh' once per boot"
+    echo "    written to ~/.bashrc — then 'sshkeys' once per boot"
 fi
+
+echo "==> ssh key shortcut (sshkeys)"
+# One passphrase prompt per WSL restart is the floor without bridging to the
+# Windows agent, and that is a fair price. Remembering three key *filenames* is
+# not — none of them is the default `id_ed25519`, so `ssh-add` with no argument
+# finds nothing and the error when a key is missing points at the wrong file.
+#
+# All three together because the deploy keys hit the same wall as GitHub, and
+# discovering that halfway through a deploy is worse than loading them up front.
+# ssh-add retries the previous passphrase on each subsequent key, so identical
+# passphrases mean a single prompt.
+sed -i '/alias sshkeys=/d' ~/.bashrc 2>/dev/null || true
+echo "alias sshkeys='ssh-add ~/.ssh/id_ed25519_gh ~/.ssh/oracle_tile_lite_elite ~/.ssh/oracle_tile_lite_elite_rehearsal'" >> ~/.bashrc
+echo "    written to ~/.bashrc"
 
 echo "==> git hooks"
 # The commit-msg hook refuses a subject without the version stamp, at the
