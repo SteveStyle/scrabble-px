@@ -98,6 +98,45 @@ else
     echo "    already installed: $(docker --version)"
 fi
 
+echo "==> SSH host aliases"
+# The deploy scripts pass `-i <key>` explicitly and need none of this. What
+# needs it is everything a person types: docs/3.4's `ssh tile-lite-elite`, and
+# the dbprod shortcut below. Without a config those resolve `tile-lite-elite`
+# as a literal hostname and fail.
+#
+# The keys themselves are not created here — they are secrets, restored by
+# hand from the Windows backup (see the closing note and docs/3.1-setup.md).
+# This only names the hosts they open.
+if [ -f ~/.ssh/config ] && grep -q "Host tile-lite-elite$" ~/.ssh/config; then
+    echo "    already configured"
+else
+    mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    cat >> ~/.ssh/config <<'SSHEOF'
+
+# IdentitiesOnly stops the agent offering every key it holds, which otherwise
+# burns MaxAuthTries on a host that accepts exactly one.
+Host tile-lite-elite
+  HostName 129.151.69.246
+  User ubuntu
+  IdentityFile ~/.ssh/oracle_tile_lite_elite
+  IdentitiesOnly yes
+
+Host tile-lite-elite-rehearsal
+  HostName 129.151.84.183
+  User ubuntu
+  IdentityFile ~/.ssh/oracle_tile_lite_elite_rehearsal
+  IdentitiesOnly yes
+
+Host github.com
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/id_ed25519_gh
+  IdentitiesOnly yes
+SSHEOF
+    chmod 600 ~/.ssh/config
+    echo "    written to ~/.ssh/config"
+fi
+
 echo "==> Admin CLI aliases (sadev, sapre)"
 # The VM has `sa`, written into its ~/.bashrc by deploy.sh, because the admin
 # CLI has to run where 127.0.0.1 is the server's own loopback. The same problem
