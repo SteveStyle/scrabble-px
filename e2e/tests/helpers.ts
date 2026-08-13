@@ -15,7 +15,7 @@ export function uniqueName(base: string): string {
 // The signed-out app shows a blocking auth modal with "Log in" / "Register"
 // tabs. These helpers drive it via visible text / placeholders rather than
 // brittle structural selectors.
-function authTab(page: Page, name: 'Log in' | 'Register') {
+export function authTab(page: Page, name: 'Log in' | 'Register') {
   return page.locator('.auth-panel-tabs button', { hasText: name });
 }
 function authSubmit(page: Page, name: 'Log in' | 'Register') {

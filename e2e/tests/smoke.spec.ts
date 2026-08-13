@@ -1,5 +1,14 @@
 import { test, expect } from '@playwright/test';
-import { register, logIn, logOut, expectSignedIn, expectSignedOut, uniqueName } from './helpers';
+import {
+  register,
+  logIn,
+  logOut,
+  expectSignedIn,
+  expectSignedOut,
+  uniqueName,
+  authTab,
+  TEST_PASSWORD,
+} from './helpers';
 
 // A signed-out user is shown a blocking auth modal; everything else needs a
 // signed-in player. Each test registers its own e2e-* player so tests stay
@@ -110,6 +119,39 @@ test('logs out and back in with the same credentials', async ({ page }) => {
   await logOut(page);
   await logIn(page, name);
   await expectSignedIn(page);
+});
+
+// The credentials must not survive the session that used them (#50): the modal
+// is emptied when it is hidden, so every later session end finds it empty.
+//
+// **This guards the behaviour; it does not reproduce the bug.** It passes
+// against the unfixed code too, because ending the session this way clears the
+// fields for some reason not yet understood — where a session ending by
+// *expiry* did not, which is how the bug was found (by hand, forcing
+// `expires_at = 0` in the database). Reaching expiry from a browser needs a
+// write to the server's database, which couples the test to one environment,
+// so it is not attempted here. Worth revisiting: a test that cannot fail is
+// worth less than it looks.
+test('the auth modal comes back empty when a session ends', async ({ page }) => {
+  const name = uniqueName('empty');
+  await register(page, name);
+
+  await page.getByRole('button', { name: 'Edit user details' }).click();
+  await page.getByPlaceholder('Current password').fill(TEST_PASSWORD);
+  await page.getByPlaceholder('New password', { exact: true }).fill(`${TEST_PASSWORD}-2`);
+  await page.getByPlaceholder('Confirm new password').fill(`${TEST_PASSWORD}-2`);
+  await page.getByRole('button', { name: 'Update password' }).click();
+
+  // A password change invalidates every session for the player, this one
+  // included, so the modal returns.
+  await expect(page.locator('.auth-panel')).toBeVisible();
+
+  await expect(page.getByPlaceholder('Password', { exact: true })).toHaveValue('');
+  // "Remember me" was never ticked, so nothing is asking the name to stay.
+  await expect(page.getByPlaceholder('Display name')).toHaveValue('');
+  // Email exists only on the Register tab, which the reset also returns from.
+  await authTab(page, 'Register').click();
+  await expect(page.getByPlaceholder('Email')).toHaveValue('');
 });
 
 test('"Stay logged in" survives a reload', async ({ page }) => {
