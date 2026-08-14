@@ -810,6 +810,13 @@ elif [[ -n "$EMERGENCY" ]]; then
   # happen. The retrospective issue below carries the record instead, and
   # whoever reviews it closes what actually shipped.
   echo "==> No milestone change: an emergency deploy has not been through the normal process"
+else
+  # Everything from here is the *normal release* path. It used to sit inside
+  # the emergency branch above — so a normal release silently did nothing and
+  # said nothing, while an emergency would have closed the milestone directly
+  # after printing that it would not. Introduced by 89f249a when the emergency
+  # path was added, and first bit on 0.6.0, whose eleven issues and milestone
+  # were closed by hand afterwards.
   MILESTONE="$(gh api "repos/{owner}/{repo}/milestones?state=open" \
     --jq ".[] | select(.title == \"$DEPLOYED_VERSION\") | .number" 2>/dev/null || true)"
   if [[ -n "$MILESTONE" ]]; then
