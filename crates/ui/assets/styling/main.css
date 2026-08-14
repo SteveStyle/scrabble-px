@@ -812,14 +812,29 @@ button:disabled {
 .rack-strip {
     display: flex;
     flex-wrap: wrap;
-    gap: 10px;
+    /* Tightens on a narrow screen so seven tiles keep a usable size rather
+       than the gaps eating the width. Inherited by `.rack-tile`, which
+       subtracts the six of them to work out what is left for a tile. */
+    --rack-gap: clamp(4px, 2vw, 10px);
+    gap: var(--rack-gap);
 }
 
 .rack-tile {
     position: relative;
     border: none;
-    width: 52px;
-    height: 52px;
+    /* A full rack is seven tiles, and at a fixed 52px they need
+       7 x 52 + 6 x 10 = 424px. A phone viewport is 360-412px, so the row broke
+       after six and the seventh took a whole second row to carry one tile —
+       the most expensive vertical space on the screen (#12).
+       `min()` keeps 52px wherever it fits, so desktop is untouched, and
+       otherwise divides what is actually there, so one rule governs at every
+       width — the mobile media query used to pin 44px, which is what made the
+       row break at six. `flex: 0 0 auto` keeps the computed width exact
+       instead of letting flex shrink it further. */
+    width: min(52px, calc((100% - 6 * var(--rack-gap, 10px)) / 7));
+    aspect-ratio: 1;
+    height: auto;
+    flex: 0 0 auto;
     border-radius: 14px;
     /* Matches `.board-cell`'s padding so `.tile-value`'s absolute
        `right`/`bottom` offset (measured from this element's padding box,
@@ -1850,11 +1865,6 @@ button:disabled {
 
     .premium-label {
         font-size: 0.52rem;
-    }
-
-    .rack-tile {
-        width: 44px;
-        height: 44px;
     }
 
     /* `.turn-actions`'s desktop layout is a single row of three flex

@@ -248,6 +248,42 @@ test('Play Greedy Bot starts a game and renders the board', async ({ page }) => 
   await expect(page.locator('.rack-tile').first()).toBeVisible();
 });
 
+/// A full rack is seven tiles, and they must stay on one row (#12).
+///
+/// At a fixed 52px they need 7 x 52 + 6 x 10 = 424px, and a mobile media query
+/// pinned them to 44px, which still needs 368px. So on every phone the row
+/// broke after six and the seventh took a whole second row to carry one tile —
+/// in the most contested vertical space on the screen.
+///
+/// Asserting the *number of rows* rather than a width, because the fix is
+/// "they fit" and any particular tile size is an implementation detail that
+/// should be free to change.
+for (const width of [320, 360, 393, 414]) {
+  test(`the rack is one row at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 720 });
+    await register(page, uniqueName(`rack${width}`));
+
+    await page.getByRole('button', { name: 'Play Greedy Bot' }).click();
+    await page.getByRole('button', { name: 'Start', exact: true }).click();
+    await expect(page.locator('.rack-panel')).toBeVisible();
+    // The panel renders before its tiles do, so measuring on the panel alone
+    // reads an empty rack and fails on the count rather than the layout.
+    await expect(page.locator('.rack-tile')).toHaveCount(7, { timeout: 20_000 });
+
+    const { rows, count } = await page.evaluate(() => {
+      const tiles = [...document.querySelectorAll('.rack-tile')] as HTMLElement[];
+      return {
+        // Distinct top offsets: one row means one distinct top.
+        rows: new Set(tiles.map((tile) => Math.round(tile.getBoundingClientRect().top))).size,
+        count: tiles.length,
+      };
+    });
+
+    expect(count, 'a full rack to measure').toBe(7);
+    expect(rows, 'seven tiles on one row, not six and a stray').toBe(1);
+  });
+}
+
 /// Layout must survive phones narrower than the one it was designed on.
 ///
 /// The scores row, the offline pill and the rack were all sized against a
