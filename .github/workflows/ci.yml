@@ -81,6 +81,7 @@ jobs:
           ./scripts/tests/check-commit-stamp.test.sh
           ./scripts/tests/ci-status.test.sh
           ./scripts/tests/deploy.test.sh
+          ./scripts/tests/commit-msg-hook.test.sh
 
       # -D warnings makes any clippy or rustc warning fail the build. Scoped to
       # this repo's crates (old-crates carry many pre-existing warnings we don't

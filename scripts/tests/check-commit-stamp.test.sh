@@ -112,6 +112,19 @@ BASE="$(git -C "$d" rev-parse HEAD)"
 git -C "$d" merge -q --no-ff side -m "Merge: a generated subject with no stamp" 2>/dev/null
 check "a merge commit is skipped, its subject describing no change" 0 "$d" "$BASE..HEAD"
 
+# The same merge, with no range argument at all — the path CI takes when
+# `github.event.before` is all zeros, which is what a newly pushed branch looks
+# like. This failed: the no-argument path used `git rev-parse HEAD` without
+# `--no-merges`, so pushing a branch whose tip was a merge failed CI for a
+# reason that was not real, while the range form above passed and hid it.
+d="$(new_repo)"
+commit_at "$d" "0.4.25" "2.10" "app 0.4.25 api 2.10: on main"
+git -C "$d" checkout -q -b side
+commit_at "$d" "0.4.25" "2.10" "app 0.4.25 api 2.10: on the side"
+git -C "$d" checkout -q -
+git -C "$d" merge -q --no-ff side -m "Merge: a generated subject with no stamp" 2>/dev/null
+check "a merge at HEAD is skipped with no range given too" 0 "$d"
+
 d="$(new_repo)"
 commit_at "$d" "0.4.25" "2.10" "app 0.4.25 api 2.10: only commit"
 check "an empty range passes rather than erroring" 0 "$d" "HEAD..HEAD"

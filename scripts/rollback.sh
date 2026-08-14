@@ -74,6 +74,13 @@ fi
 SSH_OPTS=(-n -i "$DEPLOY_SSH_KEY" -o ConnectTimeout=10)
 REMOTE="$DEPLOY_USER@$DEPLOY_HOST"
 
+# The same preflight deploy.sh runs. It matters more here: this script is also
+# invoked automatically when a deploy fails, and a rollback that cannot
+# authenticate must say so plainly rather than part-way through restoring.
+# shellcheck source=scripts/ssh-preflight.sh
+source "$(dirname "$0")/ssh-preflight.sh"
+require_ssh_access "$DEPLOY_SSH_KEY" "$REMOTE" || exit 1
+
 ASSUME_YES=0
 DB_ONLY=0
 SNAPSHOT=""

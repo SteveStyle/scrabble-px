@@ -168,6 +168,7 @@ SSH_OPTS=(-n -i "$DEPLOY_SSH_KEY" -o ConnectTimeout=10)
 SCP_OPTS=(-i "$DEPLOY_SSH_KEY" -o ConnectTimeout=10)
 REMOTE="$DEPLOY_USER@$DEPLOY_HOST"
 
+
 cd "$REPO_DIR"
 
 # Which script is this? deploy.sh runs from the working tree, not from the
@@ -500,6 +501,20 @@ if [[ "${DEPLOY_GATES_ONLY:-}" == "1" ]]; then
   echo "==> Gates only: every check passed, stopping before anything is built"
   exit 0
 fi
+
+# Prove the key works before the build, which is the expensive part — see
+# ssh-preflight.sh for why a locked key otherwise fails three minutes from now
+# with a message that does not mention keys.
+#
+# Deliberately *after* the gates rather than first. The gates are seconds of
+# network checks and are what `scripts/tests/deploy.test.sh` exercises, with
+# fake keys against no reachable host; a preflight above them aborts the very
+# logic under test. Below the gates-only exit it also stays out of the way of
+# "would this deploy be allowed?", which is a question about policy rather
+# than connectivity.
+# shellcheck source=scripts/ssh-preflight.sh
+source "$(dirname "$0")/ssh-preflight.sh"
+require_ssh_access "$DEPLOY_SSH_KEY" "$REMOTE" || exit 1
 
 # The fresh checkout. A throwaway `git worktree` rather than checking $REF
 # out here: it leaves the real working copy (branch, staged and unstaged
