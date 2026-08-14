@@ -1856,7 +1856,15 @@ button:disabled {
     }
 
     .app-shell {
-        padding: 14px;
+        /* Every horizontal pixel here is one the rack does not get. At 320px
+           the app shell and the panel between them took 60 of 320 before the
+           tiles saw any of it, and the tile is a seventh of what is left —
+           so 24px recovered here is ~3.5px on every tile (#12). */
+        padding: 8px;
+    }
+
+    .rack-panel {
+        padding: 10px;
     }
 
     .board-grid {

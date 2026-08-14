@@ -259,7 +259,15 @@ test('Play Greedy Bot starts a game and renders the board', async ({ page }) => 
 /// "they fit" and any particular tile size is an implementation detail that
 /// should be free to change.
 for (const width of [320, 360, 393, 414]) {
-  test(`the rack is one row at ${width}px`, async ({ page }) => {
+  test(`the rack is one row at ${width}px`, async ({ page }, testInfo) => {
+    // One project. The width is set explicitly below, so the project's own
+    // viewport is irrelevant and running these in both is a duplicate — which
+    // also doubles the number of bot games started at once, and the first bot
+    // move is slow enough that eight concurrent ones starve each other.
+    test.skip(
+      testInfo.project.name !== 'mobile',
+      'sets its own viewport, so another project would run an identical copy',
+    );
     await page.setViewportSize({ width, height: 720 });
     await register(page, uniqueName(`rack${width}`));
 
