@@ -13,6 +13,14 @@ import { uniqueName, TEST_PASSWORD } from './helpers';
 /// through a separate request context, which the page never sees), then does
 /// the first thing that talks to the server.
 test('an idle tab notices a new bundle as soon as it interacts', async ({ page, request, baseURL }) => {
+  // Guarded, not merely documented. This waits up to twenty minutes for a
+  // deploy to land underneath it, which never happens in CI — where it simply
+  // burns the job's time and then fails. A comment saying "not for CI" stops
+  // nothing; this does.
+  test.skip(
+    !process.env.EXPECT_DEPLOY,
+    'needs a real deploy mid-test: run with EXPECT_DEPLOY=1 against Rehearsal',
+  );
   test.setTimeout(25 * 60_000);
 
   await page.goto('/');
