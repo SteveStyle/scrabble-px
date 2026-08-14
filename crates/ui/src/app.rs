@@ -3562,6 +3562,17 @@ where
         return Err(mark_offline());
     }
     mark_online();
+    // Read on **every** response, not only failures. This lived inside the
+    // `if !success` branch, coupled to `Retry-After` — which genuinely only
+    // matters on a refusal. The build id inherited that failure-only lifetime
+    // and never wanted it: a tab whose requests all succeeded learned nothing,
+    // so nothing it did made it notice a new bundle (#67). A 401 was worse,
+    // returning before the read happened at all.
+    let retry_after = ResponseHeaders {
+        retry_after: header_string(response.headers(), "retry-after"),
+        build_id: header_string(response.headers(), "x-build-id"),
+    }
+    .handle();
     if !response.status().is_success() {
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             // Only a request that *carried* a token can be told its session
@@ -3576,11 +3587,6 @@ where
             return Err(NOT_SIGNED_IN_MESSAGE.to_string());
         }
         let status = response.status().as_u16();
-        let retry_after = ResponseHeaders {
-            retry_after: header_string(response.headers(), "retry-after"),
-            build_id: header_string(response.headers(), "x-build-id"),
-        }
-        .handle();
         let msg = response
             .json::<api::ApiError>()
             .await
@@ -3614,6 +3620,17 @@ where
         return Err(mark_offline());
     }
     mark_online();
+    // Read on **every** response, not only failures. This lived inside the
+    // `if !success` branch, coupled to `Retry-After` — which genuinely only
+    // matters on a refusal. The build id inherited that failure-only lifetime
+    // and never wanted it: a tab whose requests all succeeded learned nothing,
+    // so nothing it did made it notice a new bundle (#67). A 401 was worse,
+    // returning before the read happened at all.
+    let retry_after = ResponseHeaders {
+        retry_after: header_string(response.headers(), "retry-after"),
+        build_id: header_string(response.headers(), "x-build-id"),
+    }
+    .handle();
     if !response.ok() {
         if response.status() == 401 {
             // Only a request that *carried* a token can be told its session
@@ -3628,11 +3645,6 @@ where
             return Err(NOT_SIGNED_IN_MESSAGE.to_string());
         }
         let status = response.status();
-        let retry_after = ResponseHeaders {
-            retry_after: header_string(response.headers(), "retry-after"),
-            build_id: header_string(response.headers(), "x-build-id"),
-        }
-        .handle();
         let msg = response
             .json::<api::ApiError>()
             .await
@@ -3728,13 +3740,19 @@ where
         return Err(mark_offline());
     }
     mark_online();
+    // Read on **every** response, not only failures. This lived inside the
+    // `if !success` branch, coupled to `Retry-After` — which genuinely only
+    // matters on a refusal. The build id inherited that failure-only lifetime
+    // and never wanted it: a tab whose requests all succeeded learned nothing,
+    // so nothing it did made it notice a new bundle (#67). A 401 was worse,
+    // returning before the read happened at all.
+    let retry_after = ResponseHeaders {
+        retry_after: header_string(response.headers(), "retry-after"),
+        build_id: header_string(response.headers(), "x-build-id"),
+    }
+    .handle();
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let retry_after = ResponseHeaders {
-            retry_after: header_string(response.headers(), "retry-after"),
-            build_id: header_string(response.headers(), "x-build-id"),
-        }
-        .handle();
         let msg = response
             .json::<api::ApiError>()
             .await
@@ -3766,13 +3784,19 @@ where
         return Err(mark_offline());
     }
     mark_online();
+    // Read on **every** response, not only failures. This lived inside the
+    // `if !success` branch, coupled to `Retry-After` — which genuinely only
+    // matters on a refusal. The build id inherited that failure-only lifetime
+    // and never wanted it: a tab whose requests all succeeded learned nothing,
+    // so nothing it did made it notice a new bundle (#67). A 401 was worse,
+    // returning before the read happened at all.
+    let retry_after = ResponseHeaders {
+        retry_after: header_string(response.headers(), "retry-after"),
+        build_id: header_string(response.headers(), "x-build-id"),
+    }
+    .handle();
     if !response.ok() {
         let status = response.status();
-        let retry_after = ResponseHeaders {
-            retry_after: header_string(response.headers(), "retry-after"),
-            build_id: header_string(response.headers(), "x-build-id"),
-        }
-        .handle();
         let msg = response
             .json::<api::ApiError>()
             .await
@@ -3801,13 +3825,19 @@ where
         return Err(mark_offline());
     }
     mark_online();
+    // Read on **every** response, not only failures. This lived inside the
+    // `if !success` branch, coupled to `Retry-After` — which genuinely only
+    // matters on a refusal. The build id inherited that failure-only lifetime
+    // and never wanted it: a tab whose requests all succeeded learned nothing,
+    // so nothing it did made it notice a new bundle (#67). A 401 was worse,
+    // returning before the read happened at all.
+    let retry_after = ResponseHeaders {
+        retry_after: header_string(response.headers(), "retry-after"),
+        build_id: header_string(response.headers(), "x-build-id"),
+    }
+    .handle();
     if !response.status().is_success() {
         let status = response.status().as_u16();
-        let retry_after = ResponseHeaders {
-            retry_after: header_string(response.headers(), "retry-after"),
-            build_id: header_string(response.headers(), "x-build-id"),
-        }
-        .handle();
         let msg = response
             .json::<api::ApiError>()
             .await
@@ -3838,13 +3868,19 @@ where
         return Err(mark_offline());
     }
     mark_online();
+    // Read on **every** response, not only failures. This lived inside the
+    // `if !success` branch, coupled to `Retry-After` — which genuinely only
+    // matters on a refusal. The build id inherited that failure-only lifetime
+    // and never wanted it: a tab whose requests all succeeded learned nothing,
+    // so nothing it did made it notice a new bundle (#67). A 401 was worse,
+    // returning before the read happened at all.
+    let retry_after = ResponseHeaders {
+        retry_after: header_string(response.headers(), "retry-after"),
+        build_id: header_string(response.headers(), "x-build-id"),
+    }
+    .handle();
     if !response.ok() {
         let status = response.status();
-        let retry_after = ResponseHeaders {
-            retry_after: header_string(response.headers(), "retry-after"),
-            build_id: header_string(response.headers(), "x-build-id"),
-        }
-        .handle();
         let msg = response
             .json::<api::ApiError>()
             .await
