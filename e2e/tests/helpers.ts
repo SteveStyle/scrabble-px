@@ -98,9 +98,16 @@ export async function startTwoPlayerGame(browser: Browser) {
   await host.getByRole('button', { name: 'Play Friend' }).click();
   const field = host.locator('.name-autocomplete input').first();
   await field.click();
-  await field.type(guestName.slice(0, 10), { delay: 40 });
-  await expect(host.locator('.name-autocomplete-item').first()).toBeVisible();
-  await host.locator('.name-autocomplete-item').first().click();
+  // The whole name, and the suggestion matched by exact text rather than
+  // `.first()`. Every generated guest shares the prefix `e2e-guest-`, so a
+  // truncated query plus "take the first" invites whichever old account the
+  // dropdown happened to list first — invisible on dev, where e2e-clean wipes
+  // test users between runs, and reliably wrong on preview, where they
+  // accumulate (#128). The symptom is an invitation the guest never receives.
+  await field.type(guestName, { delay: 20 });
+  const suggestion = host.locator('.name-autocomplete-item', { hasText: guestName });
+  await expect(suggestion).toBeVisible();
+  await suggestion.click();
   await host.getByRole('button', { name: 'Invite', exact: true }).click();
 
   // Each step waits on the *other* player's list catching up, which happens on

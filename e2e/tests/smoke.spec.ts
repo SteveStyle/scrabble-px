@@ -248,6 +248,57 @@ test('Play Greedy Bot starts a game and renders the board', async ({ page }) => 
   await expect(page.locator('.rack-tile').first()).toBeVisible();
 });
 
+/// Caching headers, asserted against the running stack rather than read off the
+/// config (#145).
+///
+/// `index.html` had no `Cache-Control` at all, on the assumption that saying
+/// nothing meant "do not cache". It does not: a browser with no directive
+/// applies heuristic freshness, and one was found serving a months-old bundle
+/// against a current server. Because index.html names the current asset hashes,
+/// holding it holds the entire client — and the poller that would have noticed
+/// a new build lives inside the very bundle being held.
+///
+/// Technical rather than visual, so it belongs here where CI runs it on every
+/// change, not in a round of looking at Preview.
+test('the document revalidates and hashed assets do not', async ({ request, baseURL }) => {
+  const index = await request.get(`${baseURL}/`);
+  expect(index.ok()).toBe(true);
+
+  // These headers are Caddy's, and dev is `dx serve` with no Caddy in front of
+  // it — so against dev there is no configuration here to be right or wrong.
+  // Identified positively by the server that sets them rather than by guessing
+  // from the port, and CI runs the suite against the preview stack, so this
+  // never quietly skips there.
+  test.skip(
+    !/caddy/i.test(index.headers()['server'] ?? ''),
+    'asserts the deployed stack\'s cache headers; dev serves the client directly',
+  );
+  expect(
+    index.headers()['cache-control'],
+    'index.html must revalidate: it names the current asset hashes',
+  ).toContain('no-cache');
+
+  // The SPA fallback serves index.html for unknown paths, and it must carry
+  // the same header — a deep link is how plenty of sessions start.
+  const deep = await request.get(`${baseURL}/some/spa/route`);
+  expect(deep.headers()['cache-control'], 'the SPA fallback is index.html too').toContain(
+    'no-cache',
+  );
+
+  // The counterpart: content-hashed names can never change, so revalidating
+  // them is pure cost. If this ever stops being immutable, every load pays for
+  // conditional GETs it does not need.
+  const body = await index.text();
+  const asset = body.match(/\/assets\/[^"']+\.js/)?.[0];
+  expect(asset, 'an asset URL to check').toBeTruthy();
+  const assetResponse = await request.get(`${baseURL}${asset}`);
+  expect(assetResponse.headers()['cache-control']).toContain('immutable');
+
+  // The deploy poller reads this; a cached copy reports the old build forever.
+  const version = await request.get(`${baseURL}/version.txt`);
+  expect(version.headers()['cache-control']).toContain('no-store');
+});
+
 /// A full rack is seven tiles, and they must stay on one row (#12).
 ///
 /// At a fixed 52px they need 7 x 52 + 6 x 10 = 424px, and a mobile media query
