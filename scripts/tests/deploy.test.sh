@@ -252,6 +252,35 @@ check_says "and does not wait for main" "the 'push' run passed" \
   run_gates "$BRANCH_RUN" "$SKIPPED_E2E" "$(all_current $GOOD_COMMIT)" "$GOOD_COMMIT" \
   DEPLOY_ENV=rehearsal
 
+# --- the gates must be seen to have run --------------------------------------
+#
+# Owner, 2026-08-15: *"something other than the checks needs to monitor the
+# checks."* deploy.sh counts its own gates and refuses if the checklist is
+# short — but that checklist cannot be evidence about itself. Delete a gate and
+# its checklist entry together and deploy.sh is perfectly happy.
+#
+# So the list below is **this file's own copy of the truth**, deliberately not
+# read from deploy.sh. Removing a gate there fails here, which is the only
+# arrangement in which the check means anything.
+#
+# Adding a gate means adding it in both places. That duplication is the point:
+# two independent statements that must agree, rather than one that cannot be
+# wrong.
+
+for GATE in on-remote ci pull-request schema version milestone preview rehearsal; do
+  check_says "the '$GATE' gate ran on a production deploy" "$GATE" \
+    run_gates "$GREEN_MAIN" "$GREEN_JOBS" "$(all_current $GOOD_COMMIT)" "$GOOD_COMMIT"
+done
+
+# A rehearsal runs fewer of them, on purpose — no preview, no pull-request run,
+# no milestone to close. Asserted so that "fewer" stays a decision rather than
+# becoming an accident.
+for GATE in on-remote ci schema version; do
+  check_says "the '$GATE' gate ran on a rehearsal deploy" "$GATE" \
+    run_gates "$BRANCH_RUN" "$SKIPPED_E2E" "$(all_current $GOOD_COMMIT)" "$GOOD_COMMIT" \
+    DEPLOY_ENV=rehearsal
+done
+
 echo
 if (( failures > 0 )); then
   echo "$failures test(s) failed" >&2

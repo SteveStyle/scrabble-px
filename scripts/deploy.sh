@@ -233,6 +233,18 @@ fi
 # returns no runs, which would make the CI gate below fail every deploy.
 TARGET_SHA="$(git rev-parse --short "$TARGET_FULL_SHA")"
 
+# Every gate records that it ran, and the run is refused if the checklist is
+# short. "Nothing complained" is not evidence a check happened: a gate that
+# silently does not execute — an early return, a refactor that moves it, a
+# missing `gh` — reads exactly like one that ran and passed. Two gates here have
+# already failed open that way.
+#
+# So the gates are counted rather than trusted. Adding a gate means adding its
+# name to GATES_EXPECTED below, and forgetting to is itself caught, because the
+# checklist is what the deploy is verified against.
+GATES_RUN=""
+note_gate() { GATES_RUN="$GATES_RUN $1"; }
+
 # The working tree has no say in what ships, so a dirty one isn't an error
 # here — it simply isn't part of the deploy. Say so rather than staying
 # quiet: the previous behaviour (refusing to run until the tree was clean)
@@ -272,6 +284,7 @@ if [[ -z "$REMOTE_BRANCHES" ]]; then
   echo "       Production must only ever run a commit that survives losing this machine." >&2
   exit 1
 fi
+note_gate on-remote
 echo "==> $TARGET_SHA confirmed on the remote ($REMOTE_BRANCHES)"
 
 # Refuses to ship a commit CI hasn't passed. Until this existed, CI was
@@ -312,6 +325,7 @@ elif ! "$REPO_DIR/scripts/ci-status.sh" --wait \
   echo "       or set DEPLOY_SKIP_CI=1 if GitHub itself is the problem." >&2
   exit 1
 fi
+note_gate ci
 
 # The pull request's own run, separately, because it is an independent answer.
 # A version branch is merged fast-forward, so the released commit *is* the
@@ -340,6 +354,7 @@ elif ! "$REPO_DIR/scripts/ci-status.sh" --run pull_request "$TARGET_FULL_SHA"; t
   echo "       That run is the one that exercises e2e against the branch." >&2
   exit 1
 fi
+note_gate pull-request
 
 # Ordered before the rehearsal check deliberately. This is an impossibility,
 # not a process requirement: no amount of rehearsing makes an image bootable
@@ -383,6 +398,7 @@ elif (( LIVE_SCHEMA > TARGET_SCHEMA )); then
 else
   echo "==> Schema check passed (database at $LIVE_SCHEMA, $TARGET_SHA knows up to $TARGET_SCHEMA)"
 fi
+note_gate schema
 
 # Read from the deployed commit's own tree, not the working tree's
 # Cargo.toml — on a rollback those are different numbers, and the tag has
@@ -392,6 +408,7 @@ if [[ -z "$DEPLOYED_VERSION" ]]; then
   echo "error: couldn't read a version from $TARGET_SHA's Cargo.toml." >&2
   exit 1
 fi
+note_gate version
 
 # A patch release may not carry functional change — the rule and the reasoning
 # are in docs/3.3, "Releases are branches". Checked here, before anything is
@@ -401,6 +418,92 @@ fi
 if (( IS_RELEASE )); then
   "$REPO_DIR/scripts/check-release-version.sh" "$DEPLOYED_VERSION"
 fi
+
+# The milestone is a shipping list, and the deploy closes *everything* in it —
+# built or not, tested or not, deliberately deferred or not. So the moment to
+# look at its contents is now, before the deploy, not afterwards: reopening an
+# issue later leaves one that has already announced a release it was not in.
+#
+# Two failures inside a week are why this exists rather than being a paragraph
+# in docs/3.3. #67 was closed by 0.6.0 while the testing report listed it as
+# *Deferred* — the only one of twelve not verified — and it turned out to be
+# genuinely broken, needing its own release days later. #151 was caught sitting
+# unbuilt in 0.6.1 by hand, with an hour to spare.
+#
+# The check has two halves, because those two failures are different. An issue
+# with **no commit mentioning it** was never built, and that is decidable — so
+# it is called out. An issue that was built but not *verified* looks identical
+# to one that was, so nothing can decide it: for that half the answer is to show
+# the list and make somebody look.
+if (( ! IS_RELEASE )); then
+  :   # not a release: no milestone will be closed, so nothing to check
+elif ! command -v gh > /dev/null; then
+  # Said out loud. A check that quietly does not run reads exactly like one
+  # that ran and passed — which is the shape that let two earlier gates fail
+  # open, and the reason the pull-request gate below announces its own absence.
+  echo "==> Milestone $DEPLOYED_VERSION NOT CHECKED — no 'gh' on PATH." >&2
+  echo "    Whatever is open in that milestone will be closed by this deploy," >&2
+  echo "    unchecked. Read it yourself before continuing." >&2
+else
+  # Exit status and output kept apart: `|| true` would make "the query failed"
+  # indistinguishable from "the milestone is empty", and those want opposite
+  # responses.
+  MILESTONE_OPEN=""
+  if MILESTONE_OPEN="$(gh issue list --milestone "$DEPLOYED_VERSION" --state open \
+      --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>&1)"; then
+    MILESTONE_QUERY_OK=1
+  else
+    MILESTONE_QUERY_OK=0
+  fi
+
+  if (( ! MILESTONE_QUERY_OK )); then
+    echo "==> Milestone $DEPLOYED_VERSION COULD NOT BE READ:" >&2
+    printf '    %s\n' "${MILESTONE_OPEN:-(no detail)}" >&2
+    echo "    The deploy will still close whatever is in it. Check by hand:" >&2
+    echo "        gh issue list --milestone $DEPLOYED_VERSION --state open" >&2
+  elif [[ -z "$MILESTONE_OPEN" ]]; then
+    echo "==> Milestone $DEPLOYED_VERSION has no open issues — nothing to close"
+  else
+    echo "==> Milestone $DEPLOYED_VERSION — these will be closed by this deploy:"
+    UNBUILT=""
+    while IFS=$'\t' read -r NUM TITLE; do
+      [[ -z "$NUM" ]] && continue
+      # Any commit reachable from what is being shipped that names the issue.
+      # `Refs #N` and `Closes #N` both count.
+      if git log --oneline "$TARGET_FULL_SHA" --grep="#${NUM}\b" 2>/dev/null | grep -q .; then
+        printf '    #%-5s %s\n' "$NUM" "${TITLE:0:66}"
+      else
+        printf '    #%-5s %s   <-- NO COMMIT MENTIONS THIS\n' "$NUM" "${TITLE:0:66}"
+        UNBUILT="$UNBUILT #$NUM"
+      fi
+    done <<< "$MILESTONE_OPEN"
+
+    if [[ -n "$UNBUILT" ]]; then
+      echo
+      echo "    Nothing in this release mentions:$UNBUILT" >&2
+      echo "    An issue with no commit was not built. Move it to another" >&2
+      echo "    milestone before deploying, or it will be closed claiming it" >&2
+      echo "    shipped." >&2
+    fi
+
+    # Gates-only exists to exercise refusals cheaply, and a prompt it cannot
+    # answer would hang it — the same trap the tooling-branch guard hit.
+    if [[ "${DEPLOY_GATES_ONLY:-}" == "1" ]]; then
+      echo "    (gates only — not asking)"
+    elif [[ -n "$UNBUILT" ]]; then
+      if [[ ! -t 0 ]]; then
+        echo "error: refusing — unbuilt issues in the milestone and no terminal to confirm at." >&2
+        exit 1
+      fi
+      read -r -p "    Close these anyway? [y/N] " REPLY_MILESTONE
+      if [[ "$REPLY_MILESTONE" != "y" && "$REPLY_MILESTONE" != "Y" ]]; then
+        echo "    Stopped. Move them out of $DEPLOYED_VERSION and run again." >&2
+        exit 1
+      fi
+    fi
+  fi
+fi
+note_gate milestone
 
 # Refuses to ship a commit that was never actually exercised on the rehearsal host —
 # a passing `cargo test` only proves the code compiles and unit-tests
@@ -458,6 +561,7 @@ elif (( IS_RELEASE )) && [[ "${DEPLOY_SKIP_PREVIEW:-}" != "1" ]]; then
     exit 1
   fi
 fi
+note_gate preview
 
 if [[ -n "$EMERGENCY" ]]; then
   echo "==> Skipping the rehearsal gate (emergency)"
@@ -480,6 +584,7 @@ elif [[ "$STAGING_SHA" != "$TARGET_SHA" ]]; then
   echo "error: the rehearsal host is running commit $STAGING_SHA, not $TARGET_SHA ($DEPLOY_REF) — rehearse it first: $STAGING_CMD" >&2
   exit 1
 fi
+note_gate rehearsal
 echo "==> Rehearsal host confirmed running this commit ($TARGET_SHA) — proceeding"
 fi
 fi
@@ -497,6 +602,40 @@ fi
 #
 # Useful by hand too — "would this deploy be allowed?" is worth being able to
 # ask without finding out the expensive way.
+# The checklist. A gate that did not run is a gate that did not pass, whatever
+# the absence of complaints suggests.
+# Which gates are expected depends on what kind of deploy this is, and saying so
+# explicitly is half the value: an emergency skipping preview and rehearsal is a
+# decision, and it now has to be written down rather than inferred from the fact
+# that nothing complained.
+if (( ! IS_RELEASE )); then
+  # A rehearsal has no preview to compare, no milestone to close, no
+  # pull-request run to consult, and skips its own gate — it *is* the rehearsal.
+  GATES_EXPECTED="on-remote ci schema version"
+elif [[ -n "$EMERGENCY" ]]; then
+  # Preview and rehearsal are exactly what an emergency gives up. Everything
+  # else still applies, which is the difference between an emergency and a
+  # free-for-all.
+  GATES_EXPECTED="on-remote ci pull-request schema version milestone"
+else
+  GATES_EXPECTED="on-remote ci pull-request schema version milestone preview rehearsal"
+fi
+echo "==> Gates run:$GATES_RUN"
+GATES_MISSING=""
+for GATE in $GATES_EXPECTED; do
+  case " $GATES_RUN " in
+    *" $GATE "*) ;;
+    *) GATES_MISSING="$GATES_MISSING $GATE" ;;
+  esac
+done
+if [[ -n "$GATES_MISSING" ]]; then
+  echo "error: refusing to deploy — these gates did not run:$GATES_MISSING" >&2
+  echo "       Every check must be seen to have happened, not merely to have" >&2
+  echo "       raised no objection. This is a bug in deploy.sh, not in the" >&2
+  echo "       commit being deployed." >&2
+  exit 1
+fi
+
 if [[ "${DEPLOY_GATES_ONLY:-}" == "1" ]]; then
   echo "==> Gates only: every check passed, stopping before anything is built"
   exit 0
