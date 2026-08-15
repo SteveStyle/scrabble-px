@@ -157,12 +157,15 @@ check_tests() {
     [[ -e "$t" ]] || continue
     name="$(basename "$t" .test.sh)"
     # Named before it runs: deploy.test.sh takes 47 seconds, and an
-    # unattributed silence reads as a hang.
-    printf '       %s ... ' "$name"
+    # unattributed silence reads as a hang. Only on a terminal — `\r` does not
+    # overwrite in a pipe, it just leaves both halves in the file.
+    [[ -t 1 ]] && printf '       %s ... ' "$name"
     if out="$("$t" 2>&1)"; then
-      printf '\r       %s %s\n' "$(green ok)" "$name        "
+      [[ -t 1 ]] && printf '\r'
+      printf '       %s %s\n' "$(green ok)" "$name        "
     else
-      printf '\r       %s %s\n' "$(red FAIL)" "$name        "
+      [[ -t 1 ]] && printf '\r'
+      printf '       %s %s\n' "$(red FAIL)" "$name        "
       bad="$bad $name"; lines+="$name: $(printf '%s' "$out" | tail -2)"$'\n'
     fi
   done
