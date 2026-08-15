@@ -22,6 +22,19 @@ set -uo pipefail
 #
 # Read-only. It builds nothing, deploys nothing and changes nothing.
 
+# `--quick` skips the two slow checks. Measured 2026-08-15: deploy.test.sh takes
+# 47s and the deploy gates 16s, which is 93% of a full run; everything else is
+# under two seconds together. So the quick form answers "where are we and is it
+# pushed" in about three seconds, and the full form answers "is the machinery
+# sound" as well.
+#
+# The order is the process's order, not fastest-first. Nothing aborts early —
+# every check runs and all failures are reported — so ordering buys no speed,
+# only legibility, and the sequence that reads well is repository, tooling, CI,
+# environments, milestone, gates.
+QUICK=0
+[[ "${1:-}" == "--quick" ]] && QUICK=1
+
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$HERE"
 
@@ -59,16 +72,23 @@ fi
 
 head_ "Tooling tests"
 
+if (( QUICK )); then
+  note "skipped (--quick)"
+else
 for t in scripts/tests/*.test.sh; do
   [[ -e "$t" ]] || continue
   name="$(basename "$t" .test.sh)"
+  # Printed before the test runs, not after. deploy.test.sh takes 47 seconds,
+  # and an unattributed silence reads as a hang.
+  printf '       %s ... ' "$name"
   if out="$("$t" 2>&1)"; then
-    ok "$name"
+    printf '\r'; ok "$name                    "
   else
-    bad "$name"
+    printf '\r'; bad "$name                    "
     printf '%s\n' "$out" | tail -4 | while read -r l; do note "$l"; done
   fi
 done
+fi
 
 # --- CI's verdict on what is pushed -----------------------------------------
 
@@ -150,7 +170,9 @@ fi
 
 head_ "Deploy gates"
 
-if out="$(DEPLOY_GATES_ONLY=1 ./scripts/deploy.sh 2>&1)"; then
+if (( QUICK )); then
+  note "skipped (--quick)"
+elif out="$(DEPLOY_GATES_ONLY=1 ./scripts/deploy.sh 2>&1)"; then
   ok "a production deploy of HEAD would be allowed"
   printf '%s\n' "$out" | grep -E '^==> Gates run:' | while read -r l; do note "$l"; done
 else
@@ -163,6 +185,14 @@ fi
 printf '\n'
 if (( failures > 0 )); then
   printf '\033[31m%d check(s) failed\033[0m\n' "$failures"
+  (( QUICK )) && printf '\033[33m(quick: the tooling tests and deploy gates were not run)\033[0m\n'
   exit 1
 fi
-printf '\033[32mEverything in place.\033[0m\n'
+# The verdict has to carry the skip too. "Everything in place" after a run that
+# skipped the two checks most likely to be wrong would be the same quiet absence
+# this script exists to prevent — just moved to the last line.
+if (( QUICK )); then
+  printf '\033[32mEverything checked is in place\033[0m — \033[33mquick run: tooling tests and deploy gates not run\033[0m\n'
+else
+  printf '\033[32mEverything in place.\033[0m\n'
+fi
