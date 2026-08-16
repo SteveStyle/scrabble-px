@@ -668,32 +668,93 @@ than rely on discipline, give it that key:
 
 ```rust
 selected_game: Option<GameId>,
-composition:   Option<Composition>,   // { game_id, turn_number, staged, cursor, exchange, … }
+composition:   Option<Composition>,   // { key: CompositionKey, staged, cursor, exchange, … }
 ```
 
-"Is this stale?" becomes a comparison the render already has the inputs for,
-rather than a call somebody must remember to make. `on_remove_game`'s defect
-becomes unwritable — there is nothing left to forget.
+### Stop clearing; start matching
 
-### Shape
+The instinct here is the server's answer again — one event type, one handler,
+every change through it. It is the wrong answer on this side, and not because
+the client deserves less rigour. Dioxus already *is* an update mechanism, so a
+reducer would not replace anything; it would sit on top of the framework's own
+propagation and duplicate it, at the cost of rewriting a 5,500-line component.
 
-A `UiState` grouping the cluster, with a small number of **transition
-methods** — `select_game(Option<GameId>)`, `apply_server_state(dto)`,
-`end_session()` — each owning one invariant. Handlers call a transition; no
-handler pokes a field.
+What Dioxus gives free, and what it does not, is worth separating:
 
-Deliberately *not* the full server mirror of one event enum and one reducer.
-Signals already are the client's update mechanism, so a central reducer fights
-the framework rather than replacing anything, and it would mean rewriting a
-5,500-line component to get a property the transitions already give. The
-symmetry would read well here and be worse to live with.
+- **Propagation — free.** Read a signal in the render body and the component
+  re-runs when it changes. This client already leans on that: 80 `use_signal`,
+  3 `use_effect`, and **no `use_memo` at all**. Almost everything is recomputed
+  on render, which is the idiomatic thing.
+- **Invalidation — not free.** Dioxus will faithfully re-render a stale value.
+  Nothing tells it `staged_placements` stopped meaning anything when `game`
+  changed, because nothing in the code says the two are related.
 
-### The open question
+So the change is to stop clearing and start matching. Store the composition
+with its key, and filter it on read:
 
-**What voids a composition?** Not any version bump — an opponent's chat message
-would then wipe a half-typed word. `(game_id, turn_number)` is the candidate.
-`reset_composer_state` is called today on "a turn started", and whether those
-are the same thing has not been checked.
+```rust
+let live = composition().filter(|c| c.key == current_key(&selected_game(), &game()));
+```
+
+**Clearing is a push model**: every writer must participate, and one that does
+not is a defect found in testing — which is precisely how we got here, ten
+remembered calls and an eleventh site that forgot. **Matching is a pull
+model**: nobody participates, and a writer that forgets *cannot* cause the
+failure. `on_remove_game` sets the selection to `None` and is finished; the
+staged tile disappears because it no longer matches, not because anyone
+remembered it.
+
+This is not a new idea in this codebase — it is already done once, inline:
+
+```rust
+if rack_order().len() != unordered_rack_tiles.len() {
+    rack_order.set((0..unordered_rack_tiles.len()).collect());   // app.rs
+}
+```
+
+Crude, and the right instinct. It is why `rack_order` is not on the list above.
+
+What survives of the "one transition per invariant" idea is small, and that is
+the point:
+
+| kind | where it lives | who maintains it |
+| --- | --- | --- |
+| derived (`selected_id`, `can_stage_moves`, …) | not stored — computed on render | Dioxus |
+| keyed (the composition) | stored with its key, filtered on read | Dioxus |
+| side effects (token storage, socket teardown) | one function each | us, and there are about two |
+
+**One consequence, taken deliberately.** Under matching a stale composition is
+ignored, not destroyed — so leaving a game mid-turn to check another and coming
+back restores the half-typed word. That is better behaviour than clearing it,
+and it costs nothing. The bug fix and the small feature are the same change.
+
+### This needs the turn back
+
+The key must move **when and only when the move being composed stops being
+submittable** — same game, still this player's turn, same board underneath.
+
+`game_version` cannot serve. One counter moved by any change (see *Open
+questions*) is moved by an opponent's chat message, and keying on it would wipe
+a half-typed word every time somebody typed in the panel. That is the same
+failure as clearing, arrived at from the other direction.
+
+Two candidates:
+
+- **A turn number carried in the state.** The open questions already say
+  tracking the turn "is likely useful for undo, and waits with it". This is a
+  second reason and a present one, so it should not wait: the client needs the
+  turn as soon as the version stops being one.
+- **`moves.len()`**, which the DTO already carries. Any board change appends a
+  move; chat does not. It needs no new field.
+
+**Take the first.** `moves.len()` works, and it works by coincidence — the same
+kind of coincidence as the three invitation writers that move the version only
+because a session mutation happens to ride along in the same handler. Removing
+those is what this note is for; adding one on the client would be a poor trade
+for one saved field.
+
+This is a finding from the client chunk that changes the server design, which
+is what chunking is supposed to produce.
 
 ### How we will know the client is right
 
@@ -715,7 +776,8 @@ than passing vacuously.
 
 ### This is a chunk, not a prerequisite
 
-Client-only. No server change, no API version move, no migration. It does not
+Raised as **#157**, which carries the reproduction and the two handlers it
+lands in. Client-only. No server change, no API version move, no migration. It does not
 depend on any other part of this note, and nothing here depends on it — so it
 can ship in its own release, before or after the rest.
 
@@ -791,6 +853,12 @@ already become a version moved by any change — a resignation, an abort and a
 timeout each take one, and none is a move. There is one counter, and records
 carry the version they happened at. Tracking the turn as well is likely useful
 for undo, and waits with it.
+
+**Except that the client needs the turn now**, not with undo — see *This needs
+the turn back*. A composition is void when the turn ends, and a single counter
+that an opponent's chat message also moves cannot say when that is. So the turn
+comes back as a state field, separate from the version, and undo inherits it
+rather than introducing it.
 
 **State fields and message fields are different things**, which resolves the
 ratings. `rating_before` and `rating_after` describe what *this game did* to a

@@ -214,7 +214,7 @@ with something for a person to look at.
 **E — the engine as a client.** Depends on A. Small in `engine-core`, mostly in
 how the turn is driven.
 
-**F — the client state model.** `selected_game` as real state, composition
+**F — the client state model (#157).** `selected_game` as real state, composition
 keyed to the game and turn it belongs to, and one transition per invariant. See
 *The client has the same defect* in the note. Client-only: no server change, no
 API move, no migration, and no dependency in either direction on A–E. It has a
