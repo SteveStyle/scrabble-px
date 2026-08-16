@@ -37,6 +37,7 @@ Run in this order for a typical change: Setup once, then Development → Testing
 - [3.2 Development](3.2-development.md) — running services locally, building, resetting local state
 - [3.3 Testing, CI & Release](3.3-testing-ci-and-release.md) — `cargo test`, GitHub Actions CI, the local preview environment, the end-to-end release runbook, and how `deploy.sh` ships an image
 - [3.4 Production Environment & Operations](3.4-production-environment.md) — the running system: container topology, secrets, admin CLI, inspecting the database, logging, backups, wiping production
+- [3.5 Word Lists & Dictionaries](3.5-word-lists-and-dictionaries.md) — how a published word list becomes the trie the engine searches: sourcing, normalising, generating the denylist and greylist, and the runbooks for changing either
 
 ## 4.x — Reference
 
@@ -63,7 +64,30 @@ can't drift the way a hand-maintained list would.
 
 ## How these documents are written
 
-Four habits, learned by breaking them.
+**Write first for somebody who needs to do something quickly and wants
+pointing at what they need.** Every other reader is served afterwards. That
+reader is not studying the system — they have a job in progress, they know
+roughly what they want, and every paragraph between them and it is a cost. So:
+the command or the rule first, an index by *intent* rather than by structure,
+and the reasoning below where it can be found by anyone who wants it and
+skipped by anyone who does not.
+
+The second reader — trying to understand *why* — is real and well served by
+the same arrangement, because reasoning gathered in one place reads better than
+reasoning scattered through instructions. Nobody is worse off. The habit that
+fails both is mixing them, which makes the reader in a hurry read the
+reasoning and the reader who wants reasoning hunt for it between commands.
+
+`docs/3.3` is the worked example: each section is *what to do* followed by
+*notes*, with numbered markers linking one to the other, and an overview at the
+top indexed by what you are about to do.
+
+Then five habits, learned by breaking them.
+
+**Give a commit's app version alongside its id.** `25e9e09` alone dates a
+change only for somebody willing to go and look it up; `25e9e09` (app 0.4.12)
+places it in the release history a reader already carries. The id stays,
+because it is the thing you can `git show`.
 
 **Reference answers "what is there" and "what do I type".** Not "why is it
 like that". The why belongs in an overview section or a 2.x design note. A

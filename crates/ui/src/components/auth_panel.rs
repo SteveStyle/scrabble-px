@@ -6,6 +6,47 @@ enum AuthMode {
     Register,
 }
 
+/// Empty the modal's fields, keeping only what a ticked box asks to keep.
+///
+/// **Called from exactly one place: the moment the modal is hidden**, which is
+/// a successful login or registration and nothing else. Clearing on the way out
+/// rather than on the way back in is what makes one call site enough — the
+/// fields then sit empty for the whole session, so every way a session can end
+/// finds an empty modal without having to know it must.
+///
+/// Log out used to clear them itself, and was the only path that did. A session
+/// ending any other way — expiry, an account deleted server-side, a password
+/// change — left the modal holding the previous person's **password**,
+/// pre-filled and submittable: an expiry that ends the session without ending
+/// the access it guards against. Found during #50's user testing. Adding a
+/// second call would have fixed the symptom and left the two to drift.
+///
+/// It is also the right lifetime for the password on its own terms. Nothing
+/// needs it after the request that consumed it.
+///
+/// Display name is the exception, and reads back from `local_storage` rather
+/// than being preserved in place: "Remember me" decides whether a name
+/// survives, and it has already written its answer there (see
+/// `save_authenticated`). Unticked leaves nothing to read, so the field
+/// empties.
+fn reset_auth_form(
+    mut mode: Signal<AuthMode>,
+    mut display_name: Signal<String>,
+    mut email: Signal<String>,
+    mut password: Signal<String>,
+    mut stay_logged_in: Signal<bool>,
+) {
+    mode.set(AuthMode::Login);
+    password.set(String::new());
+    email.set(String::new());
+    stay_logged_in.set(false);
+    display_name.set(
+        crate::local_storage::load()
+            .remembered_name
+            .unwrap_or_default(),
+    );
+}
+
 /// Shared by the submit button's onclick and the Enter-key handler on each
 /// input — a plain function taking every signal it needs explicitly rather
 /// than a shared closure, since a closure capturing non-Copy state (the
@@ -14,7 +55,7 @@ enum AuthMode {
 #[allow(clippy::too_many_arguments)]
 fn submit_login_or_register(
     server_url: String,
-    mode: AuthMode,
+    mode: Signal<AuthMode>,
     display_name: Signal<String>,
     email: Signal<String>,
     password: Signal<String>,
@@ -25,6 +66,7 @@ fn submit_login_or_register(
     retry_message: Signal<Option<String>>,
     on_authenticated: EventHandler<(api::PlayerSessionDto, bool, bool)>,
 ) {
+    let mode_value = mode();
     let name = display_name().trim().to_string();
     let email_value = email().trim().to_string();
     let password_value = password();
@@ -35,7 +77,7 @@ fn submit_login_or_register(
         error_message.set(Some("Display name and password are required".to_string()));
         return;
     }
-    if mode == AuthMode::Register && email_value.is_empty() {
+    if mode_value == AuthMode::Register && email_value.is_empty() {
         error_message.set(Some("Email is required to register".to_string()));
         return;
     }
@@ -43,7 +85,7 @@ fn submit_login_or_register(
     spawn(async move {
         is_submitting.set(true);
         error_message.set(None);
-        let outcome = match mode {
+        let outcome = match mode_value {
             AuthMode::Login => {
                 crate::app::login_player(&server_url, &name, &password_value, stay, retry_message)
                     .await
@@ -61,7 +103,12 @@ fn submit_login_or_register(
             }
         };
         match outcome {
-            Ok(session) => on_authenticated.call((session, remember, stay)),
+            Ok(session) => {
+                on_authenticated.call((session, remember, stay));
+                // After `on_authenticated`, so `local_storage` already holds
+                // the remembered name this reads back.
+                reset_auth_form(mode, display_name, email, password, stay_logged_in);
+            }
             Err(error) => error_message.set(Some(error)),
         }
         is_submitting.set(false);
@@ -166,22 +213,7 @@ pub fn AuthPanel(
                     }
                     button {
                         class: "toggle-button toggle-button-muted",
-                        onclick: move |_| {
-                            // Logging out should hand back a clean modal,
-                            // not whatever was left over from before — the
-                            // password (and, in Register mode, email) must
-                            // never carry over. Display name is the one
-                            // exception: it survives if "Remember me" is
-                            // what's asking it to (see local_storage.rs).
-                            mode.set(AuthMode::Login);
-                            email.set(String::new());
-                            password.set(String::new());
-                            stay_logged_in.set(false);
-                            if !remember_me() {
-                                display_name.set(String::new());
-                            }
-                            on_logout.call(());
-                        },
+                        onclick: move |_| on_logout.call(()),
                         "Log out"
                     }
                 }
@@ -423,7 +455,7 @@ pub fn AuthPanel(
                 onsubmit: move |_| {
                     submit_login_or_register(
                         server_url_for_submit.clone(),
-                        mode(),
+                        mode,
                         display_name,
                         email,
                         password,

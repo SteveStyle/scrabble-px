@@ -695,7 +695,10 @@ impl GameSession {
             last_activity_at,
             move_time_limit_seconds: self.move_time_limit_seconds,
             turn_started_at: self.turn_started_at,
-            last_message_at: self.messages.last().map(|message| message.created_at),
+            // Caller-relative; `list_games` narrows it to messages the
+            // requester did not send. Defaulted to the newest of any sender so
+            // a caller-less summary still means "there has been chat".
+            last_message_received_at: self.messages.last().map(|message| message.created_at),
             // Caller-relative fields — `list_games` fills these in per
             // requester since "why does this game show up" depends on who's
             // asking, not on the game itself.

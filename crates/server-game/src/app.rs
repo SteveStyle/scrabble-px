@@ -52,6 +52,7 @@ mod sweeps;
 mod tests;
 #[cfg(test)]
 mod tests_account_lifecycle;
+mod throttle;
 
 use self::admin::*;
 use self::auth::*;
@@ -171,6 +172,7 @@ pub fn build_router(state: AppState) -> Router {
     // play, which would otherwise expose these to the whole LAN too).
     let admin_routes = Router::new()
         .route("/admin/users", get(admin_list_users))
+        .route("/admin/database-size", get(admin_list_database_size))
         .route("/admin/users/{player_id}", delete(admin_delete_user))
         .route(
             "/admin/users/{player_id}/reset-password",
@@ -184,19 +186,29 @@ pub fn build_router(state: AppState) -> Router {
         )
         .layer(middleware::from_fn(require_loopback));
 
-    Router::new()
-        .route("/health", get(health))
+    // Creating an account is limited hardest, and on its own: a throwaway
+    // account is how the other limits get worked around.
+    let registration_routes =
+        throttle::registration(Router::new().route("/auth/register", post(register_player)));
+
+    // The rest of the unauthenticated auth surface. Each of these spends real
+    // Argon2 time whether or not the credentials are real, which is what
+    // makes them worth reaching for.
+    let heavy_auth_routes = throttle::heavy_auth(
+        Router::new()
+            .route("/auth/login", post(login_player))
+            .route("/auth/forgot-password", post(request_password_reset))
+            .route("/auth/reset-password", post(reset_password)),
+    );
+
+    let player_routes = Router::new()
         .route("/engines", get(list_engines))
         .route("/dictionaries/{name}", get(get_dictionary))
         // Authentication
-        .route("/auth/register", post(register_player))
-        .route("/auth/login", post(login_player))
         .route("/auth/validate", post(validate_session))
         .route("/auth/logout", post(logout))
         .route("/auth/change-password", post(change_password))
         .route("/auth/update-details", post(update_player_details))
-        .route("/auth/forgot-password", post(request_password_reset))
-        .route("/auth/reset-password", post(reset_password))
         .route("/players/search", get(search_players))
         // Rating & Stats
         .route("/players/{player_id}/stats", get(get_player_stats))
@@ -251,9 +263,44 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/invitations/{invitation_id}/reject",
             post(reject_invitation),
-        )
+        );
+
+    // Everything a caller does once signed in, keyed by session, then a floor
+    // under the lot. Admin is outside both: it is loopback-only, so the only
+    // caller is the operator, and throttling them mid-cleanup helps nobody.
+    let limited = throttle::global(
+        registration_routes
+            .merge(heavy_auth_routes)
+            .merge(throttle::authenticated(player_routes)),
+    );
+
+    Router::new()
+        // No limit of any kind. Monitoring and deploy.sh's own smoke test call
+        // this, and it has to answer while everything else is refusing — a
+        // health check that fails under load reports an outage that is not
+        // happening, and the deploy would roll back a release that was merely
+        // busy.
+        .route("/health", get(health))
+        .merge(limited)
         .merge(admin_routes)
         .layer(CorsLayer::permissive())
+        // Every response says which build produced it, so a client can notice
+        // that the server has moved without asking a question of its own. It
+        // is a header rather than a body field because it belongs to *any*
+        // response, not to one endpoint: putting it in `/health` would mean
+        // clients polling `/health` on a timer to learn about an event that
+        // happens a few times a week.
+        //
+        // A client compares this against its own build id and, if they differ,
+        // confirms against `/version.txt` before reloading — that file is
+        // served alongside the bundle, so it knows what is *actually* being
+        // served, which this header cannot. See docs/3.3 and `crates/ui`'s
+        // `note_server_build`.
+        //
+        // Omitted entirely on a build with no id (a local `cargo run`), since
+        // "I cannot tell you" is better said by silence than by a value that
+        // never changes.
+        .layer(build_id_header())
         // One INFO-level span per request (method, path, status, latency)
         // with no per-handler code — this alone covers "what happened and
         // when" for the whole HTTP surface; the tracing calls sprinkled
@@ -261,6 +308,34 @@ pub fn build_router(state: AppState) -> Router {
         // (which player, which game, why a request was rejected).
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// The build this server was compiled from — the same id `app_version` appends,
+/// on its own rather than with the release number, because what a client needs
+/// is "is this the code I have", and the id answers that exactly.
+pub(crate) const BUILD_ID: Option<&str> = option_env!("TILE_LITE_ELITE_BUILD_ID");
+
+/// Stamps `x-build-id` on every response. `Option` so an unidentified build
+/// sets no header at all rather than a misleading constant.
+fn build_id_header()
+-> tower_http::set_header::SetResponseHeaderLayer<Option<axum::http::HeaderValue>> {
+    build_id_header_for(BUILD_ID)
+}
+
+/// Split from `build_id_header` so the behaviour can be tested. `BUILD_ID` is
+/// fixed at compile time and unset under `cargo test`, so a test that went
+/// through it could only ever observe the empty case — which is the half that
+/// matters least.
+fn build_id_header_for(
+    id: Option<&str>,
+) -> tower_http::set_header::SetResponseHeaderLayer<Option<axum::http::HeaderValue>> {
+    tower_http::set_header::SetResponseHeaderLayer::overriding(
+        axum::http::HeaderName::from_static("x-build-id"),
+        match id {
+            Some(id) if !id.is_empty() => axum::http::HeaderValue::from_str(id).ok(),
+            _ => None,
+        },
+    )
 }
 
 /// The `Major.Minor.Patch` release version from Cargo.toml, plus an

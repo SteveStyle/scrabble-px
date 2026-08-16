@@ -6,6 +6,16 @@ use crate::model::{Alphabet, Letter, LetterMask, VariantRules, mask_insert};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::tiered::TieredDictionary;
 
+/// The denied words are already gone from these files — removed at import by
+/// `wordlists::remove_denied`, as a step and a commit of its own, not filtered
+/// here at startup. That keeps the dictionary the server validates against and
+/// the text it serves to clients identical by construction rather than by both
+/// remembering to call the same filter; filtering only one of the two would
+/// leave the web client, which builds its own dictionary from that text, still
+/// holding the words the denylist exists to remove. It also makes each removal
+/// a diff somebody can read, which is the point of tracking these lists in
+/// their own right.
+///
 /// Embedded at compile time for every non-wasm target (the server, and the
 /// desktop client) — for those, this is free: no network cost, and disk
 /// space isn't a constraint the way page-load size is. The wasm/web client
@@ -165,7 +175,7 @@ pub struct WordListDictionary {
 impl WordListDictionary {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Self {
-        Self::from_static_word_list(SOWPODS_WORD_FILE)
+        Self::from_static_word_list(sowpods_word_list())
     }
 
     /// Builds a dictionary from word-list text fetched at runtime (one
@@ -310,19 +320,19 @@ fn build(text: &'static str, rules: VariantRules) -> TieredDictionary {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub static SOWPODS: LazyLock<TieredDictionary> =
-    LazyLock::new(|| build(SOWPODS_WORD_FILE, VariantRules::official()));
+    LazyLock::new(|| build(sowpods_word_list(), VariantRules::official()));
 
 #[cfg(not(target_arch = "wasm32"))]
 pub static ENABLE2K: LazyLock<TieredDictionary> =
-    LazyLock::new(|| build(ENABLE2K_WORD_FILE, VariantRules::north_american()));
+    LazyLock::new(|| build(enable2k_word_list(), VariantRules::north_american()));
 
 #[cfg(not(target_arch = "wasm32"))]
 pub static GERMAN: LazyLock<TieredDictionary> =
-    LazyLock::new(|| build(GERMAN_WORD_FILE, VariantRules::german()));
+    LazyLock::new(|| build(german_word_list(), VariantRules::german()));
 
 #[cfg(not(target_arch = "wasm32"))]
 pub static SPANISH: LazyLock<TieredDictionary> =
-    LazyLock::new(|| build(SPANISH_WORD_FILE, VariantRules::spanish()));
+    LazyLock::new(|| build(spanish_word_list(), VariantRules::spanish()));
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn is_word(word: &str) -> bool {
@@ -399,53 +409,93 @@ mod tests {
     };
     use crate::model::{Alphabet, Letter, VariantRules};
 
-    /// The compiled-in word lists are required to arrive sorted, deduped
-    /// and free of blank lines, so construction can trust the file instead
-    /// of re-establishing those properties on every startup.
-    ///
-    /// "Sorted" means **byte order** (`LC_ALL=C sort -u`), which for UTF-8
-    /// is identical to code-point order and therefore to the `Vec<char>`
-    /// comparison `sorted_words` is built on. A locale-aware sort is *not*
-    /// equivalent — German collation files `Ä` beside `A` — and would
-    /// quietly break the prefix cursor's binary search on the two
-    /// non-ASCII lists while leaving the ASCII ones looking fine.
-    ///
-    /// This is a data invariant, not a code one: it fails when someone
-    /// re-imports a list without normalising it, which is exactly when a
-    /// silent wrong answer would otherwise be easiest to ship.
-    #[test]
-    fn every_compiled_in_word_list_is_sorted_deduped_and_blank_free() {
-        for (name, text) in [
-            ("sowpods", sowpods_word_list()),
-            ("enable2k", enable2k_word_list()),
-            ("german", german_word_list()),
-            ("spanish", spanish_word_list()),
-        ] {
-            let lines: Vec<&str> = text.lines().collect();
-            assert!(!lines.is_empty(), "{name} is empty");
+    /// The four editions, their word lists and the alphabets those lists must
+    /// be writable in.
+    fn every_word_list() -> [(&'static str, &'static str, VariantRules); 4] {
+        [
+            ("sowpods", sowpods_word_list(), VariantRules::official()),
+            (
+                "enable2k",
+                enable2k_word_list(),
+                VariantRules::north_american(),
+            ),
+            ("german", german_word_list(), VariantRules::german()),
+            ("spanish", spanish_word_list(), VariantRules::spanish()),
+        ]
+    }
 
-            for (index, line) in lines.iter().enumerate() {
-                assert!(
-                    !line.is_empty(),
-                    "{name} line {} is blank — `split_whitespace` would hide it, but it \
-                     breaks the sorted/deduped guarantee construction relies on",
-                    index + 1
-                );
+    /// Every committed word list is exactly what `normalise` would produce from
+    /// it — uppercase, inside its alphabet, playable length, sorted and deduped
+    /// in byte order.
+    ///
+    /// One assertion for the lot, because a fixed point proves every property
+    /// at once and there is no second copy of the rules to drift out of step
+    /// with the importer. It fails the moment somebody changes an alphabet, the
+    /// length bounds, or re-imports a list without normalising it — which is
+    /// exactly when a silent wrong answer would otherwise be easiest to ship.
+    ///
+    /// The property this replaces checked ordering and blank lines only, so it
+    /// would not have noticed a lowercase word, a nineteen-letter word, or
+    /// `KWIK` in the Spanish list.
+    ///
+    /// Byte order specifically (`LC_ALL=C sort -u`) is code-point order for
+    /// UTF-8 and therefore the order the prefix cursor's binary search assumes.
+    /// A locale-aware sort is *not* equivalent — German collation files `Ä`
+    /// beside `A` — and would quietly break lookups on the two non-ASCII lists
+    /// while leaving the two ASCII ones looking perfect.
+    #[test]
+    fn every_word_list_is_a_fixed_point_of_the_normaliser() {
+        for (name, text, rules) in every_word_list() {
+            assert!(!text.is_empty(), "{name} is empty");
+            let normalised = crate::wordlists::normalise(text, &rules.alphabet);
+            if normalised != text {
+                let before: Vec<&str> = text.lines().collect();
+                let after: Vec<&str> = normalised.lines().collect();
+                let first = before
+                    .iter()
+                    .zip(&after)
+                    .position(|(b, a)| b != a)
+                    .unwrap_or(before.len().min(after.len()));
+                // Reported by line, and separately by byte, because a list can
+                // agree line-for-line and still differ — a missing trailing
+                // newline is exactly one invisible byte, and "no difference
+                // found" would be a maddening thing for this test to say.
                 assert_eq!(
-                    line.trim(),
-                    *line,
-                    "{name} line {} has surrounding whitespace",
-                    index + 1
+                    before,
+                    after,
+                    "{name} differs from its normalised form: {} lines committed, {} after \
+                     normalising, first difference at line {}. Re-import it — see \
+                     docs/3.5-word-lists-and-dictionaries.md.",
+                    before.len(),
+                    after.len(),
+                    first + 1,
+                );
+                panic!(
+                    "{name} has the right {} lines but differs by {} bytes — most likely the \
+                     trailing newline. Re-import it.",
+                    before.len(),
+                    (text.len() as isize - normalised.len() as isize).abs(),
                 );
             }
+        }
+    }
 
-            for pair in lines.windows(2) {
-                assert!(
-                    pair[0].as_bytes() < pair[1].as_bytes(),
-                    "{name} is not strictly ascending in byte order at {:?} -> {:?} \
-                     (re-normalise with `LC_ALL=C sort -u`, never a locale-aware sort)",
-                    pair[0],
-                    pair[1]
+    /// No committed word list holds a denied word.
+    ///
+    /// Separate from the fixed-point test on purpose. That one is about the
+    /// *form* of a list; this is about its *content*, and they fail for
+    /// different reasons: the first when an import skipped normalising, the
+    /// second when the denylist grew and the lists were not regenerated. A
+    /// denied word left in a list is playable and enumerable by an engine,
+    /// which is the whole thing the denylist exists to prevent, so it must not
+    /// be possible to ship it by forgetting a step.
+    #[test]
+    fn no_committed_word_list_holds_a_denied_word() {
+        for (name, text, _) in every_word_list() {
+            if let Some(denied) = text.lines().find(|word| crate::wordlists::is_denied(word)) {
+                panic!(
+                    "{name} still contains the denied word {denied:?} — regenerate every \
+                     edition when the denylist changes, see docs/3.5-word-lists-and-dictionaries.md"
                 );
             }
         }

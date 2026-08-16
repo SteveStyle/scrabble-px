@@ -44,6 +44,27 @@ impl Server {
         format!("http://{}{path}", self.address)
     }
 
+    /// Signs a session out, so the account stops being "in use".
+    ///
+    /// Deleting an account that somebody is signed in as is refused (#82), and
+    /// registering signs you in — so every account this test creates is in use
+    /// until it does this. That refusal is covered in
+    /// `tests_account_lifecycle`; here it is setup, and skipping it would have
+    /// this test fail for a reason it is not about.
+    fn log_out(&self, token: &str) {
+        let response = self
+            .client
+            .post(self.url("/auth/logout"))
+            .bearer_auth(token)
+            .send()
+            .expect("logging out should reach the server");
+        assert!(
+            response.status().is_success(),
+            "logging out should succeed, got {}",
+            response.status()
+        );
+    }
+
     /// Registers a player and returns their account id and session token.
     fn register(&self, display_name: &str) -> (String, String) {
         let response = self
@@ -177,6 +198,10 @@ fn deleting_a_user_through_the_cli() {
         "deleting the game should succeed: {}",
         String::from_utf8_lossy(&game_deleted.stderr)
     );
+
+    // Signed out first: an account in use is refused for a different reason,
+    // and this test is about the game attachments.
+    server.log_out(&alice_token);
 
     // Now by account id, which must reach the same account the name did.
     let deleted = server.admin(&["users", "delete", &alice_id]);

@@ -113,6 +113,21 @@ pub(super) async fn send_empty(
     .expect("request should succeed")
 }
 
+/// Signs a session out, through the API rather than the database.
+///
+/// Deleting an account somebody is signed in as is refused (#82), and
+/// registering signs you in — so an admin-delete test has to end the session
+/// first or it fails for a reason it is not about. Through `/auth/logout`
+/// because that is what an operator would do, and it exercises the same path.
+pub(super) async fn log_out(app: Router, token: &str) {
+    let response = send_empty_auth(app, Method::POST, "/auth/logout", Some(token)).await;
+    assert!(
+        response.status().is_success(),
+        "logging out should succeed, got {}",
+        response.status()
+    );
+}
+
 pub(super) async fn send_empty_auth(
     app: Router,
     method: Method,
@@ -795,12 +810,22 @@ async fn persisted_games_reload_into_new_app_state() {
             "/games",
             Some(&alice.session_token),
             &CreateGameRequest {
-                seats: vec![CreateSeatRequest {
-                    kind: SeatKind::Human,
-                    display_name: "Alice".to_string(),
-                    engine_id: None,
-                    claim: Some(SeatClaim::Creator),
-                }],
+                seats: vec![
+                    CreateSeatRequest {
+                        kind: SeatKind::Human,
+                        display_name: "Alice".to_string(),
+                        engine_id: None,
+                        claim: Some(SeatClaim::Creator),
+                    },
+                    // A game needs two seats; a bot fills the second without
+                    // an invitation, keeping this test about reloading.
+                    CreateSeatRequest {
+                        kind: SeatKind::Engine,
+                        display_name: "Greedy".to_string(),
+                        engine_id: Some("greedy-v1".to_string()),
+                        claim: None,
+                    },
+                ],
                 seed: Some(999),
                 variant: None,
                 language: None,
@@ -831,7 +856,111 @@ async fn persisted_games_reload_into_new_app_state() {
         .expect("game should reload from sqlite snapshot");
     assert_eq!(restored.id, created.id);
     assert_eq!(restored.status, api::GameStatus::Active);
-    assert_eq!(restored.participants.len(), 1);
+    assert_eq!(restored.participants.len(), 2);
+}
+
+/// GAME-3. A one-seat game is not a small game — it is over on its first
+/// turn, because the finish rule reads "one seat or fewer still unresigned"
+/// as somebody having left, which is true from the start when nobody else
+/// was ever there.
+#[tokio::test]
+async fn creating_a_game_with_one_seat_is_rejected() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state);
+    let alice = register_player(app.clone(), "Alice").await;
+
+    let response = send_json_auth(
+        app,
+        Method::POST,
+        "/games",
+        Some(&alice.session_token),
+        &CreateGameRequest {
+            seats: vec![CreateSeatRequest {
+                kind: SeatKind::Human,
+                display_name: "Alice".to_string(),
+                engine_id: None,
+                claim: Some(SeatClaim::Creator),
+            }],
+            seed: None,
+            variant: None,
+            language: None,
+            board_layout: None,
+            move_time_limit_seconds: None,
+        },
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// GAME-3, checked again where a roster can shrink. Seats may be removed
+/// after creation, so passing the check once is not enough.
+#[tokio::test]
+async fn starting_a_game_cut_down_to_one_seat_is_rejected() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state);
+    let alice = register_player(app.clone(), "Alice").await;
+
+    let created: GameStateDto = read_json(
+        send_json_auth(
+            app.clone(),
+            Method::POST,
+            "/games",
+            Some(&alice.session_token),
+            &CreateGameRequest {
+                seats: vec![
+                    CreateSeatRequest {
+                        kind: SeatKind::Human,
+                        display_name: "Alice".to_string(),
+                        engine_id: None,
+                        claim: Some(SeatClaim::Creator),
+                    },
+                    CreateSeatRequest {
+                        kind: SeatKind::Engine,
+                        display_name: "Greedy".to_string(),
+                        engine_id: Some("greedy-v1".to_string()),
+                        claim: None,
+                    },
+                ],
+                seed: None,
+                variant: None,
+                language: None,
+                board_layout: None,
+                move_time_limit_seconds: None,
+            },
+        )
+        .await,
+    )
+    .await;
+
+    let removed = send_json_auth(
+        app.clone(),
+        Method::POST,
+        &format!("/games/{}/seats/1/remove", created.id),
+        Some(&alice.session_token),
+        &serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        removed.status(),
+        StatusCode::OK,
+        "removing a seat while waiting is allowed"
+    );
+
+    let response = send_json_auth(
+        app,
+        Method::POST,
+        &format!("/games/{}/start", created.id),
+        Some(&alice.session_token),
+        &StartGameRequest::default(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a roster of one must not reach the board"
+    );
 }
 
 #[tokio::test]
@@ -1540,6 +1669,379 @@ async fn spanish_game_plays_carro_with_two_ordinary_r_tiles() {
     // 5-square span (x=7..11) starts on the centre DoubleWord and reaches
     // no letter premium after it, so the whole word simply doubles.
     assert_eq!(updated.participants[0].score, (3 + 1 + 1 + 1 + 1) * 2);
+}
+
+/// A full hashing pool refuses with a *varied* retry hint, not a flat one.
+///
+/// This refusal fires precisely when several callers are hashing at once —
+/// that is its trigger condition, not a coincidence — so everyone it refuses is
+/// simultaneous by definition. Telling them all the same number sends them back
+/// together, into a pool that is still full. The limiter learned this; this
+/// path had a hardcoded `1` until it shared the limiter's `retry_after`.
+///
+/// A zero-permit semaphore makes the refusal deterministic: every acquire times
+/// out after `HASH_PERMIT_WAIT` rather than being raced for.
+///
+/// Sampled rather than range-checked, because the range alone would pass
+/// against the flat `1` this exists to remove. Eight samples over three
+/// possible values collide entirely about once in two thousand runs; the range
+/// is asserted too, since a hint outside it is wrong however varied.
+#[tokio::test]
+async fn a_full_hashing_pool_varies_its_retry_hint() {
+    let database_url = test_database_url();
+    let mut state = create_test_state(&database_url).await;
+    state.hash_limit = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let app = build_router(state);
+
+    let mut seen = std::collections::HashSet::new();
+    for attempt in 0..8 {
+        let response = send_json(
+            app.clone(),
+            Method::POST,
+            "/auth/register",
+            &RegisterPlayerRequest {
+                display_name: format!("busy{attempt}"),
+                email: format!("busy{attempt}@example.com"),
+                password: "correct horse battery staple".to_string(),
+                stay_logged_in: false,
+            },
+        )
+        .await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a caller who cannot get a hashing permit is refused, not queued"
+        );
+        let retry: u64 = response
+            .headers()
+            .get("retry-after")
+            .expect("a refusal a client can act on carries Retry-After")
+            .to_str()
+            .expect("an ASCII header")
+            .parse()
+            .expect("a whole number of seconds");
+        assert!(
+            (1..=3).contains(&retry),
+            "told to wait {retry}s, which is outside the jittered range"
+        );
+        seen.insert(retry);
+    }
+
+    assert!(
+        seen.len() > 1,
+        "every refusal said the same thing ({seen:?}), so everyone refused at \
+         once would come back at once"
+    );
+}
+
+/// Every response carries the build that produced it, whatever it was asking
+/// for. That is the point of a header rather than a field on one endpoint: a
+/// client learns the server moved from traffic it was sending anyway, instead
+/// of polling something on a timer for an event that happens a few times a
+/// week.
+#[tokio::test]
+async fn every_response_carries_the_build_id() {
+    let app = Router::new()
+        .route("/anything", get(|| async { "ok" }))
+        .layer(build_id_header_for(Some("a1c9f02")));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/anything")
+                .body(Body::empty())
+                .expect("a valid request"),
+        )
+        .await
+        .expect("the router should answer");
+
+    assert_eq!(
+        response
+            .headers()
+            .get("x-build-id")
+            .expect("every response is stamped")
+            .to_str()
+            .expect("an ASCII header"),
+        "a1c9f02"
+    );
+}
+
+/// A build with no id says nothing, rather than saying something constant.
+///
+/// The difference matters at the other end: a client compares this against its
+/// own id and reloads when they differ. A placeholder that never changes would
+/// be indistinguishable from "the server is running your build" — so silence
+/// is the honest answer, and the client's own "cannot tell, do nothing" path
+/// is the one that should handle it.
+#[tokio::test]
+async fn an_unidentified_build_sets_no_header() {
+    for id in [None, Some("")] {
+        let app = Router::new()
+            .route("/anything", get(|| async { "ok" }))
+            .layer(build_id_header_for(id));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/anything")
+                    .body(Body::empty())
+                    .expect("a valid request"),
+            )
+            .await
+            .expect("the router should answer");
+
+        assert!(
+            response.headers().get("x-build-id").is_none(),
+            "an unidentified build ({id:?}) should say nothing at all"
+        );
+    }
+}
+
+/// An invitation typed in the wrong case reaches the right player, and the
+/// seat then carries the name *they* registered.
+///
+/// Names match case-insensitively — `get_player_by_name` folds, backed by a
+/// unique index — so inviting "steve" finds Steve. Without correcting the seat
+/// afterwards the game would carry the inviter's spelling for its whole life,
+/// showing one player somebody else's idea of their name. Adding a seat to an
+/// existing game already resolved this way; creating a game did not.
+#[tokio::test]
+async fn a_named_seat_takes_the_invitees_own_spelling() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state);
+
+    let alice = register_player(app.clone(), "AliceCase").await;
+    register_player(app.clone(), "BobCase").await;
+
+    let created: GameStateDto = read_json(
+        send_json_auth(
+            app.clone(),
+            Method::POST,
+            "/games",
+            Some(&alice.session_token),
+            &CreateGameRequest {
+                seats: vec![
+                    CreateSeatRequest {
+                        kind: SeatKind::Human,
+                        display_name: "AliceCase".to_string(),
+                        engine_id: None,
+                        claim: Some(SeatClaim::Creator),
+                    },
+                    CreateSeatRequest {
+                        kind: SeatKind::Human,
+                        // Both fields as the inviter typed them, which is what
+                        // the client sends.
+                        display_name: "bobcase".to_string(),
+                        engine_id: None,
+                        claim: Some(SeatClaim::Named {
+                            display_name: "bobcase".to_string(),
+                        }),
+                    },
+                ],
+                seed: Some(1),
+                variant: None,
+                language: None,
+                board_layout: None,
+                move_time_limit_seconds: None,
+            },
+        )
+        .await,
+    )
+    .await;
+
+    assert_eq!(
+        created.participants[1].display_name, "BobCase",
+        "the seat should carry the name Bob registered, not the one Alice typed"
+    );
+
+    // The other way a named seat appears: added to a game that already exists.
+    // A different endpoint, and it was missed the first time — creating a game
+    // was fixed while "+ Add seat" still kept the inviter's spelling.
+    register_player(app.clone(), "CarolCase").await;
+    let with_seat: GameStateDto = read_json(
+        send_json_auth(
+            app.clone(),
+            Method::POST,
+            &format!("/games/{}/seats", created.id),
+            Some(&alice.session_token),
+            &CreateSeatRequest {
+                kind: SeatKind::Human,
+                display_name: "CAROLCASE".to_string(),
+                engine_id: None,
+                claim: Some(SeatClaim::Named {
+                    display_name: "CAROLCASE".to_string(),
+                }),
+            },
+        )
+        .await,
+    )
+    .await;
+
+    assert_eq!(
+        with_seat.participants[2].display_name, "CarolCase",
+        "adding a seat should resolve the name the same way creating one does"
+    );
+
+    // And refuses an unknown one, the same way creating a game does. The two
+    // disagreeing is what let a partial name become a seat: typing "Carol" and
+    // pressing "+ Add seat" produced a seat named "Carol" that nobody could
+    // ever claim, discovered only when somebody pressed Send.
+    let nobody = send_json_auth(
+        app.clone(),
+        Method::POST,
+        &format!("/games/{}/seats", created.id),
+        Some(&alice.session_token),
+        &CreateSeatRequest {
+            kind: SeatKind::Human,
+            display_name: "CarolCas".to_string(),
+            engine_id: None,
+            claim: Some(SeatClaim::Named {
+                display_name: "CarolCas".to_string(),
+            }),
+        },
+    )
+    .await;
+    assert_eq!(
+        nobody.status(),
+        StatusCode::NOT_FOUND,
+        "a partial name matches nobody and should be refused, not seated"
+    );
+}
+
+/// An unknown display name must cost what a known one costs.
+///
+/// Login used to return before any hashing when the name did not exist —
+/// ~95ms against ~142ms measured over the internet, separating cleanly in five
+/// samples. That is an oracle: ask, time the answer, learn whether somebody is
+/// registered, and enumerate the user list by guessing.
+///
+/// Asserted through the hashing semaphore rather than by timing, because a
+/// timing test on a shared runner measures the runner. With no permits
+/// available, a request that *tries* to hash is refused with 503; one that
+/// short-circuits sails past to 400. So the status tells us whether the work
+/// happened, deterministically and in milliseconds.
+#[tokio::test]
+async fn an_unknown_name_still_pays_for_a_password_check() {
+    let database_url = test_database_url();
+    let mut state = create_test_state(&database_url).await;
+    state.hash_limit = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let app = build_router(state);
+
+    let response = send_json(
+        app,
+        Method::POST,
+        "/auth/login",
+        &LoginPlayerRequest {
+            display_name: "NobodyByThatName".to_string(),
+            password: "correct horse battery staple".to_string(),
+            stay_logged_in: false,
+        },
+    )
+    .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "an unknown name should have queued for a hash like any other login; \
+         a 400 here means it answered without doing the work, which is the leak"
+    );
+}
+
+/// The decoy hash has to be a real one.
+///
+/// A malformed constant would make `verify_password` bail on the parse instead
+/// of doing the work — fast, silent, and precisely the timing difference this
+/// exists to remove. `verify_password` returns a bare `bool`, so a hash that
+/// does not parse is indistinguishable from a wrong password; the only way to
+/// tell them apart is to verify the passphrase it was actually made from.
+///
+/// Kept here rather than beside the constant so nothing in the server carries
+/// the passphrase. It authenticates nobody — no account has this hash — and
+/// the login path throws the answer away.
+#[test]
+fn the_decoy_hash_is_a_real_argon2_hash() {
+    assert!(
+        crate::app::auth::verify_password(
+            "decoy — nobody holds this passphrase",
+            crate::app::auth::DECOY_PASSWORD_HASH,
+        ),
+        "the decoy hash did not verify its own passphrase, so it is malformed \
+         or was regenerated with different Argon2 parameters"
+    );
+}
+
+/// The daily record is written once a day, and counts what is there.
+///
+/// "Once a day" is the day's primary key plus `insert or ignore`, not a
+/// check-then-write — so this calls the sweep repeatedly and expects one row.
+/// A check-then-write would pass a single-threaded test and still double-write
+/// under two concurrent callers, which is exactly what `list_games` invites.
+#[tokio::test]
+async fn the_database_size_is_recorded_once_a_day() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    register_player(app.clone(), "SizeAlice").await;
+    register_player(app.clone(), "SizeBob").await;
+
+    // Through persistence rather than the sweep, deliberately: the sweep logs
+    // and swallows failures, so a broken query there reads as "no rows yet"
+    // instead of as an error. It did exactly that while this was being written
+    // — the count named a table that does not exist and the test simply saw
+    // zero. Asserting against the layer that can fail is what makes it say so.
+    for _ in 0..3 {
+        persistence::record_database_size(&state.db, 0)
+            .await
+            .expect("recording should succeed");
+    }
+
+    let rows = persistence::list_database_size_history(&state.db, 10)
+        .await
+        .expect("the history should be readable");
+    assert_eq!(
+        rows.len(),
+        1,
+        "three sweeps in one day should leave one row"
+    );
+
+    let today = &rows[0];
+    assert_eq!(
+        today.players, 2,
+        "both registered players should be counted"
+    );
+    assert!(
+        today.sessions >= 2,
+        "registering signs you in, so there should be a session each: {}",
+        today.sessions
+    );
+    assert!(
+        today.database_bytes > 0,
+        "page_count * page_size should be a real size, got {}",
+        today.database_bytes
+    );
+}
+
+/// A day with no requests records nothing, and that is not a fault.
+///
+/// The sweep runs off `list_games`, so a quiet day leaves a gap. Pinned because
+/// #89 will compare days and must read a gap as "quiet" rather than "broken" —
+/// and because somebody tempted to add a scheduler should see that the absence
+/// is a decision.
+#[tokio::test]
+async fn a_day_with_no_traffic_records_nothing() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+
+    let rows = persistence::list_database_size_history(&state.db, 10)
+        .await
+        .expect("the history should be readable");
+    assert!(
+        rows.is_empty(),
+        "nothing should be recorded until something runs the sweep"
+    );
 }
 
 pub(super) async fn register_player(app: Router, display_name: &str) -> PlayerSessionDto {
@@ -2498,7 +3000,7 @@ async fn claimed_seat_rejects_actions_from_a_different_player() {
         },
     )
     .await;
-    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
 
     // Alice can.
     let accepted = send_json_auth(
@@ -2622,7 +3124,7 @@ async fn claimed_game_only_starts_for_a_seat_owner() {
         &StartGameRequest::default(),
     )
     .await;
-    assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
 
     let accepted = send_json_auth(
         app,
@@ -2847,7 +3349,7 @@ async fn a_non_participant_cannot_chat() {
         },
     )
     .await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -2864,7 +3366,11 @@ async fn get_game_rejects_unauthenticated_and_unrelated_callers() {
         &format!("/games/{}", started.game.id),
     )
     .await;
-    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        unauthenticated.status(),
+        StatusCode::UNAUTHORIZED,
+        "nobody is signed in, so signing in is the answer"
+    );
 
     let unrelated = send_empty_auth(
         app,
@@ -2873,7 +3379,16 @@ async fn get_game_rejects_unauthenticated_and_unrelated_callers() {
         Some(&mallory.session_token),
     )
     .await;
-    assert_eq!(unrelated.status(), StatusCode::UNAUTHORIZED);
+    // 403, not 401. Mallory's session is perfectly good; she is simply not in
+    // this game. Answering 401 tells a client its session is invalid, and a
+    // client that acts on that signs the player out — which is what happened:
+    // the games list includes open invitations, so every newly registered
+    // player opened one, was told 401, and was logged straight back out.
+    assert_eq!(
+        unrelated.status(),
+        StatusCode::FORBIDDEN,
+        "a signed-in caller who is not in the game is forbidden, not unauthenticated"
+    );
 }
 
 #[tokio::test]
@@ -4269,7 +4784,7 @@ async fn starting_a_game_is_rejected_for_a_seated_non_creator() {
         &StartGameRequest::default(),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -4653,6 +5168,7 @@ async fn admin_can_list_and_delete_users() {
     .await;
     assert!(listed.iter().any(|player| player.id == alice.player_id));
 
+    log_out(app.clone(), &alice.session_token).await;
     let delete_response = send_admin::<()>(
         app.clone(),
         Method::DELETE,
@@ -5039,6 +5555,7 @@ async fn admin_deleting_a_user_removes_their_rating_rows_and_reset_tokens() {
         .expect("token insert should succeed");
     }
 
+    log_out(app.clone(), &alice.session_token).await;
     let deleted = send_admin::<()>(
         app,
         Method::DELETE,
@@ -7327,6 +7844,7 @@ async fn admin_refuses_to_delete_a_user_with_games() {
     )
     .await;
 
+    log_out(app.clone(), &alice.session_token).await;
     let refused = send_admin::<()>(
         app.clone(),
         Method::DELETE,
@@ -7351,6 +7869,7 @@ async fn admin_refuses_to_delete_a_user_with_games() {
         .expect("delete game");
     state.games.write().await.remove(&game_id);
 
+    log_out(app.clone(), &alice.session_token).await;
     let allowed = send_admin::<()>(
         app.clone(),
         Method::DELETE,

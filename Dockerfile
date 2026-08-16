@@ -80,15 +80,25 @@ RUN cd crates/ui && CARGO_INCREMENTAL=0 TILE_LITE_ELITE_API_BASE_URL="" dx build
 # up and this container still serves the old bundle; /health would report the
 # new version and send the tab into a reload loop against unchanged code.
 #
-# `version.txt` is excluded from its own hash — the shell creates it before
-# `find` runs, so it would otherwise hash an empty file and change the answer.
-# `sort` makes the result independent of directory order.
+# It holds the **build id** — the commit — rather than a hash of the bundle.
+# A hash was the same information the long way round: it only ever changed
+# because the build id is compiled into the wasm, so it was an indirection over
+# the commit that could not tell you which commit it meant. The id can, which
+# lets a tab compare three things it now knows — its own build, this
+# container's, and the server's — and tell "a deploy is in flight" apart from
+# "there is new code for me".
+#
+# Written only when there is an id to write. A dev build sets no
+# TILE_LITE_ELITE_BUILD_ID, and no file is better than an empty one: Caddy's
+# SPA fallback answers the missing path with index.html, which the client
+# already rejects as unreadable and correctly treats as "cannot tell".
 RUN BUNDLE_DIR=target/dx/tile-lite-elite-ui/release/web/public \
-    && HASH="$(cd "$BUNDLE_DIR" \
-        && find . -type f ! -name version.txt -exec sha256sum {} + \
-        | sort | sha256sum | cut -c1-16)" \
-    && printf '%s' "$HASH" > "$BUNDLE_DIR/version.txt" \
-    && echo "bundle id: $HASH"
+    && if [ -n "$TILE_LITE_ELITE_BUILD_ID" ]; then \
+        printf '%s' "$TILE_LITE_ELITE_BUILD_ID" > "$BUNDLE_DIR/version.txt" \
+        && echo "build id: $TILE_LITE_ELITE_BUILD_ID"; \
+    else \
+        echo "no build id set — writing no version.txt, so clients will not auto-update"; \
+    fi
 
 # ---------------------------------------------------------------------------
 

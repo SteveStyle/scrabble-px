@@ -1,4 +1,4 @@
-import { Page, expect } from '@playwright/test';
+import { Browser, Page, expect } from '@playwright/test';
 
 // Every player these tests create starts with this prefix, so
 // scripts/e2e-clean.sh (and the global teardown) can find and remove them.
@@ -15,7 +15,7 @@ export function uniqueName(base: string): string {
 // The signed-out app shows a blocking auth modal with "Log in" / "Register"
 // tabs. These helpers drive it via visible text / placeholders rather than
 // brittle structural selectors.
-function authTab(page: Page, name: 'Log in' | 'Register') {
+export function authTab(page: Page, name: 'Log in' | 'Register') {
   return page.locator('.auth-panel-tabs button', { hasText: name });
 }
 function authSubmit(page: Page, name: 'Log in' | 'Register') {
@@ -65,4 +65,66 @@ export async function expectSignedIn(page: Page) {
 // The blocking auth modal is what a signed-out visitor gets.
 export async function expectSignedOut(page: Page) {
   await expect(page.locator('.auth-panel')).toBeVisible();
+}
+
+/// Click a control that only appears once this player's games list has caught
+/// up with the other player, refreshing on each attempt rather than waiting out
+/// a single timeout.
+async function refreshUntilClickable(page: Page, name: 'Accept' | 'Start') {
+  await expect(async () => {
+    await page.getByRole('button', { name: 'Refresh' }).click();
+    await expect(page.getByRole('button', { name, exact: true })).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+  await page.getByRole('button', { name, exact: true }).click();
+}
+
+/// Two signed-in players in one started game, in separate browser contexts.
+///
+/// Needed because unread only counts messages you *received* — the #86 rework
+/// stopped marking your own (`games.rs` filters the caller out of
+/// `last_message_received_at`). A single player in a bot game cannot receive
+/// anything, and Greedy Bot does not chat, so there is no cheaper rig than two
+/// real accounts.
+export async function startTwoPlayerGame(browser: Browser) {
+  const hostContext = await browser.newContext();
+  const guestContext = await browser.newContext();
+  const host = await hostContext.newPage();
+  const guest = await guestContext.newPage();
+
+  const guestName = uniqueName('guest');
+  await register(guest, guestName);
+  await register(host, uniqueName('host'));
+
+  await host.getByRole('button', { name: 'Play Friend' }).click();
+  const field = host.locator('.name-autocomplete input').first();
+  await field.click();
+  // The whole name, and the suggestion matched by exact text rather than
+  // `.first()`. Every generated guest shares the prefix `e2e-guest-`, so a
+  // truncated query plus "take the first" invites whichever old account the
+  // dropdown happened to list first — invisible on dev, where e2e-clean wipes
+  // test users between runs, and reliably wrong on preview, where they
+  // accumulate (#128). The symptom is an invitation the guest never receives.
+  await field.type(guestName, { delay: 20 });
+  const suggestion = host.locator('.name-autocomplete-item', { hasText: guestName });
+  await expect(suggestion).toBeVisible();
+  await suggestion.click();
+  await host.getByRole('button', { name: 'Invite', exact: true }).click();
+
+  // Each step waits on the *other* player's list catching up, which happens on
+  // a ten-second poll. A plain click hopes the poll lands inside its own
+  // timeout — true when the suite runs this test alone, false under parallel
+  // workers, which is exactly how this failed in CI and not locally. Refreshing
+  // on every attempt makes the handshake driven rather than hoped for.
+  await refreshUntilClickable(guest, 'Accept');
+  await refreshUntilClickable(host, 'Start');
+  await expect(host.locator('.rack-panel')).toBeVisible();
+
+  // The guest has to have the game open to reach its chat composer.
+  await expect(async () => {
+    await guest.getByRole('button', { name: 'Refresh' }).click();
+    await expect(guest.locator('.game-row').first()).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
+  await guest.locator('.game-row').first().click();
+
+  return { host, guest, hostContext, guestContext };
 }

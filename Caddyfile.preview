@@ -17,6 +17,27 @@
 		@version path /version.txt
 		header @version Cache-Control "no-store"
 
+		# "No Cache-Control" is not the same as "do not cache", which is what
+		# the note above assumed. With no directive a browser falls back to
+		# *heuristic* freshness — commonly a fraction of the time since
+		# Last-Modified — so the longer index.html goes unchanged, the longer
+		# a browser will serve it without asking. Observed 2026-08-14: a phone
+		# opened the app on a months-old bundle (0.4.18) and sat there showing
+		# offline against a current server.
+		#
+		# It cannot recover on its own either. The poll that notices a new
+		# bundle lives *in* the client, so a browser pinned to a build old
+		# enough to predate that code has no poller at all.
+		#
+		# `no-cache` means "revalidate before use", not "do not store": the
+		# ETag above is still honoured, so an unchanged document costs a 304
+		# rather than a re-download.
+		@html {
+			not path /assets/*
+			not path /version.txt
+		}
+		header @html Cache-Control "no-cache"
+
 		root * /srv
 		try_files {path} /index.html
 		file_server

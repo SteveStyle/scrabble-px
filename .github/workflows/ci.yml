@@ -12,9 +12,16 @@ on:
 
 # A newer push to the same branch/PR cancels an in-progress run for it, so we
 # don't burn minutes finishing a run that's already superseded.
+#
+# **Except on `main`.** Every commit there is one that might be released, and
+# the deploy gate judges the push-to-main run for the exact commit it ships. On
+# the day 0.5.0 went out, `deploy.sh` pushed its version bump 2m22s after the
+# release commit landed — against an e2e job that takes 4-10 minutes — so the
+# deploy cancelled the CI run for the commit it had just released. The minutes
+# saved were the minutes that would have caught it.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,10 +34,26 @@ env:
 
 jobs:
   check:
-    name: fmt · clippy · test · wasm
+    name: fmt · clippy · test · wasm · docs
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 — deploy.test.sh runs deploy.sh's gates against real
+      # commits in this repository's history, with only `gh` and `curl`
+      # stubbed. A shallow checkout does not have them, and the suite fails
+      # with "not a valid local git ref" — locally green, red on the runner,
+      # which is the trap these suites keep relearning.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Markdown is linted here because it was not linted anywhere. The config
+      # (.markdownlint.jsonc) has existed for weeks and was only ever run by
+      # hand — so an error reached `main` on 2026-08-16 and would have stayed,
+      # and the linter itself existed only in one machine's npx cache, which is
+      # not a dependency anybody declared. Pinned, and first in the job because
+      # it takes two seconds and the Rust steps take minutes.
+      - name: Lint markdown
+        run: npx --yes markdownlint-cli2@0.23.2 "**/*.md" "#target" "#e2e/node_modules" "#old-crates"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -53,10 +76,21 @@ jobs:
       # The release scripts have one piece of parsing that both deploy.sh and
       # check-commit-stamp.sh depend on, and it has failed twice — once loudly,
       # taking a production deploy down between two commands, and once quietly,
-      # by returning nothing so the stamp check skipped itself. Cheap to run,
-      # and the only test in the repo that covers a script.
+      # by returning nothing so the stamp check skipped itself.
+      #
+      # deploy.test.sh runs deploy.sh's own gates under DEPLOY_GATES_ONLY.
+      # Those gates decide what reaches users, and were previously exercised
+      # only by deploying — so the branch where each says *no* almost never
+      # ran, which is how two of them came to fail open and a third to refuse
+      # every rehearsal for a day.
       - name: Shell script tests
-        run: ./scripts/tests/read-api-version.test.sh
+        run: |
+          ./scripts/tests/read-api-version.test.sh
+          ./scripts/tests/check-release-version.test.sh
+          ./scripts/tests/check-commit-stamp.test.sh
+          ./scripts/tests/ci-status.test.sh
+          ./scripts/tests/deploy.test.sh
+          ./scripts/tests/commit-msg-hook.test.sh
 
       # -D warnings makes any clippy or rustc warning fail the build. Scoped to
       # this repo's crates (old-crates carry many pre-existing warnings we don't

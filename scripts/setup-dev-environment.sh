@@ -98,6 +98,187 @@ else
     echo "    already installed: $(docker --version)"
 fi
 
+echo "==> SSH host aliases"
+# The deploy scripts pass `-i <key>` explicitly and need none of this. What
+# needs it is everything a person types: docs/3.4's `ssh tile-lite-elite`, and
+# the dbprod shortcut below. Without a config those resolve `tile-lite-elite`
+# as a literal hostname and fail.
+#
+# The keys themselves are not created here — they are secrets, restored by
+# hand from the Windows backup (see the closing note and docs/3.1-setup.md).
+# This only names the hosts they open.
+if [ -f ~/.ssh/config ] && grep -q "Host tile-lite-elite$" ~/.ssh/config; then
+    echo "    already configured"
+else
+    mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    cat >> ~/.ssh/config <<'SSHEOF'
+
+# IdentitiesOnly stops the agent offering every key it holds, which otherwise
+# burns MaxAuthTries on a host that accepts exactly one.
+Host tile-lite-elite
+  HostName 129.151.69.246
+  User ubuntu
+  IdentityFile ~/.ssh/oracle_tile_lite_elite
+  IdentitiesOnly yes
+
+Host tile-lite-elite-rehearsal
+  HostName 129.151.84.183
+  User ubuntu
+  IdentityFile ~/.ssh/oracle_tile_lite_elite_rehearsal
+  IdentitiesOnly yes
+
+Host github.com
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/id_ed25519_gh
+  IdentitiesOnly yes
+  AddKeysToAgent yes
+SSHEOF
+    chmod 600 ~/.ssh/config
+    echo "    written to ~/.ssh/config"
+fi
+
+echo "==> ssh-agent"
+# The GitHub key carries a passphrase and the remotes are ssh, so without an
+# agent every push asks for it. One agent at a **fixed socket** rather than the
+# usual `eval $(ssh-agent)`: that exports a random path into one shell only,
+# and anything which does not read ~/.bashrc — a script, or a non-interactive
+# shell — then cannot reach it. A known path is reachable by exporting it.
+#
+# `ssh-add -l` exits 2 only when no agent answers; 1 means a live agent holding
+# nothing, which is fine and must not restart it.
+if grep -q "tile-lite-elite ssh-agent" ~/.bashrc 2>/dev/null; then
+    echo "    already configured"
+else
+    cat >> ~/.bashrc <<'AGENTEOF'
+
+# >>> tile-lite-elite ssh-agent >>>
+export SSH_AUTH_SOCK="$HOME/.ssh/agent.sock"
+ssh-add -l >/dev/null 2>&1
+if [ $? -eq 2 ]; then
+  rm -f "$SSH_AUTH_SOCK"
+  (umask 077; ssh-agent -a "$SSH_AUTH_SOCK" >/dev/null 2>&1)
+fi
+# <<< tile-lite-elite ssh-agent <<<
+AGENTEOF
+    echo "    written to ~/.bashrc — then 'sshkeys' once per boot"
+fi
+
+echo "==> ssh key shortcut (sshkeys)"
+# One passphrase prompt per WSL restart is the floor without bridging to the
+# Windows agent, and that is a fair price. Remembering three key *filenames* is
+# not — none of them is the default `id_ed25519`, so `ssh-add` with no argument
+# finds nothing and the error when a key is missing points at the wrong file.
+#
+# All three together because the deploy keys hit the same wall as GitHub, and
+# discovering that halfway through a deploy is worse than loading them up front.
+# ssh-add retries the previous passphrase on each subsequent key, so identical
+# passphrases mean a single prompt.
+sed -i '/alias sshkeys=/d' ~/.bashrc 2>/dev/null || true
+echo "alias sshkeys='ssh-add ~/.ssh/id_ed25519_gh ~/.ssh/oracle_tile_lite_elite ~/.ssh/oracle_tile_lite_elite_rehearsal'" >> ~/.bashrc
+echo "    written to ~/.bashrc"
+
+echo "==> git hooks"
+# The commit-msg hook refuses a subject without the version stamp, at the
+# moment it is written rather than six minutes later in CI — and while the
+# commit is still the tip, so the fix is an amend rather than a rebase.
+#
+# core.hooksPath rather than .git/hooks, so the hook is version-controlled and
+# a rebuilt machine gets it. CI still runs check-commit-stamp.sh: a hook lives
+# in a working copy and --no-verify skips it, so it is a convenience, not a
+# gate.
+git config core.hooksPath .githooks
+echo "    core.hooksPath = .githooks"
+
+echo "==> git: tell it where the agent lives"
+# VS Code runs git from a process that never sourced ~/.bashrc, so it has no
+# SSH_AUTH_SOCK and falls back to asking for the passphrase on every fetch and
+# every push. Setting it inside git's own ssh command fixes that for **any**
+# caller — VS Code, cron, a script, a shell that forgot to export it — because
+# git supplies the variable itself rather than inheriting it.
+#
+# Safe when no agent is running: ssh fails to reach the socket and falls back
+# to the key file exactly as it would have anyway.
+git config --global core.sshCommand 'env SSH_AUTH_SOCK="$HOME/.ssh/agent.sock" ssh'
+echo "    core.sshCommand set"
+
+echo "==> Admin CLI aliases (sadev, sapre)"
+# The VM has `sa`, written into its ~/.bashrc by deploy.sh, because the admin
+# CLI has to run where 127.0.0.1 is the server's own loopback. The same problem
+# exists here in two flavours, so there are two aliases rather than one:
+#
+#   sadev   dev runs natively on :3000, which is the CLI's default, so this is
+#           just admin.sh — which also builds the CLI if it is stale.
+#   sapre   preview runs in a container, and the host's 127.0.0.1 is not the
+#           container's, so admin.sh cannot reach it. It has to run inside.
+#
+# Delete-then-append, like deploy.sh's, so re-running updates a stale line
+# rather than leaving two that disagree.
+sed -i '/alias sadev=/d;/alias sapre=/d' ~/.bashrc 2>/dev/null || true
+{
+  echo "alias sadev='$REPO_DIR/scripts/admin.sh'"
+  echo "alias sapre='docker compose -f $REPO_DIR/docker-compose.preview.yml exec server tile-lite-elite-admin'"
+} >> ~/.bashrc
+echo "    written to ~/.bashrc — new shell, or 'source ~/.bashrc', to pick them up"
+
+echo "==> SQLite shortcuts (dbdev, dbpre, dbprod)"
+# For anything the admin CLI does not cover. All three are `-readonly`: an
+# inspection session cannot write, whichever environment it lands in, and
+# production is one keystroke away from preview.
+#
+# A **throwaway container, from a prebuilt image** — deliberately not a
+# long-lived one. A permanent container holds the volume even while stopped,
+# and `deploy-preview.sh reset` does `down -v`, so it would break wiping
+# preview until somebody remembered to remove it. Baking a 5MB image instead
+# gets the speed without the lifecycle: 0.8s per query against 3.3s for
+# `apk add` every time, and nothing holds the volume between uses.
+#
+# dbdev is a plain alias because dev's database is a file in the checkout. The
+# other two are functions: the query has to reach sqlite3 *inside* the
+# container rather than being appended to `docker run`, and they drop `-it`
+# when given one, so `dbpre "select ..."` works in a pipeline as well as
+# interactively.
+python3 - "$REPO_DIR" <<'PYEOF'
+import re, sys, pathlib
+repo = sys.argv[1]
+rc = pathlib.Path.home() / ".bashrc"
+text = rc.read_text() if rc.exists() else ""
+# Drop any previous block, marked so re-running replaces rather than appends.
+text = re.sub(r"\n?# >>> tile-lite-elite sqlite >>>.*?# <<< tile-lite-elite sqlite <<<\n",
+              "\n", text, flags=re.S)
+block = f'''
+# >>> tile-lite-elite sqlite >>>
+alias dbdev='sqlite3 -readonly {repo}/data/tile-lite-elite.sqlite3'
+
+# Built on first use, then reused. `docker image rm tle-sqlite` to refresh it.
+_tle_sqlite_image() {{
+  docker image inspect tle-sqlite >/dev/null 2>&1 && return 0
+  printf 'FROM alpine\\nRUN apk add --no-cache sqlite\\n' \\
+    | docker build -q -t tle-sqlite - >/dev/null
+}}
+
+_tle_sqlite_in_volume() {{
+  local volume="$1"; shift
+  _tle_sqlite_image || return 1
+  local tty=""; [ $# -eq 0 ] && [ -t 0 ] && tty="-it"
+  docker run --rm $tty -v "$volume":/data tle-sqlite \\
+    sqlite3 -readonly /data/tile-lite-elite.sqlite3 "$@"
+}}
+
+dbpre() {{ _tle_sqlite_in_volume tile-lite-elite-preview-data "$@"; }}
+
+# Production, over ssh. alpine + apk there rather than a built image: it is
+# used rarely, and building one on the VM is not worth the disk.
+dbprod() {{
+  ssh -t tile-lite-elite "docker run --rm -i -v tile-lite-elite-data:/data alpine sh -c \\
+    'apk add --no-cache sqlite >/dev/null 2>&1 && exec sqlite3 -readonly /data/tile-lite-elite.sqlite3'"
+}}
+# <<< tile-lite-elite sqlite <<<
+'''
+rc.write_text(text.rstrip("\n") + "\n" + block)
+print("    written to ~/.bashrc")
+PYEOF
+
 cat <<EOF
 
 ==> Tooling setup done. Two manual steps left (see docs/3.1-setup.md):

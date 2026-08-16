@@ -85,12 +85,64 @@ async fn assert_refused(app: Router, player_id: &str, naming: &[&str]) {
     }
 }
 
-async fn assert_deleted(app: Router, player_id: &str) {
+/// An account somebody is signed in as is refused, and told which wait it is in.
+///
+/// The argument is the games guard's, one step earlier: somebody interested
+/// enough to be signed in is likely to play a game, and a game is exactly what
+/// that guard protects. The tool exists to clear out *old* data, and a live
+/// session is the clearest evidence that this is not old data.
+///
+/// Refused *and* explained, separately from the games refusal, because the
+/// remedies differ — one waits for retention, the other for the session. A test
+/// that only checked the 400 would pass against a refusal that told the
+/// operator nothing, which is the failure this file already guards against for
+/// the games case.
+#[tokio::test]
+async fn cannot_delete_an_account_that_is_signed_in() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    // No games at all: this account is deletable but for the session.
+    let alice = register_player(app.clone(), "Alice").await;
+
+    let response = delete_account(app.clone(), &alice.player_id).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an account in use should not be deleted out from under whoever is using it"
+    );
+    let problem: api::ApiError = read_json(response).await;
+    assert!(
+        problem.message.contains("signed in"),
+        "the refusal should say it is the session in the way, not leave the \
+         operator to guess between this and the games guard: {}",
+        problem.message
+    );
+
+    // Signing out removes the only thing in the way.
+    persistence::invalidate_sessions_for_player(&state.db, &alice.player_id)
+        .await
+        .expect("sessions should be removable");
+    assert_deleted(app, &state, &alice.player_id).await;
+}
+
+/// Signs the account out first, then deletes it.
+///
+/// Registering creates a session, so every account in this file is signed in —
+/// and a live session is now its own refusal (#82). These tests are about the
+/// *games* guard, so the session is setup rather than subject: ending it here
+/// keeps each test asserting the one thing it was written for. The session
+/// refusal has its own test below.
+async fn assert_deleted(app: Router, state: &AppState, player_id: &str) {
+    persistence::invalidate_sessions_for_player(&state.db, player_id)
+        .await
+        .expect("sessions should be removable");
     let response = delete_account(app, player_id).await;
     assert_eq!(
         response.status(),
         StatusCode::NO_CONTENT,
-        "an unattached account should be deletable"
+        "an unattached, signed-out account should be deletable"
     );
 }
 
@@ -329,7 +381,7 @@ async fn cannot_delete_a_creator_of_an_unstarted_game_with_an_open_seat() {
     abort(app.clone(), &game.id, &alice.session_token).await;
     sweep_away(app.clone(), &state, &game.id, &alice.session_token).await;
 
-    assert_deleted(app, &alice.player_id).await;
+    assert_deleted(app, &state, &alice.player_id).await;
 }
 
 #[tokio::test]
@@ -344,7 +396,7 @@ async fn cannot_delete_a_creator_while_an_invitation_is_outstanding() {
     abort(app.clone(), &game.id, &alice.session_token).await;
     sweep_away(app.clone(), &state, &game.id, &alice.session_token).await;
 
-    assert_deleted(app, &alice.player_id).await;
+    assert_deleted(app, &state, &alice.player_id).await;
 }
 
 #[tokio::test]
@@ -363,7 +415,7 @@ async fn cannot_delete_a_creator_after_an_invitation_is_declined() {
     abort(app.clone(), &game.id, &alice.session_token).await;
     sweep_away(app.clone(), &state, &game.id, &alice.session_token).await;
 
-    assert_deleted(app, &alice.player_id).await;
+    assert_deleted(app, &state, &alice.player_id).await;
 }
 
 #[tokio::test]
@@ -384,7 +436,7 @@ async fn cannot_delete_a_creator_of_a_game_ready_to_start() {
     )
     .await;
 
-    assert_deleted(app, &waiting.alice.player_id).await;
+    assert_deleted(app, &state, &waiting.alice.player_id).await;
 }
 
 // ============================================================== S5 to S11
@@ -419,7 +471,7 @@ async fn cannot_delete_a_player_seated_in_a_game_in_play() {
     )
     .await;
 
-    assert_deleted(app, &playing.bob.player_id).await;
+    assert_deleted(app, &state, &playing.bob.player_id).await;
 }
 
 #[tokio::test]
@@ -450,7 +502,7 @@ async fn cannot_delete_a_player_until_their_finished_game_is_swept() {
     )
     .await;
 
-    assert_deleted(app, &playing.alice.player_id).await;
+    assert_deleted(app, &state, &playing.alice.player_id).await;
 }
 
 #[tokio::test]
@@ -472,7 +524,7 @@ async fn cannot_delete_a_creator_who_took_no_seat() {
     abort(app.clone(), &game.id, &alice.session_token).await;
     sweep_away(app.clone(), &state, &game.id, &alice.session_token).await;
 
-    assert_deleted(app, &alice.player_id).await;
+    assert_deleted(app, &state, &alice.player_id).await;
 }
 
 #[tokio::test]
@@ -518,7 +570,7 @@ async fn cannot_delete_a_player_who_resigned_while_the_game_continued() {
     )
     .await;
 
-    assert_deleted(app, &playing.bob.player_id).await;
+    assert_deleted(app, &state, &playing.bob.player_id).await;
 }
 
 #[tokio::test]
@@ -542,8 +594,8 @@ async fn cannot_delete_either_player_of_an_aborted_game() {
     )
     .await;
 
-    assert_deleted(app.clone(), &playing.alice.player_id).await;
-    assert_deleted(app, &playing.bob.player_id).await;
+    assert_deleted(app.clone(), &state, &playing.alice.player_id).await;
+    assert_deleted(app, &state, &playing.bob.player_id).await;
 }
 
 #[tokio::test]
@@ -560,7 +612,7 @@ async fn cannot_delete_a_player_with_an_unanswered_invitation() {
     abort(app.clone(), &game.id, &alice.session_token).await;
     sweep_away(app.clone(), &state, &game.id, &alice.session_token).await;
 
-    assert_deleted(app, &bob.player_id).await;
+    assert_deleted(app, &state, &bob.player_id).await;
 }
 
 /// Inviting somebody and then changing the roster is ordinary behaviour, and
@@ -607,7 +659,7 @@ async fn adding_a_seat_leaves_an_earlier_invitation_holding_its_invitee() {
     abort(app.clone(), &game.id, &alice.session_token).await;
     sweep_away(app.clone(), &state, &game.id, &alice.session_token).await;
 
-    assert_deleted(app, &bob.player_id).await;
+    assert_deleted(app, &state, &bob.player_id).await;
 }
 
 #[tokio::test]
@@ -655,8 +707,8 @@ async fn hiding_a_game_does_not_make_its_players_deletable() {
     )
     .await;
 
-    assert_deleted(app.clone(), &playing.alice.player_id).await;
-    assert_deleted(app, &playing.bob.player_id).await;
+    assert_deleted(app.clone(), &state, &playing.alice.player_id).await;
+    assert_deleted(app, &state, &playing.bob.player_id).await;
 }
 
 // =================================== deleting when no game is in the way
@@ -723,7 +775,7 @@ async fn deleting_an_account_takes_everything_personal_and_nothing_else() {
          what stops one holding an account open forever"
     );
 
-    assert_deleted(app.clone(), &playing.bob.player_id).await;
+    assert_deleted(app.clone(), &state, &playing.bob.player_id).await;
 
     assert_eq!(
         personal_rows(&state, &playing.bob.player_id).await,
@@ -787,8 +839,8 @@ async fn declining_an_invitation_does_not_release_the_account() {
     abort(app.clone(), &game.id, &alice.session_token).await;
     sweep_away(app.clone(), &state, &game.id, &alice.session_token).await;
 
-    assert_deleted(app.clone(), &bob.player_id).await;
-    assert_deleted(app, &alice.player_id).await;
+    assert_deleted(app.clone(), &state, &bob.player_id).await;
+    assert_deleted(app, &state, &alice.player_id).await;
 }
 
 // ================================================ retention on its own
@@ -952,7 +1004,7 @@ async fn a_game_in_play_ends_itself_when_the_clock_runs_out() {
         &playing.bob.session_token,
     )
     .await;
-    assert_deleted(app, &playing.alice.player_id).await;
+    assert_deleted(app, &state, &playing.alice.player_id).await;
 }
 
 /// The same clock in a game that does not end because of it — and the seat it
@@ -994,7 +1046,7 @@ async fn a_timed_out_seat_leaves_the_others_playing() {
         &playing.bob.session_token,
     )
     .await;
-    assert_deleted(app, &playing.alice.player_id).await;
+    assert_deleted(app, &state, &playing.alice.player_id).await;
 }
 
 /// DEL-6 says the refusal names the games responsible, and an id alone does

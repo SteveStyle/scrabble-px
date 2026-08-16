@@ -6,6 +6,7 @@ mod components;
 mod config;
 mod edition_label;
 mod local_storage;
+mod seen_clock;
 mod tile_value;
 mod time_format;
 mod views;

@@ -7,6 +7,12 @@
     --clay: #c76848;
     --gold: #d4a23a;
     --sky: #9dc6d8;
+    /* Deep enough to read against the cream panels, where --sky alone is too
+       pale. Named for the pair it belongs to, like --oak/--oak-deep. Used by
+       the unread indicator for "a game you are not looking at": gold and clay
+       are both warm and were hard to tell apart at a glance, which defeated
+       the point of colouring them differently. */
+    --sky-deep: #3f7d9c;
     --moss: #8aa07b;
     --rose: #d98f8b;
     /* Deliberately outside the board's warm range: everything else here is
@@ -331,14 +337,70 @@ button:disabled {
     border-top: 1px solid rgba(111, 75, 44, 0.12);
 }
 
+/* `column-reverse`, with the messages rendered newest-first, so the panel sits
+   at the latest message rather than the earliest and stays there as more
+   arrive. A reversed column scrolls from the bottom by definition, which is
+   why this needs no scrolling code — and why it cannot drift out of step with
+   the list the way a manual scroll-to-bottom would. */
 .chat-messages {
     display: flex;
-    flex-direction: column;
+    flex-direction: column-reverse;
     gap: 6px;
     max-height: 180px;
     overflow-y: auto;
     margin-bottom: 10px;
 }
+
+/* The two unread indicators, from one signal (`HAS_UNREAD_CHAT`).
+
+   Both are the same mail glyph the games list already uses, so the mark means
+   one thing wherever it appears. The rack one sits with the bag count because
+   that is the row somebody glances at while playing; the chat one sits above
+   the messages, where you are heading once the rack one has caught your eye. */
+.rack-scores-unread {
+    color: var(--gold);
+    font-size: 1rem;
+    line-height: 1;
+    /* A button that has to look like the label it replaced. */
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+}
+
+.game-row-unread-mail:focus-visible {
+    outline: 2px solid currentcolor;
+    outline-offset: 2px;
+}
+
+.rack-scores-unread:focus-visible {
+    outline: 2px solid var(--gold);
+    outline-offset: 2px;
+}
+
+/* Marks a message nobody has read yet, and fades as it earns being read.
+   Keyed on *unread* rather than on the element being created, which is what it
+   used to key on because the watermark advanced the moment a message arrived
+   and there was no unread state left to read. Now the watermark means seen, so
+   there is.
+
+   The fade is not decoration. A colour appearing tells you something changed;
+   a colour *fading while you look at it* tells you which message, and that it
+   is being marked read as you watch. Its duration is the seen clock's, set
+   inline from `SEEN_AFTER_MS` so the two cannot drift, and it is paused
+   whenever the messages are not somewhere a person could see them — the same
+   rule the clock suspends on. What you watch finishing is the thing that marks
+   the message read. */
+@keyframes chat-message-arriving {
+    from {
+        opacity: 1;
+    }
+    to {
+        opacity: 0;
+    }
+}
+
+
 
 .chat-empty {
     font-size: 0.8rem;
@@ -346,6 +408,7 @@ button:disabled {
 }
 
 .chat-message {
+    position: relative;
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
@@ -356,6 +419,51 @@ button:disabled {
     padding: 5px 10px;
     border-radius: 12px;
     background: rgba(255, 255, 255, 0.7);
+}
+
+/* Only an unread message fades; a read one is simply a message. Duration and
+   play state come from the element's own `style`, written by the component from
+   the seen clock's constant and its visibility signal. */
+/* The arrival wash is an overlay, not the message's own background.
+   Animating `background` meant the message sat at `transparent` while unread
+   and jumped to its resting colour the instant it was marked seen and this
+   class was dropped — a visible step at exactly the moment somebody was
+   looking. An overlay fading to nothing leaves the message's own colour
+   untouched throughout, so dropping the class changes nothing on screen.
+
+   It also stops the two resting colours needing two sets of keyframes: own
+   messages are terracotta and everyone else's are white, and one `to` colour
+   cannot land on both. */
+.chat-message-unread::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: rgba(212, 162, 58, 0.55);
+    box-shadow: inset 0 0 0 2px var(--gold);
+    animation-name: chat-message-arriving;
+    animation-timing-function: ease-out;
+    animation-iteration-count: 1;
+    animation-fill-mode: forwards;
+    /* Both set inline per message — the seen clock's duration, and paused
+       whenever the chat is not actually visible. */
+    animation-duration: var(--chat-fade-duration, 10000ms);
+    animation-play-state: var(--chat-fade-state, running);
+    /* Negative, so the fade starts partway through: how far depends on how long
+       this message has already been watched, which is what makes a rebuilt
+       element resume rather than restart. */
+    animation-delay: var(--chat-fade-delay, 0ms);
+}
+
+/* No animation, but the marking still has to work: without the fade an unread
+   message keeps its highlight until the watermark advances, which is the state
+   the fade was expressing anyway. */
+@media (prefers-reduced-motion: reduce) {
+    .chat-message-unread::after {
+        animation: none;
+        opacity: 1;
+    }
 }
 
 .chat-message-own {
@@ -379,11 +487,29 @@ button:disabled {
     color: rgba(35, 25, 15, 0.5);
 }
 
+/* Two colours, one meaning: gold is "the game you are in", clay is "a game you
+   are not". The rack indicator wears the same pair, so glancing at it tells you
+   which row to look for rather than only that something happened. */
 .game-row-unread-mail {
+    /* A button now, and it has to look like the label it replaced. */
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
     font-size: 1.3rem;
     color: var(--gold, #d4a23a);
     filter: drop-shadow(0 0 2px rgba(212, 162, 58, 0.6));
     animation: unread-mail-pulse 1.8s ease-in-out infinite;
+}
+
+.game-row-unread-mail-elsewhere,
+.rack-scores-unread-elsewhere {
+    color: var(--sky-deep, #3f7d9c);
+    filter: drop-shadow(0 0 2px rgba(63, 125, 156, 0.55));
+}
+
+.rack-scores-unread-here {
+    color: var(--gold, #d4a23a);
 }
 
 @keyframes unread-mail-pulse {
@@ -686,14 +812,29 @@ button:disabled {
 .rack-strip {
     display: flex;
     flex-wrap: wrap;
-    gap: 10px;
+    /* Tightens on a narrow screen so seven tiles keep a usable size rather
+       than the gaps eating the width. Inherited by `.rack-tile`, which
+       subtracts the six of them to work out what is left for a tile. */
+    --rack-gap: clamp(4px, 2vw, 10px);
+    gap: var(--rack-gap);
 }
 
 .rack-tile {
     position: relative;
     border: none;
-    width: 52px;
-    height: 52px;
+    /* A full rack is seven tiles, and at a fixed 52px they need
+       7 x 52 + 6 x 10 = 424px. A phone viewport is 360-412px, so the row broke
+       after six and the seventh took a whole second row to carry one tile —
+       the most expensive vertical space on the screen (#12).
+       `min()` keeps 52px wherever it fits, so desktop is untouched, and
+       otherwise divides what is actually there, so one rule governs at every
+       width — the mobile media query used to pin 44px, which is what made the
+       row break at six. `flex: 0 0 auto` keeps the computed width exact
+       instead of letting flex shrink it further. */
+    width: min(52px, calc((100% - 6 * var(--rack-gap, 10px)) / 7));
+    aspect-ratio: 1;
+    height: auto;
+    flex: 0 0 auto;
     border-radius: 14px;
     /* Matches `.board-cell`'s padding so `.tile-value`'s absolute
        `right`/`bottom` offset (measured from this element's padding box,
@@ -774,8 +915,17 @@ button:disabled {
    it never grows and shifts the tiles below it no matter which of those is
    showing or how long the text runs. Tall enough for the two-line case
    (headline+score, plus a cross-words detail line). */
+/* A fixed reserve, not `min-height`: this sits directly above the rack, and a
+   slot that grew when a preview appeared would shift the tiles out from under
+   a thumb mid-move. The cost is that the height must suit the *tallest* state
+   and is therefore slack in every other one.
+
+   The tallest state is a legal-move banner: 8px of padding either side, a
+   title line, and a detail line — a little over 50px. 80px left roughly 20px
+   of air above the rack in every state, which on a phone is the scarce
+   direction. */
 .preview-slot {
-    height: 80px;
+    height: 60px;
     margin-bottom: 10px;
     overflow: hidden;
 }
@@ -1036,6 +1186,14 @@ button:disabled {
    `input` it replaced did). */
 .name-autocomplete {
     position: relative;
+    /* Lifts the whole field, dropdown included, above whatever the page draws
+       after it. `z-index` on the dropdown alone was not enough: it only orders
+       against siblings inside its own stacking context, and the suggestion list
+       ended up painted *behind* the "+ Invite by name" buttons that follow it
+       in the document — present, unclipped, correctly sized, and invisible.
+       Positioning this wrapper gives the list a stacking context that starts
+       above that later content. */
+    z-index: 30;
     flex: 1 1 auto;
     min-width: 120px;
 }
@@ -1121,6 +1279,21 @@ button:disabled {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* The one cell that must not clip its own contents.
+   `.player-table td`'s `overflow: hidden` is there so a long display name
+   ends in an ellipsis rather than pushing the column wide — right for a
+   roster of names, and fatal for this cell, which holds the name-autocomplete
+   whose suggestion list is absolutely positioned and therefore *outside* the
+   cell's box. The list rendered, sized and positioned correctly, and was
+   clipped to nothing: the search ran, the matches arrived, and the user saw
+   an empty box.
+   That is why invite-by-name worked when adding a seat to an existing game —
+   a plain div row, nothing clipping — and not in the pre-creation builder,
+   which lays its seats out in a table. */
+.player-table td.seat-draft-name-cell {
+    overflow: visible;
 }
 
 .player-table th {
@@ -1683,7 +1856,15 @@ button:disabled {
     }
 
     .app-shell {
-        padding: 14px;
+        /* Every horizontal pixel here is one the rack does not get. At 320px
+           the app shell and the panel between them took 60 of 320 before the
+           tiles saw any of it, and the tile is a seventh of what is left —
+           so 24px recovered here is ~3.5px on every tile (#12). */
+        padding: 8px;
+    }
+
+    .rack-panel {
+        padding: 10px;
     }
 
     .board-grid {
@@ -1692,11 +1873,6 @@ button:disabled {
 
     .premium-label {
         font-size: 0.52rem;
-    }
-
-    .rack-tile {
-        width: 44px;
-        height: 44px;
     }
 
     /* `.turn-actions`'s desktop layout is a single row of three flex

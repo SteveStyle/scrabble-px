@@ -1,5 +1,10 @@
 use super::*;
 
+/// The fewest seats a game may have. Below this the finish rule — one seat or
+/// fewer still unresigned means the last one standing has won — is true before
+/// anybody has left.
+const MINIMUM_SEATS: usize = 2;
+
 pub(crate) async fn list_games(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -13,6 +18,9 @@ pub(crate) async fn list_games(
     expire_overdue_turns(&state).await;
     send_move_time_reminders(&state).await;
     expire_old_terminal_games(&state).await;
+    // Measurement, on the same lazy path and for the same reason: no scheduler
+    // exists on the VM, and this runs whenever anybody uses the service.
+    super::sweeps::record_database_size(&state).await;
     if let Err(error) = persistence::delete_expired_sessions(&state.db).await {
         tracing::error!(%error, "failed to delete expired sessions");
     }
@@ -57,6 +65,14 @@ pub(crate) async fn list_games(
             };
             let mut summary = game.to_summary_dto(last_activity_at);
             summary.relationship = relationship;
+            // The newest message this caller did not send. Their own never
+            // counts as unread.
+            summary.last_message_received_at = game
+                .messages
+                .iter()
+                .filter(|message| message.player_id != caller_player_id)
+                .map(|message| message.created_at)
+                .max();
             summaries.push(summary);
             continue;
         }
@@ -104,10 +120,6 @@ pub(crate) async fn create_game(
     headers: HeaderMap,
     Json(request): Json<CreateGameRequest>,
 ) -> Result<Json<api::GameStateDto>, ApiProblem> {
-    if request.seats.is_empty() {
-        return Err(ApiProblem::bad_request("At least one seat is required"));
-    }
-
     // Every seat now needs a real accepting/claiming party (the creator
     // themselves, a named invitee, or a stranger who accepts an open
     // invitation) — there's no more "anonymous, open to whoever clicks it"
@@ -115,6 +127,15 @@ pub(crate) async fn create_game(
     let creator_player_id = authenticated_player_id(&state, &headers)
         .await
         .ok_or_else(|| ApiProblem::unauthorized("Sign in to create a game"))?;
+
+    // Two, not one. A single-seat game is not merely pointless: the game ends
+    // as soon as one seat or fewer is still unresigned, which is true of a
+    // solo game from its first turn, so it finished after one move and
+    // declared that seat the winner. The finish rule is right — somebody left
+    // and one remains — and this is the precondition it always assumed.
+    if request.seats.len() < MINIMUM_SEATS {
+        return Err(ApiProblem::bad_request("A game needs at least two seats"));
+    }
 
     let creator_claims = request
         .seats
@@ -172,7 +193,17 @@ pub(crate) async fn create_game(
             ParticipantState {
                 seat_number: seat_number as u8,
                 kind: seat.kind,
-                display_name: seat.display_name,
+                // The invitee's name as *they* registered it, not as the
+                // inviter typed it. Names match case-insensitively, so
+                // inviting "steve" finds Steve — and without this the seat
+                // would carry "steve" for the life of the game, which is
+                // somebody else's name for them. Adding a seat to an existing
+                // game already resolves this way (invitations.rs); creating a
+                // game did not.
+                display_name: named_invitees
+                    .get(&(seat_number as u8))
+                    .map(|player| player.display_name.clone())
+                    .unwrap_or(seat.display_name),
                 player_id,
                 engine_id: seat.engine_id,
                 score: 0,
@@ -321,9 +352,16 @@ pub(crate) async fn get_game(
         .ok_or_else(|| ApiProblem::not_found("Game not found"))?;
     let access = resolve_viewer_access(game, caller_player_id.as_deref());
     if access == ViewerAccess::Rejected {
-        return Err(ApiProblem::unauthorized(
-            "Sign in and be part of this game to view it",
-        ));
+        // 401 only when there is nobody to be. A signed-in caller who is not
+        // in this game is *authenticated and not allowed*, which is 403 — see
+        // docs/4.3's status table. Answering 401 told the client its session
+        // was invalid, and a client that acts on that logs the caller out for
+        // opening somebody else's game. Every new player meets this, because
+        // the games list includes open invitations they may not view.
+        return Err(match caller_player_id {
+            None => ApiProblem::unauthorized("Sign in to view this game"),
+            Some(_) => ApiProblem::forbidden("You are not part of this game"),
+        });
     }
     let mut dto = game_dto_with_invitation_status(&state, game).await?;
     drop(games);
@@ -354,6 +392,13 @@ pub(crate) async fn start_game(
             .get_mut(&game_id)
             .ok_or_else(|| ApiProblem::not_found("Game not found"))?;
 
+        // Checked again here, not only at creation: seats can be removed
+        // afterwards, and a roster taken down to one would otherwise reach
+        // the board and end on its first turn.
+        if game.participants.len() < MINIMUM_SEATS {
+            return Err(ApiProblem::bad_request("A game needs at least two seats"));
+        }
+
         // Every human seat needs a real occupant (creator or an accepted
         // invitation) before play can start — an unclaimed human seat means
         // an invitation is still outstanding, not "open to anyone".
@@ -368,7 +413,7 @@ pub(crate) async fn start_game(
         }
 
         if !caller_may_manage_game(game, caller_player_id.as_deref()) {
-            return Err(ApiProblem::unauthorized(
+            return Err(ApiProblem::forbidden(
                 "Only the game's creator can start it",
             ));
         }
@@ -458,7 +503,7 @@ pub(crate) async fn submit_action(
             && seat.kind == api::SeatKind::Human
             && caller_player_id.as_deref() != seat.player_id.as_deref()
         {
-            return Err(ApiProblem::unauthorized(
+            return Err(ApiProblem::forbidden(
                 "This seat belongs to a different player",
             ));
         }
@@ -561,7 +606,7 @@ pub(crate) async fn post_chat_message(
             .iter()
             .find(|participant| participant.player_id.as_deref() == Some(caller_player_id.as_str()))
             .map(|participant| participant.display_name.clone())
-            .ok_or_else(|| ApiProblem::unauthorized("Only seated players can chat in this game"))?;
+            .ok_or_else(|| ApiProblem::forbidden("Only seated players can chat in this game"))?;
 
         game.post_chat_message(&caller_player_id, &display_name, request.body)
             .map_err(ApiProblem::bad_request)?;

@@ -29,7 +29,15 @@ set -euo pipefail
 
 RANGE="${1:-HEAD~0..HEAD}"
 if [[ "$RANGE" == "HEAD~0..HEAD" ]]; then
-  COMMITS="$(git rev-parse HEAD)"
+  # `--no-merges` on this path too, or the promise above holds only for the
+  # range form. CI falls back to the no-argument call when `github.event.before`
+  # is all zeros — which is what a newly pushed branch looks like — so a branch
+  # whose tip is a merge would fail for a reason that is not real.
+  if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then
+    COMMITS=""
+  else
+    COMMITS="$(git rev-parse HEAD)"
+  fi
 else
   # --no-merges: a merge's subject is generated and describes no change.
   COMMITS="$(git rev-list --no-merges "$RANGE" 2>/dev/null || true)"

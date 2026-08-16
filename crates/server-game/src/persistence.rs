@@ -1072,6 +1072,134 @@ pub async fn get_session_by_id(
 /// `stay_logged_in` rows, which used to have `expires_at is null` and so
 /// lived forever. (`expires_at`/`last_seen_at` are unix-second strings, all
 /// the same width in this era, so string `<` matches numeric `<`.)
+/// Is anybody signed in as this account right now?
+///
+/// "Live" is the exact inverse of what `delete_expired_sessions` below removes,
+/// and deliberately written to mirror it line for line: a session is live while
+/// it has not passed its absolute expiry *and* has been seen inside the idle
+/// window. If those two rules ever diverge, an account could be refused
+/// deletion for a session the sweep has already decided is dead.
+/// One day's record of what the database holds. See migration 0007.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatabaseSizeRow {
+    pub recorded_on: String,
+    pub recorded_at: i64,
+    pub players: i64,
+    pub sessions: i64,
+    pub games: i64,
+    pub invitations: i64,
+    pub chat_messages: i64,
+    pub database_bytes: i64,
+    pub games_in_memory: i64,
+}
+
+/// Records today's row, unless today already has one.
+///
+/// `insert or ignore` against the day's primary key, so "once a day" is settled
+/// by the schema rather than by a check-then-write that two concurrent callers
+/// could both pass. Returns whether a row was actually written, which is what
+/// lets the caller log the first write of the day and stay quiet afterwards.
+pub async fn record_database_size(
+    pool: &Pool<Sqlite>,
+    games_in_memory: i64,
+) -> Result<bool, sqlx::Error> {
+    let now = now_unix_seconds();
+    let count = |table: &str| format!("select count(*) from {table}");
+    let players: i64 = sqlx::query_scalar(&count("players"))
+        .fetch_one(pool)
+        .await?;
+    let sessions: i64 = sqlx::query_scalar(&count("sessions"))
+        .fetch_one(pool)
+        .await?;
+    let games: i64 = sqlx::query_scalar(&count("games")).fetch_one(pool).await?;
+    let invitations: i64 = sqlx::query_scalar(&count("game_invitations"))
+        .fetch_one(pool)
+        .await?;
+    // `game_messages` — the chat table's name predates the feature being called
+    // chat anywhere else. Named for what it holds in the row below.
+    let chat_messages: i64 = sqlx::query_scalar(&count("game_messages"))
+        .fetch_one(pool)
+        .await?;
+
+    // The file as SQLite sees it, free pages included — which is the honest
+    // number, since a delete releases pages for reuse without returning them.
+    let page_count: i64 = sqlx::query_scalar("pragma page_count")
+        .fetch_one(pool)
+        .await?;
+    let page_size: i64 = sqlx::query_scalar("pragma page_size")
+        .fetch_one(pool)
+        .await?;
+
+    let result = sqlx::query(
+        "insert or ignore into database_size_history
+           (recorded_on, recorded_at, players, sessions, games, invitations,
+            chat_messages, database_bytes, games_in_memory)
+         values (date(?1, 'unixepoch'), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )
+    .bind(now)
+    .bind(players)
+    .bind(sessions)
+    .bind(games)
+    .bind(invitations)
+    .bind(chat_messages)
+    .bind(page_count * page_size)
+    .bind(games_in_memory)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+/// The most recent days first, for the admin CLI.
+pub async fn list_database_size_history(
+    pool: &Pool<Sqlite>,
+    limit: i64,
+) -> Result<Vec<DatabaseSizeRow>, sqlx::Error> {
+    let rows = sqlx::query(
+        "select recorded_on, recorded_at, players, sessions, games, invitations,
+                chat_messages, database_bytes, games_in_memory
+         from database_size_history
+         order by recorded_on desc
+         limit ?1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| DatabaseSizeRow {
+            recorded_on: r.get(0),
+            recorded_at: r.get(1),
+            players: r.get(2),
+            sessions: r.get(3),
+            games: r.get(4),
+            invitations: r.get(5),
+            chat_messages: r.get(6),
+            database_bytes: r.get(7),
+            games_in_memory: r.get(8),
+        })
+        .collect())
+}
+
+pub async fn has_live_session(pool: &Pool<Sqlite>, player_id: &str) -> Result<bool, sqlx::Error> {
+    let now = now_unix_seconds();
+    let idle_cutoff = now - SESSION_IDLE_WINDOW_SECS;
+    let row = sqlx::query(
+        "select 1 from sessions
+         where player_id = ?1
+           and (expires_at is null or expires_at >= ?2)
+           and last_seen_at >= ?3
+         limit 1",
+    )
+    .bind(player_id)
+    .bind(now)
+    .bind(idle_cutoff)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
 pub async fn delete_expired_sessions(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     let now = now_unix_seconds();
     let idle_cutoff = now - SESSION_IDLE_WINDOW_SECS;

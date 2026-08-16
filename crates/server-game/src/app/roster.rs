@@ -86,10 +86,35 @@ pub(crate) async fn add_seat_to_game(
             Some(api::SeatClaim::Email { email }) => Some(email.clone()),
             _ => None,
         };
+
+        // A named seat takes the invitee's own spelling, not the inviter's.
+        // Names match case-insensitively, so adding "steve" reaches Steve —
+        // and without this the seat would read "steve" for the life of the
+        // game, showing one player somebody else's idea of their name.
+        //
+        // An unknown name is refused, exactly as creating a game refuses one.
+        // The two paths disagreeing is the bug: creating a game resolves every
+        // named seat up front and fails on a typo, while adding a seat took the
+        // text as given — so typing a partial name and pressing "+ Add seat"
+        // produced a seat named "st", sitting in the roster until somebody
+        // pressed Send and finally learned there was no such player.
+        let display_name = match &request.claim {
+            Some(api::SeatClaim::Named { display_name }) => {
+                persistence::get_player_by_name(&state.db, display_name)
+                    .await
+                    .map_err(ApiProblem::from_sqlx)?
+                    .ok_or_else(|| {
+                        ApiProblem::not_found(format!("No player named '{display_name}'"))
+                    })?
+                    .display_name
+            }
+            _ => request.display_name,
+        };
+
         let participant = ParticipantState {
             seat_number: 0, // GameSession::add_seat assigns the real number
             kind: request.kind,
-            display_name: request.display_name,
+            display_name,
             player_id: None,
             engine_id: request.engine_id,
             score: 0,

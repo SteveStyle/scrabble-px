@@ -226,12 +226,6 @@ pub fn RootApp() -> Element {
         bootstrapped.set(true);
         let server_url = server_url.clone();
         spawn(async move {
-            // Record which bundle we loaded with before anything can decide
-            // to reload — the watcher has nothing to compare against until
-            // this has run.
-            #[cfg(target_arch = "wasm32")]
-            record_loaded_bundle().await;
-
             if !apply_version_check(
                 check_api_version(&server_url).await,
                 info_message,
@@ -244,6 +238,10 @@ pub fn RootApp() -> Element {
             if let Some(token) = crate::local_storage::load_token() {
                 match validate_session(&server_url, &token).await {
                     Ok(player) => {
+                        // A new session: whatever 401'd before was the old
+                        // one, and leaving the flag set would have this session
+                        // cleared out from under it.
+                        *SESSION_INVALID.write() = false;
                         session.set(Some(api::PlayerSessionDto {
                             player_id: player.id,
                             session_token: token.clone(),
@@ -359,8 +357,9 @@ pub fn RootApp() -> Element {
                 // version describes the wire contract, and a client can
                 // change without it — a bug fix in `crates/ui` has no
                 // business touching it, and used to reach nobody who already
-                // had the app open. `version.txt` is a hash of the bundle, so
-                // this reloads exactly when there is different code to run.
+                // had the app open. `version.txt` holds the web container's
+                // build id, so this reloads exactly when there is different
+                // code to run.
                 #[cfg(target_arch = "wasm32")]
                 watch_for_new_bundle(info_message, None);
                 is_reconnecting.set(false);
@@ -399,6 +398,63 @@ pub fn RootApp() -> Element {
         });
     }
 
+    // The reacting half of the build-id header. `note_server_build` records that
+    // a response came from a different build; this decides what to do about it,
+    // because it has the signals to say so and a request helper does not.
+    //
+    // It does not reload on the header. That describes the *server*, and the
+    // bundle comes from a different container — inside a deploy window the
+    // server is already new while the old bundle is still being served, so
+    // reloading would fetch the old bundle, see the header again, and loop.
+    // `watch_for_new_bundle` polls `/version.txt`, which is served alongside
+    // the bundle and therefore knows what is actually being served, and
+    // reloads only once they differ.
+    //
+    // So the header supplies the trigger this check never had: it used to hang
+    // off offline-recovery, which meant it reached nobody who had not first
+    // lost the server and got it back.
+    #[cfg(target_arch = "wasm32")]
+    use_effect(move || {
+        if build_differs(SERVER_BUILD().as_deref(), CLIENT_BUILD_ID) {
+            watch_for_new_bundle(info_message, None);
+        }
+    });
+
+    // Session death, handled once wherever it is noticed.
+    //
+    // It used to be handled only inside the games-list poll, so whether a dead
+    // session cleared up depended on which request happened to meet the 401
+    // first. Any other one turned it into an error string and showed it, over a
+    // board that was still on screen — the account was gone and the app looked
+    // like it was working.
+    use_effect(move || {
+        // `session.peek()`, not `session()`: this effect must not subscribe to
+        // the signal it is about to clear. And it must not write
+        // `SESSION_INVALID` either — reading and writing one signal in a single
+        // effect is the "read and write in the same scope" loop Dioxus flags,
+        // which the reconnect effect above already guards against with `peek`.
+        //
+        // Nothing resets the flag here. Clearing sets `session` to `None`, so
+        // this condition stops holding on its own; the flag is cleared where a
+        // *new* session is established, which is the moment it stops being true.
+        if SESSION_INVALID() && session.peek().is_some() {
+            crate::local_storage::clear_tokens();
+            clear_session_state(
+                session,
+                game,
+                game_summaries,
+                websocket_game_id,
+                dragging_tile_id,
+                selected_blank_letter,
+                staged_placements,
+                selected_cell,
+                exchange_mode,
+                exchange_selected,
+                direction_override,
+            );
+        }
+    });
+
     if !game_list_polling_started() {
         game_list_polling_started.set(true);
         let server_url = server_url.clone();
@@ -408,16 +464,13 @@ pub fn RootApp() -> Element {
                 let Some(token) = session().map(|current| current.session_token.clone()) else {
                     continue;
                 };
-                match load_game_summaries(&server_url, Some(&token)).await {
-                    Ok(summaries) => game_summaries.set(summaries),
-                    Err(err) if err == SESSION_INVALID_MESSAGE => {
-                        // The session died server-side (idle or absolute
-                        // expiry) — drop to the login modal cleanly instead
-                        // of failing the poll silently forever.
-                        crate::local_storage::clear_tokens();
-                        session.set(None);
-                    }
-                    Err(_) => {}
+                // Errors are deliberately dropped. A dead session is handled
+                // by the effect above, which sees it whichever request met the
+                // 401 — this one, a move, a chat send — and anything else is a
+                // transient failure a poll running every ten seconds will
+                // retry anyway.
+                if let Ok(summaries) = load_game_summaries(&server_url, Some(&token)).await {
+                    game_summaries.set(summaries);
                 }
             }
         });
@@ -444,22 +497,201 @@ pub fn RootApp() -> Element {
     }
 
     // Marks the currently-open game's chat as seen — fires both when a game
-    // is first opened (loading its messages for the first time) and when a
-    // live update arrives for a game that's already open, so watching the
-    // panel counts as reading it. Never touches watermarks for any other
-    // game, since `game()` only ever holds the currently-selected one.
-    if let Some(current_game) = game()
-        && let Some(latest) = current_game.messages.last()
-        && chat_watermarks().get(&current_game.id) != Some(&latest.created_at)
+    // The watermark advances when the messages have been *seen*, not when they
+    // arrive. It used to advance the instant a message arrived into an open
+    // game — "watching the panel counts as reading it" — which marked as read
+    // every message that landed in a panel scrolled off the bottom of a phone,
+    // or into a tab in the background. That is the defect (#86); the clock
+    // below is what replaces it.
     {
-        let game_id = current_game.id.clone();
-        let created_at = latest.created_at;
-        chat_watermarks.with_mut(|marks| {
-            marks.insert(game_id, created_at);
-        });
-        crate::local_storage::save_chat_watermarks(&crate::local_storage::StoredChatWatermarks {
-            last_seen: chat_watermarks(),
-        });
+        let mut clock = use_signal(crate::seen_clock::SeenClock::new);
+        // When each message arrived, measured on the clock above rather than on
+        // the wall — so a message ages only while the chat is actually in front
+        // of somebody. Memory only: the watermark is what persists, and this is
+        // rebuilt from it whenever a game is opened.
+        let mut arrived_at = use_signal(HashMap::<String, i64>::new);
+        let mut watching_game = use_signal(|| None::<String>);
+
+        // One ticker, sampling. An observer would be the tidier way to learn
+        // about visibility, but a clock has to be ticked anyway to notice that
+        // it has finished — so a single 500ms sample that reads visibility and
+        // advances the clock is one mechanism rather than two, and cheap enough
+        // at that rate.
+        let mut seen_ticker_started = use_signal(|| false);
+        if !seen_ticker_started() {
+            seen_ticker_started.set(true);
+            spawn(async move {
+                loop {
+                    sleep_ms(500).await;
+                    let now_ms = now_millis();
+                    let visible = chat_messages_are_visible();
+                    *CHAT_IS_VISIBLE.write() = visible;
+
+                    // Advance the accumulator first, so everything below reads
+                    // the same instant. Done before the open-game check,
+                    // because the indicator now covers every game and must
+                    // keep working with none open.
+                    clock.with_mut(|c| {
+                        if visible {
+                            c.became_visible(now_ms);
+                        } else {
+                            c.became_hidden(now_ms);
+                        }
+                    });
+                    let visible_ms = clock.peek().visible_ms(now_ms);
+                    *CHAT_VISIBLE_MS.write() = visible_ms;
+
+                    // A scroll asked for before its game had loaded.
+                    if *SCROLL_CHAT_PENDING.peek() && chat_panel_exists() {
+                        scroll_chat_into_view();
+                        *SCROLL_CHAT_PENDING.write() = false;
+                    }
+
+                    let Some(current_game) = game() else {
+                        // Nothing open, so no message is ageing — but other
+                        // games can still be unread, and this indicator now
+                        // speaks for all of them.
+                        let marks = chat_watermarks();
+                        let any = game_summaries().iter().any(|summary| {
+                            unread_for(
+                                summary.last_message_received_at,
+                                marks.get(&summary.id).copied(),
+                            )
+                        });
+                        if *HAS_UNREAD_CHAT.peek() != any {
+                            *HAS_UNREAD_CHAT.write() = any;
+                        }
+                        if *UNREAD_IS_THIS_GAME.peek() {
+                            *UNREAD_IS_THIS_GAME.write() = false;
+                        }
+                        let target = game_summaries().iter().find_map(|summary| {
+                            unread_for(
+                                summary.last_message_received_at,
+                                marks.get(&summary.id).copied(),
+                            )
+                            .then(|| summary.id.clone())
+                        });
+                        if *UNREAD_GAME_ID.peek() != target {
+                            *UNREAD_GAME_ID.write() = target;
+                        }
+                        continue;
+                    };
+
+                    // Switching games drops the stamps: they are readings of a
+                    // clock, and the messages they described are gone from view.
+                    if watching_game() != Some(current_game.id.clone()) {
+                        watching_game.set(Some(current_game.id.clone()));
+                        arrived_at.with_mut(|m| m.clear());
+                    }
+
+                    let watermark = chat_watermarks().get(&current_game.id).copied();
+                    let viewer = session().map(|current| current.player_id.clone());
+
+                    // Stamp anything not seen before with the clock's reading
+                    // now. Messages already under the watermark were read in an
+                    // earlier session and must not start again, so they are
+                    // stamped far enough back to be seen immediately.
+                    arrived_at.with_mut(|marks| {
+                        for message in &current_game.messages {
+                            if marks.contains_key(&message.id) {
+                                continue;
+                            }
+                            let already_read =
+                                watermark.is_some_and(|seen| message.created_at <= seen);
+                            marks.insert(
+                                message.id.clone(),
+                                if already_read {
+                                    visible_ms - crate::seen_clock::SEEN_AFTER_MS
+                                } else {
+                                    visible_ms
+                                },
+                            );
+                        }
+                    });
+                    *CHAT_MESSAGE_ARRIVED_AT.write() = arrived_at();
+
+                    // The watermark is the newest message that has had its ten
+                    // seconds. Monotonic, because an earlier arrival has an
+                    // earlier stamp to beat — which is what lets one high-water
+                    // mark stand for per-message state.
+                    let stamps = arrived_at();
+                    let mut seen_now = watermark;
+                    let seen_upto = current_game
+                        .messages
+                        .iter()
+                        .filter(|m| {
+                            stamps
+                                .get(&m.id)
+                                .is_some_and(|at| clock.peek().is_seen(*at, now_ms))
+                        })
+                        .map(|m| m.created_at)
+                        .max();
+                    if let Some(seen_upto) = seen_upto
+                        && watermark != Some(seen_upto)
+                    {
+                        seen_now = Some(seen_upto);
+                        chat_watermarks.with_mut(|marks| {
+                            marks.insert(current_game.id.clone(), seen_upto);
+                        });
+                        crate::local_storage::save_chat_watermarks(
+                            &crate::local_storage::StoredChatWatermarks {
+                                last_seen: chat_watermarks(),
+                            },
+                        );
+                    }
+
+                    // One rule for "is anything unread", shared with the games
+                    // list: the newest message somebody else sent, later than
+                    // the watermark. Derived here from the *live* messages
+                    // rather than from the polled summary, which is up to
+                    // GAME_LIST_POLL_MS stale — ten seconds is far too long for
+                    // an indicator that should appear as the message does.
+                    //
+                    // Equivalent to asking whether any received message is
+                    // still inside its own ten seconds, because completion is
+                    // monotonic in arrival order. Stated once rather than
+                    // derived twice, so a later change cannot make the two
+                    // icons disagree.
+                    let last_received = current_game
+                        .messages
+                        .iter()
+                        .filter(|m| viewer.as_deref() != Some(m.player_id.as_str()))
+                        .map(|m| m.created_at)
+                        .max();
+                    // **Any** game, not just the open one. The games you are
+                    // not looking at are the ones worth alerting about; an
+                    // indicator that only ever spoke for the game already in
+                    // front of you told you what you could see.
+                    //
+                    // The open game answers from live messages, every other
+                    // from its summary — one rule, applied per game, then OR'd.
+                    let marks = chat_watermarks();
+                    let here = unread_for(last_received, seen_now);
+                    if *UNREAD_IS_THIS_GAME.peek() != here {
+                        *UNREAD_IS_THIS_GAME.write() = here;
+                    }
+                    let elsewhere = game_summaries().iter().find_map(|s| {
+                        (s.id != current_game.id
+                            && unread_for(s.last_message_received_at, marks.get(&s.id).copied()))
+                        .then(|| s.id.clone())
+                    });
+                    let unread = here || elsewhere.is_some();
+                    // This game first: if both are unread, the one in front of
+                    // you is the one a click should reach.
+                    let target = if here {
+                        Some(current_game.id.clone())
+                    } else {
+                        elsewhere
+                    };
+                    if *UNREAD_GAME_ID.peek() != target {
+                        *UNREAD_GAME_ID.write() = target;
+                    }
+                    if *HAS_UNREAD_CHAT.peek() != unread {
+                        *HAS_UNREAD_CHAT.write() = unread;
+                    }
+                }
+            });
+        }
     }
 
     let game_for_view = game().clone().unwrap_or_else(empty_live_game);
@@ -549,6 +781,7 @@ pub fn RootApp() -> Element {
     let server_url_for_reject = server_url.clone();
     let server_url_for_refresh = server_url.clone();
     let server_url_for_select = server_url.clone();
+    let server_url_for_unread = server_url.clone();
     let server_url_for_start = server_url.clone();
     let server_url_for_exchange = server_url.clone();
     let server_url_for_pass = server_url.clone();
@@ -622,6 +855,8 @@ pub fn RootApp() -> Element {
                             stay,
                         );
                         let token = new_session.session_token.clone();
+                        // As above: a fresh session invalidates the flag.
+                        *SESSION_INVALID.write() = false;
                         session.set(Some(new_session));
 
                         let server_url = server_url_for_login.clone();
@@ -660,18 +895,11 @@ pub fn RootApp() -> Element {
                             });
                         }
                         crate::local_storage::clear_tokens();
-                        session.set(None);
-                        // Everything behind the login modal belongs to the
-                        // account that just logged out — leaving it in
-                        // place would show the next person to log in on
-                        // this device (or the same person's own re-login) a
-                        // stale games list, board, and rack until a fresh
-                        // load happens to overwrite it. Same reset already
-                        // used when switching games entirely.
-                        game.set(None);
-                        game_summaries.set(Vec::new());
-                        websocket_game_id.set(None);
-                        reset_composer_state(
+                        clear_session_state(
+                            session,
+                            game,
+                            game_summaries,
+                            websocket_game_id,
                             dragging_tile_id,
                             selected_blank_letter,
                             staged_placements,
@@ -693,7 +921,19 @@ pub fn RootApp() -> Element {
                             remembered_name: stored.remembered_name,
                             session_token: None,
                         });
-                        session.set(None);
+                        clear_session_state(
+                            session,
+                            game,
+                            game_summaries,
+                            websocket_game_id,
+                            dragging_tile_id,
+                            selected_blank_letter,
+                            staged_placements,
+                            selected_cell,
+                            exchange_mode,
+                            exchange_selected,
+                            direction_override,
+                        );
                         info_message.set(Some("Password changed — please log in again.".to_string()));
                     },
                     on_details_updated: move |updated: api::PlayerDto| {
@@ -1360,6 +1600,38 @@ pub fn RootApp() -> Element {
                             board_index,
                         );
                     },
+                    on_show_unread: move |_| {
+                        // The icon promises messages, so it delivers them —
+                        // switching game if that is where they are. Anything
+                        // less makes the indicator a puzzle rather than a
+                        // pointer.
+                        let Some(target) = UNREAD_GAME_ID() else {
+                            return;
+                        };
+                        if game().is_some_and(|open| open.id == target) {
+                            scroll_chat_into_view();
+                            return;
+                        }
+                        // Elsewhere: load it, then scroll once it has rendered.
+                        // The panel does not exist yet at this instant, which
+                        // is what SCROLL_CHAT_PENDING is for.
+                        *SCROLL_CHAT_PENDING.write() = true;
+                        let server_url = server_url_for_unread.clone();
+                        let token = session().map(|current| current.session_token.clone());
+                        spawn(async move {
+                            is_loading.set(true);
+                            error_message.set(None);
+                            if let Ok(loaded) =
+                                load_game_by_id(&server_url, &target, token.as_deref()).await
+                            {
+                                info_message.set(None);
+                                game.set(Some(loaded));
+                            } else {
+                                *SCROLL_CHAT_PENDING.write() = false;
+                            }
+                            is_loading.set(false);
+                        });
+                    },
                     on_select_cell: move |board_index: usize| {
                         if !can_submit_human_action || exchange_mode() {
                             return;
@@ -1869,6 +2141,46 @@ fn empty_live_game() -> GameStateDto {
 /// Any variant would do: every edition shares one board (see
 /// `VariantRules`'s note that the premium layout is not part of what an
 /// edition varies).
+/// Drop everything belonging to the account whose session just ended.
+///
+/// Leaving it in place shows the next person to log in on this device — or
+/// the same person re-logging in — a stale games list, board and rack until
+/// something happens to overwrite it. Observed after an account was deleted
+/// server-side: the login modal appeared over a still-visible board, and
+/// registering as a new user left the previous player's tiles on screen.
+///
+/// Called from every path that ends a session: the Logout button, a session
+/// found dead server-side, and a password change (which invalidates every
+/// session for that player, including this one).
+#[allow(clippy::too_many_arguments)]
+fn clear_session_state(
+    mut session: Signal<Option<api::PlayerSessionDto>>,
+    mut game: Signal<Option<GameStateDto>>,
+    mut game_summaries: Signal<Vec<api::GameSummaryDto>>,
+    mut websocket_game_id: Signal<Option<String>>,
+    dragging_tile_id: Signal<Option<usize>>,
+    selected_blank_letter: Signal<Option<String>>,
+    staged_placements: Signal<Vec<StagedPlacementView>>,
+    selected_cell: Signal<Option<usize>>,
+    exchange_mode: Signal<bool>,
+    exchange_selected: Signal<HashSet<usize>>,
+    direction_override: Signal<Option<DirectionDto>>,
+) {
+    session.set(None);
+    game.set(None);
+    game_summaries.set(Vec::new());
+    websocket_game_id.set(None);
+    reset_composer_state(
+        dragging_tile_id,
+        selected_blank_letter,
+        staged_placements,
+        selected_cell,
+        exchange_mode,
+        exchange_selected,
+        direction_override,
+    );
+}
+
 fn empty_board() -> Vec<BoardCellDto> {
     rules_shared::VariantRules::official()
         .premiums
@@ -1937,7 +2249,32 @@ pub(crate) async fn fetch_player_rating_history(
 /// games-list poll can tell "the session is gone server-side" apart from an
 /// ordinary request failure and drop to the login modal instead of retrying
 /// forever.
-pub(crate) const SESSION_INVALID_MESSAGE: &str = "__session_invalid__";
+/// Returned by any request that gets a 401, and matched by the handler that
+/// clears the session.
+///
+/// It reads as a sentence rather than as `__session_invalid__`, because it
+/// leaks: a dozen callers do `error_message.set(Some(error))` with no idea this
+/// value is special, and until they all route through `SESSION_INVALID`
+/// below, one of them will occasionally win the race and put this on screen.
+/// Observed on 2026-08-11 as `__session_invalid__` sitting above the board.
+/// A sentinel that is also a decent message costs nothing and cannot embarrass
+/// anybody.
+pub(crate) const SESSION_INVALID_MESSAGE: &str = "Your session has ended — please sign in again.";
+
+/// Set the moment any request is told the session is invalid.
+///
+/// The clearing itself needs signals a request helper does not have, so this
+/// records the fact and the app effect acts on it — the same split as
+/// `SERVER_BUILD`. Before this, session death was only handled where the
+/// games-list poll happened to notice it first; every other caller turned a
+/// 401 into a string and showed it, leaving a dead session apparently working
+/// behind a stale board.
+pub(crate) static SESSION_INVALID: GlobalSignal<bool> = Signal::global(|| false);
+
+/// A 401 on a request that carried no token: this needed signing in, which is
+/// not the same as a session having ended. Kept separate so nothing mistakes an
+/// ordinary signed-out state for something going wrong.
+pub(crate) const NOT_SIGNED_IN_MESSAGE: &str = "Sign in to do that.";
 
 /// Best-effort explicit log-out: asks the server to delete this session now.
 /// The caller clears its local state regardless, so a failure (offline,
@@ -2267,14 +2604,17 @@ const BUNDLE_POLL_MS: u64 = 3000;
 #[cfg(target_arch = "wasm32")]
 const BUNDLE_POLL_ATTEMPTS: usize = 20;
 
-/// The build identity of the bundle this origin is serving *right now*,
-/// from the `/version.txt` written into the web image at build time (see
-/// the Dockerfile). `None` if it can't be read, which covers the moment the
-/// web container is mid-restart — in which case the answer to "would
-/// reloading help?" is "can't tell", and the caller correctly declines to
-/// reload.
+/// The build id of the **web container** — the one serving this bundle —
+/// from the `/version.txt` written into its image (see the Dockerfile).
+///
+/// This is the one question a running tab asks that does not go to the server,
+/// and it has to be: the server can only report its own build, and during a
+/// deploy the two containers are briefly on different commits. `None` if it
+/// cannot be read — the web container mid-restart, or a dev build that wrote
+/// no file — in which case "would reloading help?" is answered "cannot tell",
+/// and the caller declines rather than guesses.
 #[cfg(target_arch = "wasm32")]
-async fn fetch_served_bundle_version() -> Option<String> {
+async fn fetch_web_build_id() -> Option<String> {
     let response = Request::get("/version.txt").send().await.ok()?;
     if !response.ok() {
         return None;
@@ -2293,16 +2633,22 @@ async fn fetch_served_bundle_version() -> Option<String> {
 /// match, so the watcher would reload, get the same fallback again, and
 /// spin: precisely the loop this check exists to prevent.
 ///
-/// The id is a hex digest of the bundle's contents (see the Dockerfile), so
-/// anything that isn't plain hex of a sane length is treated as "no answer".
-/// HTML fails on the leading `<`, and also on its spaces and newlines.
+/// The id is a git commit id (see the Dockerfile), so anything that is not
+/// plain hex of a sane length is treated as "no answer". HTML fails on the
+/// leading `<`, and also on its spaces and newlines.
+///
+/// **The lower bound is 7, not 8.** `git rev-parse --short` gives seven
+/// characters and that is what a deploy stamps, so a bound of 8 would reject
+/// every real id — leaving the client permanently unable to tell, silently
+/// never reloading, with nothing failing to say so. That is exactly the
+/// failure this whole mechanism exists to remove, so it is asserted below.
 // Deliberately not `#[cfg(target_arch = "wasm32")]` like its caller: keeping
 // it target-independent is what lets the tests below run under a normal
 // `cargo test`, which is the only place this logic is actually exercised.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 fn parse_served_version(body: &str) -> Option<String> {
     let id = body.trim();
-    let plausible = (8..=64).contains(&id.len()) && id.chars().all(|c| c.is_ascii_hexdigit());
+    let plausible = (7..=64).contains(&id.len()) && id.chars().all(|c| c.is_ascii_hexdigit());
     plausible.then(|| id.to_string())
 }
 
@@ -2322,47 +2668,47 @@ fn parse_served_version(body: &str) -> Option<String> {
 /// naturally handles skew that a reload can't fix at all — a fresh load
 /// already has the current bundle, so if the versions match we poll, give up,
 /// and fall back to telling the user, which is all that was ever possible.
-/// The bundle id this tab loaded with.
-///
-/// Recorded on first read rather than compiled in, because the id is a hash
-/// of the built bundle and nothing can contain its own hash. "What we are
-/// running" is therefore whatever `/version.txt` said when we started, and
-/// anything different later means new code is being served.
+/// True while a watcher is running, so a header arriving on every response
+/// cannot start a second one alongside the first.
 #[cfg(target_arch = "wasm32")]
-static LOADED_BUNDLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-/// Reads and remembers the bundle id, if it hasn't been recorded already.
-/// Called once at startup so the watcher has a baseline to compare against.
-#[cfg(target_arch = "wasm32")]
-pub async fn record_loaded_bundle() {
-    if let Some(served) = fetch_served_bundle_version().await {
-        let _ = LOADED_BUNDLE.set(served);
-    }
-}
+static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(target_arch = "wasm32")]
 fn watch_for_new_bundle(mut info_message: Signal<Option<String>>, give_up_message: Option<String>) {
+    use std::sync::atomic::Ordering;
+    // The header arrives on every response, so without this a busy tab would
+    // start a watcher every few seconds and run them all at once.
+    if WATCHING.swap(true, Ordering::SeqCst) {
+        return;
+    }
     spawn(async move {
-        // No baseline (the startup read failed, e.g. the origin has no
-        // version.txt) means we cannot tell new code from old, so decline to
-        // reload rather than guess — the same call the unreadable case makes.
-        let Some(running) = LOADED_BUNDLE.get().cloned() else {
+        // Our own build, compiled in. Without one — a dev build that set no
+        // TILE_LITE_ELITE_BUILD_ID — there is nothing to compare against, and
+        // "cannot tell" must never become "reload".
+        let Some(ours) = CLIENT_BUILD_ID else {
+            WATCHING.store(false, Ordering::SeqCst);
             if let Some(message) = give_up_message {
                 info_message.set(Some(message));
             }
             return;
         };
         for _ in 0..BUNDLE_POLL_ATTEMPTS {
-            if let Some(served) = fetch_served_bundle_version().await
-                && served != running
-            {
-                if let Some(window) = web_sys::window() {
-                    let _ = window.location().reload();
+            if let Some(web) = fetch_web_build_id().await {
+                let server = SERVER_BUILD.peek().clone();
+                // The containers disagreeing means a deploy is in flight. Wait:
+                // whichever of them moved first, the other is about to follow,
+                // and reloading now lands this tab on a half-updated pair.
+                let mid_deploy = server.as_deref().is_some_and(|server| server != web);
+                if !mid_deploy && web != ours {
+                    if let Some(window) = web_sys::window() {
+                        let _ = window.location().reload();
+                    }
+                    return;
                 }
-                return;
             }
             sleep_ms(BUNDLE_POLL_MS).await;
         }
+        WATCHING.store(false, Ordering::SeqCst);
         if let Some(message) = give_up_message {
             info_message.set(Some(message));
         }
@@ -2729,6 +3075,110 @@ where
 /// to a response the server sent back rejecting it, which keeps its own
 /// specific message. This is the one signal that distinguishes "the server
 /// is down/unreachable" from "you made an illegal move."
+/// A refusal the caller can do something about: the server's own message, plus
+/// how long to wait when it said.
+///
+/// `429` is the caller asking too often — their own doing, and fixable by
+/// slowing down. Deliberately *not* part of `backend_is_unreachable`: the
+/// service is answering perfectly well, and dropping a working session into
+/// the reconnect loop over a rate limit would be the opposite of what the
+/// status means.
+///
+/// `Retry-After` carries a number of seconds. Anything else is ignored rather
+/// than guessed at — a wrong wait is worse than none, because somebody will
+/// believe it.
+fn refusal_message(status: u16, retry_after: Option<String>, body: String) -> String {
+    if status != 429 {
+        return body;
+    }
+    match retry_after
+        .as_deref()
+        .map(str::trim)
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        // "in 0 seconds" is absurd and "in 1 seconds" is unfinished. Our own
+        // server never sends 0 — `refusal` floors it at one — so this is for
+        // whatever a proxy or a future server might say, and the honest
+        // rendering of "wait none" is that there is nothing to wait for.
+        Some(0) => format!("{body} Try again now."),
+        Some(1) => format!("{body} Try again in 1 second."),
+        Some(seconds) => format!("{body} Try again in {seconds} seconds."),
+        None => body,
+    }
+}
+
+#[cfg(test)]
+mod refusal_message_tests {
+    use super::refusal_message;
+
+    /// Everything that is not a rate limit passes through untouched — a 400 or
+    /// a 404 has no wait to offer and inventing one would be a lie.
+    #[test]
+    fn other_statuses_are_left_alone() {
+        assert_eq!(
+            refusal_message(400, Some("5".into()), "Bad request".into()),
+            "Bad request"
+        );
+        assert_eq!(refusal_message(404, None, "Not found".into()), "Not found");
+    }
+
+    /// The whole point: a caller told to slow down is told for how long.
+    #[test]
+    fn a_rate_limit_says_how_long_to_wait() {
+        assert_eq!(
+            refusal_message(429, Some("30".into()), "You are asking too often.".into()),
+            "You are asking too often. Try again in 30 seconds."
+        );
+    }
+
+    /// The plural agrees with the number: 0 seconds, 1 second, 2 seconds. "In
+    /// 1 seconds" makes an interface look unfinished, and "in 0 seconds" is
+    /// absurd — a wait of none is not a wait, so it is said as one.
+    #[test]
+    fn the_wait_agrees_with_its_number() {
+        assert_eq!(
+            refusal_message(429, Some("1".into()), "Slow down.".into()),
+            "Slow down. Try again in 1 second."
+        );
+        assert_eq!(
+            refusal_message(429, Some("2".into()), "Slow down.".into()),
+            "Slow down. Try again in 2 seconds."
+        );
+        assert_eq!(
+            refusal_message(429, Some("0".into()), "Slow down.".into()),
+            "Slow down. Try again now."
+        );
+    }
+
+    /// `Retry-After` may also be an HTTP date, and a proxy may mangle it. A
+    /// wait we cannot read is left out rather than guessed — a wrong number is
+    /// worse than no number, because somebody will believe it.
+    #[test]
+    fn an_unreadable_wait_is_omitted_not_invented() {
+        for value in [
+            None,
+            Some("Wed, 21 Oct 2026 07:28:00 GMT"),
+            Some(""),
+            Some("soon"),
+        ] {
+            assert_eq!(
+                refusal_message(429, value.map(str::to_string), "Slow down.".into()),
+                "Slow down.",
+                "value: {value:?}"
+            );
+        }
+    }
+
+    /// Whitespace around the number is a proxy's doing, not the caller's.
+    #[test]
+    fn surrounding_whitespace_does_not_lose_the_wait() {
+        assert_eq!(
+            refusal_message(429, Some("  12  ".into()), "Slow down.".into()),
+            "Slow down. Try again in 12 seconds."
+        );
+    }
+}
+
 const UNREACHABLE_MESSAGE: &str = "Can't reach the server.";
 
 /// Marks the backend unreachable. Called only at the point where a request
@@ -2755,6 +3205,270 @@ const UNREACHABLE_MESSAGE: &str = "Can't reach the server.";
 /// reconnect loop only runs while it is false.
 fn backend_is_unreachable(status: u16) -> bool {
     (502..=504).contains(&status)
+}
+
+/// Does the game currently open have chat nobody has read yet?
+///
+/// One signal for both indicators — the rack panel's and the chat panel's —
+/// rather than each computing it. Two derivations of one fact is how a seat's
+/// invitation status came to be right in one place and wrong in the other
+/// (#71), and these two sit on screen together where disagreeing would be
+/// obvious.
+pub static HAS_UNREAD_CHAT: GlobalSignal<bool> = Signal::global(|| false);
+
+/// Which game the indicator is pointing at, so clicking it can go there.
+pub static UNREAD_GAME_ID: GlobalSignal<Option<String>> = Signal::global(|| None);
+
+/// Scroll the chat into view as soon as there is a chat to scroll to.
+///
+/// Set when the destination is a game that is not open yet: selecting it is
+/// asynchronous, and the panel does not exist at the moment of the click. The
+/// ticker below retries until it does, which is simpler than threading a
+/// callback through the load.
+pub static SCROLL_CHAT_PENDING: GlobalSignal<bool> = Signal::global(|| false);
+
+/// Is the unread message in the game currently open, rather than another one?
+///
+/// Drives which colour the indicator wears: gold for "here", clay for
+/// "elsewhere", matching the mail icon on the game row it refers to. Only
+/// meaningful while `HAS_UNREAD_CHAT` is true.
+pub static UNREAD_IS_THIS_GAME: GlobalSignal<bool> = Signal::global(|| false);
+
+/// Total time the chat has been visible, which is what messages age against.
+/// Published so the panel can render each message's own progress without
+/// owning a second clock.
+pub static CHAT_VISIBLE_MS: GlobalSignal<i64> = Signal::global(|| 0);
+
+/// The reading of `CHAT_VISIBLE_MS` when each message arrived, by message id.
+/// A message's elapsed time is the difference between the two, which is what
+/// drives both its highlight and how far through its fade it should be — so a
+/// rebuilt element resumes rather than starting again.
+pub static CHAT_MESSAGE_ARRIVED_AT: GlobalSignal<HashMap<String, i64>> =
+    Signal::global(HashMap::new);
+
+/// Wall-clock milliseconds, from whichever clock the target has.
+///
+/// Only ever used as a difference between two readings, so the epoch does not
+/// matter — and `SeenClock` refuses to bank a negative interval, which is the
+/// guard against this jumping backwards.
+fn now_millis() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+}
+
+/// The desktop client has no scrolled-past-the-bottom problem and no document
+/// to ask, so an open game counts as visible. The ten-second rule still
+/// applies, which is the part that matters: a message is read once somebody has
+/// had it in front of them, not the moment it lands.
+#[cfg(not(target_arch = "wasm32"))]
+fn chat_messages_are_visible() -> bool {
+    true
+}
+
+/// Is a game unread: has somebody else's message arrived since the watermark?
+///
+/// The one rule, so the rack indicator and every games-list row give the same
+/// answer for the same game. Only the *input* differs — live messages for the
+/// game that is open, the polled summary for the rest.
+pub fn unread_for(last_received_at: Option<i64>, watermark: Option<i64>) -> bool {
+    last_received_at.is_some_and(|received| watermark.is_none_or(|seen| received > seen))
+}
+
+/// Is there a chat panel on the page yet? The pending-scroll retry needs to
+/// know, since a freshly selected game renders a moment after it loads.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn chat_panel_exists() -> bool {
+    false
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn chat_panel_exists() -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.query_selector(".chat-messages").ok().flatten())
+        .is_some()
+}
+
+/// Bring the chat into view — what the unread indicator beside the rack does
+/// when clicked.
+///
+/// The indicator sits by the rack because that is where the eye is during a
+/// game, but the panel it refers to can be a long way down the page on a phone.
+/// Telling somebody there is a message and leaving them to find it is half a
+/// feature.
+///
+/// Scrolling the panel into view also *is* the fix for the message being
+/// unread: `chat_messages_are_visible` starts returning true, the seen clock
+/// starts counting, and the mark clears on its own.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn scroll_chat_into_view() {}
+
+#[cfg(target_arch = "wasm32")]
+pub fn scroll_chat_into_view() {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    if let Ok(Some(panel)) = document.query_selector(".chat-messages") {
+        panel.scroll_into_view();
+    }
+}
+
+/// Are the chat messages somewhere a person could actually see them?
+///
+/// Two conditions, because either alone is wrong. `document.hidden` catches the
+/// background tab, which no amount of scroll position would reveal. The panel's
+/// own rectangle catches the case the phone makes ordinary: the tab is in front
+/// of you and the chat is scrolled past the bottom of the screen.
+///
+/// Absent panel — no game open, or the element not yet rendered — is "not
+/// visible", which is the safe answer: it leaves the message marked unread
+/// rather than clearing something nobody saw.
+#[cfg(target_arch = "wasm32")]
+fn chat_messages_are_visible() -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let Some(document) = window.document() else {
+        return false;
+    };
+    if document.hidden() {
+        return false;
+    }
+    let Ok(Some(panel)) = document.query_selector(".chat-messages") else {
+        return false;
+    };
+    let rect = panel.get_bounding_client_rect();
+    let viewport_height = window
+        .inner_height()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    // Any part of it on screen counts. Requiring the whole panel would mean a
+    // tall conversation never counted as visible at all.
+    rect.bottom() > 0.0 && rect.top() < viewport_height && rect.height() > 0.0
+}
+
+/// Whether the chat messages are somewhere a person could actually see them:
+/// the tab in the foreground, and the panel on screen rather than scrolled past.
+///
+/// Read by the message fade, which pauses when this is false, and by the seen
+/// clock, which stops accumulating. One signal so the two cannot disagree about
+/// what "visible" means — the fade somebody watches finishing has to be the
+/// same thing that marks the message read.
+pub static CHAT_IS_VISIBLE: GlobalSignal<bool> = Signal::global(|| false);
+
+/// The build this client was compiled from, matching what the server stamps on
+/// every response. `None` on a build with no id, where the comparison below
+/// cannot be made and correctly is not.
+// Only the browser reloads, so only the wasm build reads this. Kept
+// target-independent rather than cfg'd out, so the comparison below can be
+// tested under a plain `cargo test` — which is the only place it is exercised
+// at all.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+const CLIENT_BUILD_ID: Option<&str> = option_env!("TILE_LITE_ELITE_BUILD_ID");
+
+/// The build the server said it was running, on the most recent response.
+///
+/// Kept rather than reduced to a flag, because the *value* is half of the
+/// deploy-window test: the web container and the server disagreeing is what
+/// tells a tab an upgrade is in flight and it should wait rather than reload.
+///
+/// The reload is not decided here. A request helper has no signals to explain
+/// itself with, and this header describes the **server** while the bundle comes
+/// from a different container — so on its own it can say that something moved,
+/// never that new code is ready for this tab.
+static SERVER_BUILD: GlobalSignal<Option<String>> = Signal::global(|| None);
+
+/// The generic half of a response: the parts every caller handles identically,
+/// whatever it was asking for.
+///
+/// It exists because the two HTTP clients this crate uses — `reqwest` on the
+/// desktop, `gloo` in the browser — share no response type, so there was
+/// nowhere for "what do we do with a response" to live and it had been written
+/// out at each of six call sites. Not because the headers differ: `Retry-After`
+/// is standard and `x-build-id` is ours, and `header_string` reduces the
+/// libraries' difference to one line each.
+///
+/// That duplication is why the build-id check had nowhere obvious to go, and
+/// why `Retry-After` had to be changed in six places when its meaning moved.
+struct ResponseHeaders {
+    retry_after: Option<String>,
+    build_id: Option<String>,
+}
+
+impl ResponseHeaders {
+    /// Does the generic handling, and hands back the retry hint for whatever
+    /// message the caller is building. Content handling stays with the caller;
+    /// this is only the envelope.
+    fn handle(self) -> Option<String> {
+        note_server_build(self.build_id.as_deref());
+        self.retry_after
+    }
+}
+
+/// One header, as text, whichever client fetched the response.
+///
+/// Nothing about these headers resists common code — `Retry-After` is standard
+/// and `x-build-id` is ours. What differs is only how the two libraries hand a
+/// header back: `reqwest` gives bytes that may not be UTF-8, so it needs
+/// `to_str`, while `gloo` has already done that work against the browser's
+/// Fetch `Headers`. Both shapes are one line, and having both under one name
+/// keeps the difference here instead of at every call site.
+#[cfg(not(target_arch = "wasm32"))]
+fn header_string(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+}
+
+/// See the note on the desktop version above.
+#[cfg(target_arch = "wasm32")]
+fn header_string(headers: gloo_net::http::Headers, name: &str) -> Option<String> {
+    headers.get(name)
+}
+
+/// Records that the server is running a build this client is not.
+///
+/// Two silences, both deliberate. A server with no build id sets no header, and
+/// a client with no build id cannot compare — in either case we cannot tell new
+/// code from old, and the honest response is to do nothing rather than guess.
+fn note_server_build(served: Option<&str>) {
+    let Some(served) = served else {
+        return;
+    };
+    if SERVER_BUILD.peek().as_deref() == Some(served) {
+        return;
+    }
+    *SERVER_BUILD.write() = Some(served.to_string());
+}
+
+/// Split from `note_server_build` so it can be tested: `CLIENT_BUILD_ID` is
+/// fixed at compile time and unset under `cargo test`, so a test going through
+/// it could only ever see the "cannot tell" case.
+///
+/// Answers **only** the question "do I know these are different". Both unknowns
+/// are `false`, which is what makes the caller's silence the right silence: not
+/// knowing must never be treated as a change, or an unidentified build would
+/// reload on every response forever.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn build_differs(served: Option<&str>, ours: Option<&str>) -> bool {
+    match (served, ours) {
+        (Some(served), Some(ours)) => !served.is_empty() && !ours.is_empty() && served != ours,
+        _ => false,
+    }
 }
 
 fn mark_offline() -> String {
@@ -2848,15 +3562,37 @@ where
         return Err(mark_offline());
     }
     mark_online();
+    // Read on **every** response, not only failures. This lived inside the
+    // `if !success` branch, coupled to `Retry-After` — which genuinely only
+    // matters on a refusal. The build id inherited that failure-only lifetime
+    // and never wanted it: a tab whose requests all succeeded learned nothing,
+    // so nothing it did made it notice a new bundle (#67). A 401 was worse,
+    // returning before the read happened at all.
+    let retry_after = ResponseHeaders {
+        retry_after: header_string(response.headers(), "retry-after"),
+        build_id: header_string(response.headers(), "x-build-id"),
+    }
+    .handle();
     if !response.status().is_success() {
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(SESSION_INVALID_MESSAGE.to_string());
+            // Only a request that *carried* a token can be told its session
+            // died. Without one a 401 means "this needs signing in", which is
+            // ordinary on a signed-out tab — and reporting it as a session
+            // ending told somebody who had just opened the app that their
+            // session had expired, over a login form they had not used yet.
+            if token.is_some() {
+                *SESSION_INVALID.write() = true;
+                return Err(SESSION_INVALID_MESSAGE.to_string());
+            }
+            return Err(NOT_SIGNED_IN_MESSAGE.to_string());
         }
+        let status = response.status().as_u16();
         let msg = response
             .json::<api::ApiError>()
             .await
             .map(|e| e.message)
             .unwrap_or_else(|_| "Request failed".to_string());
+        let msg = refusal_message(status, retry_after, msg);
         return Err(msg);
     }
     response.json::<R>().await.map_err(|e| e.to_string())
@@ -2884,15 +3620,37 @@ where
         return Err(mark_offline());
     }
     mark_online();
+    // Read on **every** response, not only failures. This lived inside the
+    // `if !success` branch, coupled to `Retry-After` — which genuinely only
+    // matters on a refusal. The build id inherited that failure-only lifetime
+    // and never wanted it: a tab whose requests all succeeded learned nothing,
+    // so nothing it did made it notice a new bundle (#67). A 401 was worse,
+    // returning before the read happened at all.
+    let retry_after = ResponseHeaders {
+        retry_after: header_string(response.headers(), "retry-after"),
+        build_id: header_string(response.headers(), "x-build-id"),
+    }
+    .handle();
     if !response.ok() {
         if response.status() == 401 {
-            return Err(SESSION_INVALID_MESSAGE.to_string());
+            // Only a request that *carried* a token can be told its session
+            // died. Without one a 401 means "this needs signing in", which is
+            // ordinary on a signed-out tab — and reporting it as a session
+            // ending told somebody who had just opened the app that their
+            // session had expired, over a login form they had not used yet.
+            if token.is_some() {
+                *SESSION_INVALID.write() = true;
+                return Err(SESSION_INVALID_MESSAGE.to_string());
+            }
+            return Err(NOT_SIGNED_IN_MESSAGE.to_string());
         }
+        let status = response.status();
         let msg = response
             .json::<api::ApiError>()
             .await
             .map(|e| e.message)
-            .unwrap_or_else(|_| format!("HTTP {} {}", response.status(), response.status_text()));
+            .unwrap_or_else(|_| format!("HTTP {status}"));
+        let msg = refusal_message(status, retry_after, msg);
         return Err(msg);
     }
     response
@@ -2982,12 +3740,25 @@ where
         return Err(mark_offline());
     }
     mark_online();
+    // Read on **every** response, not only failures. This lived inside the
+    // `if !success` branch, coupled to `Retry-After` — which genuinely only
+    // matters on a refusal. The build id inherited that failure-only lifetime
+    // and never wanted it: a tab whose requests all succeeded learned nothing,
+    // so nothing it did made it notice a new bundle (#67). A 401 was worse,
+    // returning before the read happened at all.
+    let retry_after = ResponseHeaders {
+        retry_after: header_string(response.headers(), "retry-after"),
+        build_id: header_string(response.headers(), "x-build-id"),
+    }
+    .handle();
     if !response.status().is_success() {
+        let status = response.status().as_u16();
         let msg = response
             .json::<api::ApiError>()
             .await
             .map(|e| e.message)
             .unwrap_or_else(|_| "Request failed".to_string());
+        let msg = refusal_message(status, retry_after, msg);
         return Err(msg);
     }
     response.json::<R>().await.map_err(|e| e.to_string())
@@ -3013,12 +3784,25 @@ where
         return Err(mark_offline());
     }
     mark_online();
+    // Read on **every** response, not only failures. This lived inside the
+    // `if !success` branch, coupled to `Retry-After` — which genuinely only
+    // matters on a refusal. The build id inherited that failure-only lifetime
+    // and never wanted it: a tab whose requests all succeeded learned nothing,
+    // so nothing it did made it notice a new bundle (#67). A 401 was worse,
+    // returning before the read happened at all.
+    let retry_after = ResponseHeaders {
+        retry_after: header_string(response.headers(), "retry-after"),
+        build_id: header_string(response.headers(), "x-build-id"),
+    }
+    .handle();
     if !response.ok() {
+        let status = response.status();
         let msg = response
             .json::<api::ApiError>()
             .await
             .map(|e| e.message)
-            .unwrap_or_else(|_| format!("HTTP {} {}", response.status(), response.status_text()));
+            .unwrap_or_else(|_| format!("HTTP {status}"));
+        let msg = refusal_message(status, retry_after, msg);
         return Err(msg);
     }
     response
@@ -3041,12 +3825,25 @@ where
         return Err(mark_offline());
     }
     mark_online();
+    // Read on **every** response, not only failures. This lived inside the
+    // `if !success` branch, coupled to `Retry-After` — which genuinely only
+    // matters on a refusal. The build id inherited that failure-only lifetime
+    // and never wanted it: a tab whose requests all succeeded learned nothing,
+    // so nothing it did made it notice a new bundle (#67). A 401 was worse,
+    // returning before the read happened at all.
+    let retry_after = ResponseHeaders {
+        retry_after: header_string(response.headers(), "retry-after"),
+        build_id: header_string(response.headers(), "x-build-id"),
+    }
+    .handle();
     if !response.status().is_success() {
+        let status = response.status().as_u16();
         let msg = response
             .json::<api::ApiError>()
             .await
             .map(|e| e.message)
             .unwrap_or_else(|_| "Request failed".to_string());
+        let msg = refusal_message(status, retry_after, msg);
         return Err(msg);
     }
     Ok(())
@@ -3071,12 +3868,25 @@ where
         return Err(mark_offline());
     }
     mark_online();
+    // Read on **every** response, not only failures. This lived inside the
+    // `if !success` branch, coupled to `Retry-After` — which genuinely only
+    // matters on a refusal. The build id inherited that failure-only lifetime
+    // and never wanted it: a tab whose requests all succeeded learned nothing,
+    // so nothing it did made it notice a new bundle (#67). A 401 was worse,
+    // returning before the read happened at all.
+    let retry_after = ResponseHeaders {
+        retry_after: header_string(response.headers(), "retry-after"),
+        build_id: header_string(response.headers(), "x-build-id"),
+    }
+    .handle();
     if !response.ok() {
+        let status = response.status();
         let msg = response
             .json::<api::ApiError>()
             .await
             .map(|e| e.message)
-            .unwrap_or_else(|_| format!("HTTP {} {}", response.status(), response.status_text()));
+            .unwrap_or_else(|_| format!("HTTP {status}"));
+        let msg = refusal_message(status, retry_after, msg);
         return Err(msg);
     }
     Ok(())
@@ -3913,6 +4723,44 @@ fn shuffle_order(order: &mut [usize]) {
 mod tests {
     use super::*;
 
+    /// A different build on the server is what triggers the update check. This
+    /// is the whole of that decision, and the interesting half is when it says
+    /// **no**.
+    ///
+    /// A tab that had been idle across a deploy used to never notice at all:
+    /// the check hung off offline-recovery, so it needed the client to have
+    /// lost the server and got it back. A tab holding no connection never does.
+    #[test]
+    fn a_different_server_build_is_noticed() {
+        assert!(
+            build_differs(Some("b2d4e10"), Some("a1c9f02")),
+            "a server running different code is the case this exists for"
+        );
+        assert!(
+            !build_differs(Some("a1c9f02"), Some("a1c9f02")),
+            "the same build is not a reason to reload"
+        );
+    }
+
+    /// Not knowing is never a change.
+    ///
+    /// A server with no build id sets no header; a client with no build id has
+    /// nothing to compare. Either way the honest answer is "cannot tell", and
+    /// it must not be reported as a difference — a build that answered "yes" to
+    /// an unknown would reload on every response, forever, which is a worse
+    /// failure than the staleness this fixes.
+    #[test]
+    fn an_unknown_build_is_never_treated_as_a_change() {
+        assert!(!build_differs(None, Some("a1c9f02")), "server said nothing");
+        assert!(!build_differs(Some("a1c9f02"), None), "we have no id");
+        assert!(!build_differs(None, None), "neither end knows");
+        assert!(
+            !build_differs(Some(""), Some("a1c9f02")),
+            "empty is not an id"
+        );
+        assert!(!build_differs(Some("a1c9f02"), Some("")), "nor is ours");
+    }
+
     /// A tab left open across a deploy used to stick on `HTTP 502` and never
     /// retry. `web` (Caddy) and `server` are separate containers, so while
     /// the server restarts Caddy answers with 502 — a real response, which
@@ -4013,8 +4861,26 @@ mod tests {
 
     /// The length actually produced by the Dockerfile, so the two cannot
     /// drift into disagreeing about what a valid id looks like.
+    ///
+    /// **Seven characters is the real case.** `version.txt` holds the build id
+    /// — a `git rev-parse --short` commit id — and every one this project has
+    /// ever deployed is seven. The bound used to start at 8, from when the file
+    /// held a 16-character digest, and leaving it there while changing what the
+    /// file contains would have rejected every genuine id: the client would
+    /// read "cannot tell" forever, decline to reload forever, and report
+    /// nothing. A silent no-op is the failure this mechanism exists to remove,
+    /// so it is pinned here rather than left to be noticed in production.
     #[test]
     fn served_version_accepts_the_length_the_build_writes() {
+        for id in ["3d821e9", "8a5d71d", "b717733"] {
+            assert_eq!(
+                parse_served_version(id),
+                Some(id.to_string()),
+                "{id} is a real deployed build id and must be readable"
+            );
+        }
+        // The previous format, still valid: nothing needs it, but a bound that
+        // rejected it would mean the check had drifted the other way.
         assert!(parse_served_version("0123456789abcdef").is_some());
     }
 

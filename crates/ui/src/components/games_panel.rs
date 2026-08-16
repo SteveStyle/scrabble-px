@@ -363,7 +363,22 @@ pub fn GamesPanel(
                 return rsx! {};
             }
             let row_elements = rows.into_iter().map(|summary| {
-                let has_unread = has_unread_chat(&summary, &chat_watermarks);
+                // The open game answers from its own live messages, which the
+                // WebSocket delivers as they are sent. Its summary is up to
+                // GAME_LIST_POLL_MS behind — ten seconds — and this row sits
+                // beside the rack indicator, so a stale one would visibly
+                // disagree with it. Every other row has only the summary,
+                // which is the best available for a game nobody is watching.
+                let has_unread = if current_game.as_ref().is_some_and(|g| g.id == summary.id) {
+                    // This game's own answer, not HAS_UNREAD_CHAT — that one
+                    // speaks for *every* game now, so reading it here lit the
+                    // open row whenever anything anywhere was unread. Invisible
+                    // with a single game, because the two values agree; the
+                    // moment there is a second, the open game claims its mail.
+                    crate::app::UNREAD_IS_THIS_GAME()
+                } else {
+                    has_unread_chat(&summary, &chat_watermarks)
+                };
                 game_row(
                     &summary,
                     selected_id.as_deref(),
@@ -476,7 +491,7 @@ pub fn GamesPanel(
                 },
                 DraftRow::Seat(index, draft) => rsx! {
                     tr { key: "{index}",
-                        td {
+                        td { class: "seat-draft-name-cell",
                             {reorder}
                             if draft.kind == AdditionalSeatKind::Named {
                                 NameAutocompleteInput {
@@ -835,7 +850,26 @@ fn game_row(
                 div { class: "game-row-top",
                     span { class: "{badge_class}", "{status_label(&summary.status, ready)}" }
                     if has_unread_chat {
-                        span { class: "game-row-unread-mail", title: "New message", "✉" }
+                        // Same two colours as the rack indicator: gold when
+                        // this is the game you are in, clay when it is one you
+                        // are not. Reading the rack icon then tells you which
+                        // row to look for.
+                        button {
+                            class: if is_selected {
+                                "game-row-unread-mail game-row-unread-mail-here"
+                            } else {
+                                "game-row-unread-mail game-row-unread-mail-elsewhere"
+                            },
+                            title: "New message — click to read it",
+                            // The row's own click selects the game; this adds
+                            // the second half of the promise, scrolling to the
+                            // messages once the panel exists. Left to bubble so
+                            // the selection still happens exactly once.
+                            onclick: move |_| {
+                                *crate::app::SCROLL_CHAT_PENDING.write() = true;
+                            },
+                            "✉"
+                        }
                     }
                     span { class: "game-row-time", "{relative_time}" }
                 }
@@ -948,21 +982,63 @@ fn game_row(
                         }
                     }
                     if can_chat {
+                        // No unread banner above the messages. It appeared and
+                        // disappeared in the flow of the panel, so the message
+                        // list and everything under it jumped by its height at
+                        // the moment somebody was reading — and the same signal
+                        // is already in two calmer places: the game row's mail
+                        // icon, and the one beside the rack where the eye
+                        // already is while playing.
                         div { class: "chat-panel",
                             div { class: "chat-messages",
                                 if messages.is_empty() {
                                     p { class: "chat-empty", "No messages yet" }
                                 }
-                                for message in messages.iter() {
+                                // Newest first in the DOM. `.chat-messages` is
+                                // `column-reverse`, which paints the first child
+                                // at the bottom *and* starts scrolled there —
+                                // so the latest message is in view without any
+                                // scrolling code, and stays in view as more
+                                // arrive.
+                                for message in messages.iter().rev() {
                                     {
                                         let is_own = viewer_player_id == Some(message.player_id.as_str());
+                                        // Each message ages on its own, against the shared
+                                        // visible-time clock: elapsed is how long *this* message
+                                        // has been in front of somebody. A later arrival no longer
+                                        // holds back an earlier one.
+                                        let elapsed = crate::app::CHAT_MESSAGE_ARRIVED_AT()
+                                            .get(&message.id)
+                                            .map(|arrived| {
+                                                (crate::app::CHAT_VISIBLE_MS() - arrived).max(0)
+                                            });
+                                        // Your own messages are never highlighted, however
+                                        // recently they were sent. The highlight means "this
+                                        // arrived for you"; you already know what you typed.
+                                        let is_unread = !is_own
+                                            && elapsed.is_some_and(|e| {
+                                                e < crate::seen_clock::SEEN_AFTER_MS
+                                            });
                                         let message_class = if is_own {
                                             "chat-message chat-message-own"
+                                        } else if is_unread {
+                                            "chat-message chat-message-unread"
                                         } else {
                                             "chat-message"
                                         };
+                                        // The fade *is* this message's own clock made visible:
+                                        // same duration, paused by the same rule, and started with
+                                        // a negative delay equal to the time already spent — so a
+                                        // rebuilt element resumes where it was instead of
+                                        // announcing itself again.
+                                        let fade = format!(
+                                            "--chat-fade-duration: {}ms; --chat-fade-state: {}; --chat-fade-delay: -{}ms;",
+                                            crate::seen_clock::SEEN_AFTER_MS,
+                                            if crate::app::CHAT_IS_VISIBLE() { "running" } else { "paused" },
+                                            elapsed.unwrap_or(0),
+                                        );
                                         rsx! {
-                                            div { key: "{message.id}", class: "{message_class}",
+                                            div { key: "{message.id}", class: "{message_class}", style: "{fade}",
                                                 span { class: "chat-message-sender", "{message.display_name}" }
                                                 span { class: "chat-message-body", "{message.body}" }
                                                 span { class: "chat-message-time", "{format_relative_time(message.created_at)}" }
@@ -1305,8 +1381,67 @@ fn add_seat_row(
         kind(),
         AdditionalSeatKind::Named | AdditionalSeatKind::Email
     ) || !name().trim().is_empty();
+
+    // One place that builds the submission, so pressing Enter and clicking the
+    // button cannot come to mean different things.
+    let mut add_seat = move || {
+        let (seat_kind, display_name, engine_id, claim) = match kind() {
+            AdditionalSeatKind::Named => (
+                SeatKind::Human,
+                name().trim().to_string(),
+                None,
+                Some(SeatClaim::Named {
+                    display_name: name().trim().to_string(),
+                }),
+            ),
+            AdditionalSeatKind::Open => (
+                SeatKind::Human,
+                "Open seat".to_string(),
+                None,
+                Some(SeatClaim::Open),
+            ),
+            AdditionalSeatKind::Email => (
+                SeatKind::Human,
+                name().trim().to_string(),
+                None,
+                Some(SeatClaim::Email {
+                    email: name().trim().to_string(),
+                }),
+            ),
+            AdditionalSeatKind::Engine => (
+                SeatKind::Engine,
+                "Bot".to_string(),
+                Some(DEFAULT_ENGINE_ID.to_string()),
+                None,
+            ),
+        };
+        on_add_seat.call(AddSeatSubmission {
+            game_id: game_id.clone(),
+            kind: seat_kind,
+            display_name,
+            engine_id,
+            claim,
+        });
+        name.set(String::new());
+    };
+    // A real `<form>` rather than per-input `onkeydown`, so Enter works from the
+    // name field, the email field, and the picker — and for the reason
+    // `auth_panel` documents: a browser autofill selection dispatches a
+    // keydown-shaped event with `.key` undefined, and Dioxus marshalling that
+    // missing key threw mid-render and wedged the runtime. An email input is
+    // exactly what a browser offers to autofill, so a keydown handler here
+    // would be inviting that back.
     rsx! {
-        div { class: "game-builder-add-row",
+        form {
+            class: "game-builder-add-row",
+            // Do NOT call `event.prevent_default()` — dioxus-web already
+            // suppresses a form's native submit, and preventing it
+            // counterintuitively re-enables the page reload. See auth_panel.
+            onsubmit: move |_| {
+                if can_submit {
+                    add_seat();
+                }
+            },
             select {
                 value: match kind() {
                     AdditionalSeatKind::Named => "named",
@@ -1347,46 +1482,27 @@ fn add_seat_row(
             button {
                 class: "toggle-button toggle-button-muted",
                 disabled: !can_submit,
-                onclick: move |_| {
-                    let (seat_kind, display_name, engine_id, claim) = match kind() {
-                        AdditionalSeatKind::Named => (
-                            SeatKind::Human,
-                            name().trim().to_string(),
-                            None,
-                            Some(SeatClaim::Named { display_name: name().trim().to_string() }),
-                        ),
-                        AdditionalSeatKind::Open => (
-                            SeatKind::Human,
-                            "Open seat".to_string(),
-                            None,
-                            Some(SeatClaim::Open),
-                        ),
-                        AdditionalSeatKind::Email => (
-                            SeatKind::Human,
-                            name().trim().to_string(),
-                            None,
-                            Some(SeatClaim::Email { email: name().trim().to_string() }),
-                        ),
-                        AdditionalSeatKind::Engine => (
-                            SeatKind::Engine,
-                            "Bot".to_string(),
-                            Some(DEFAULT_ENGINE_ID.to_string()),
-                            None,
-                        ),
-                    };
-                    on_add_seat.call(AddSeatSubmission {
-                        game_id: game_id.clone(),
-                        kind: seat_kind,
-                        display_name,
-                        engine_id,
-                        claim,
-                    });
-                    name.set(String::new());
-                },
+                r#type: "submit",
                 "+ Add seat"
             }
         }
     }
+}
+
+/// What the last name lookup produced.
+///
+/// An enum rather than a list plus a flag, because the states are exclusive and
+/// the old pair could not express one of them: a failed search left the list
+/// empty and the flag untouched, rendering identically to "no such player".
+/// Telling somebody their friend does not exist because a token expired is the
+/// defect this shape prevents.
+#[derive(Clone, PartialEq)]
+enum NameSearch {
+    /// Nothing to show: fewer than two characters, or a suggestion was taken.
+    Idle,
+    Matches(Vec<String>),
+    NoMatch,
+    Failed,
 }
 
 /// A "Named" seat's display-name input, with a live filtered dropdown of
@@ -1413,8 +1529,7 @@ fn NameAutocompleteInput(
     token: Option<String>,
     placeholder: String,
 ) -> Element {
-    let mut suggestions = use_signal(Vec::<String>::new);
-    let mut searched_and_empty = use_signal(|| false);
+    let mut search = use_signal(|| NameSearch::Idle);
 
     let trigger_search = move |query: String| {
         let server_url = server_url.clone();
@@ -1422,16 +1537,20 @@ fn NameAutocompleteInput(
         spawn(async move {
             let trimmed = query.trim();
             if trimmed.len() < 2 {
-                suggestions.set(Vec::new());
-                searched_and_empty.set(false);
+                search.set(NameSearch::Idle);
                 return;
             }
-            if let Ok(names) =
-                crate::app::search_players(&server_url, trimmed, token.as_deref()).await
-            {
-                searched_and_empty.set(names.is_empty());
-                suggestions.set(names);
-            }
+            search.set(
+                match crate::app::search_players(&server_url, trimmed, token.as_deref()).await {
+                    Ok(names) if names.is_empty() => NameSearch::NoMatch,
+                    Ok(names) => NameSearch::Matches(names),
+                    // A 401, a dropped connection, a changed URL, a body that
+                    // will not parse. Previously this arm did not exist, so all
+                    // of them left whatever was last on screen — usually
+                    // nothing — and read exactly like "no such player".
+                    Err(_) => NameSearch::Failed,
+                },
+            );
         });
     };
 
@@ -1446,10 +1565,25 @@ fn NameAutocompleteInput(
                     on_change.call(query.clone());
                     trigger_search(query);
                 },
+                // Leaving the field puts the suggestions away. The value is
+                // already committed — `oninput` calls `on_change` on every
+                // keystroke — so tabbing out needs to change nothing except
+                // getting the list off the screen.
+                //
+                // Deliberately *not* submitting anything here. Blur fires when
+                // you tab to the picker beside it or click anywhere else, and a
+                // seat appearing because you looked away is a surprise, not a
+                // shortcut. Enter is the deliberate act, and the form above
+                // handles it.
+                onblur: move |_| search.set(NameSearch::Idle),
             }
-            if !suggestions().is_empty() {
+            // Tied to the field's current text, not just to the last search.
+            // Adding a seat clears the value from outside this component, which
+            // used to leave the dropdown standing over an empty box offering
+            // matches for a name that was no longer there.
+            if let (false, NameSearch::Matches(names)) = (value.trim().is_empty(), search()) {
                 div { class: "name-autocomplete-dropdown",
-                    for suggestion in suggestions() {
+                    for suggestion in names {
                         button {
                             class: "name-autocomplete-item",
                             r#type: "button",
@@ -1463,14 +1597,23 @@ fn NameAutocompleteInput(
                             onmousedown: move |event| {
                                 event.prevent_default();
                                 on_change.call(suggestion.clone());
-                                suggestions.set(Vec::new());
+                                search.set(NameSearch::Idle);
                             },
                             "{suggestion}"
                         }
                     }
                 }
-            } else if searched_and_empty() {
+            } else if search() == NameSearch::NoMatch {
                 span { class: "name-autocomplete-empty", "No matching player" }
+            } else if search() == NameSearch::Failed {
+                // Deliberately not phrased as a refusal. The lookup is a
+                // convenience — the server resolves the name when the
+                // invitation is sent, and enforces it there — so a failed
+                // search should not imply the name is wrong or that sending is
+                // pointless.
+                span { class: "name-autocomplete-empty",
+                    "Couldn't check names just now — type the full name and we'll confirm it when you send"
+                }
             }
         }
     }
@@ -1665,11 +1808,27 @@ fn is_ready_to_start(participants: &[ParticipantDto]) -> bool {
 /// yet (see `crate::local_storage::StoredChatWatermarks`). A game with no
 /// messages at all, or whose latest message matches our stored watermark,
 /// is never unread.
+/// Should a row show the unread-mail icon, for a game that is **not** open?
+///
+/// The open game does not use this: it has live messages, and asking the same
+/// question of a summary that is up to ten seconds old would let its row
+/// disagree with the rack indicator beside it. Both take the open game's answer
+/// from one place — see `HAS_UNREAD_CHAT`.
+///
+/// `last_message_received_at` already excludes the viewer's own messages — the
+/// server answers that, since the games list carries no messages for a client
+/// to check for itself.
+///
+/// Strictly newer than the watermark, not merely different from it: the
+/// watermark is the newest message *seen* of any sender, so sending a message
+/// and reading it pushes the mark past the last one received. An inequality
+/// would call that unread.
 fn has_unread_chat(summary: &GameSummaryDto, chat_watermarks: &HashMap<String, i64>) -> bool {
-    summary
-        .last_message_at
-        .as_ref()
-        .is_some_and(|latest| chat_watermarks.get(&summary.id) != Some(latest))
+    summary.last_message_received_at.is_some_and(|received| {
+        chat_watermarks
+            .get(&summary.id)
+            .is_none_or(|seen| received > *seen)
+    })
 }
 
 fn status_label(status: &GameStatus, ready_to_start: bool) -> &'static str {
@@ -1961,7 +2120,7 @@ mod tests {
             turn_started_at: 0,
             relationship: GameRelationship::Participant,
             invitation_id: None,
-            last_message_at,
+            last_message_received_at: last_message_at,
         }
     }
 
@@ -1982,6 +2141,27 @@ mod tests {
         let summary = summary_with_last_message_at(Some(100));
         let mut watermarks = HashMap::new();
         watermarks.insert("game-1".to_string(), 100);
+        assert!(!has_unread_chat(&summary, &watermarks));
+    }
+
+    /// Your own message must not light your own row.
+    ///
+    /// The server excludes it, so `last_message_received_at` is simply empty
+    /// when the only messages are yours — the case that previously lit the row
+    /// for something you had just typed.
+    #[test]
+    fn no_unread_chat_when_every_message_is_your_own() {
+        let summary = summary_with_last_message_at(None);
+        assert!(!has_unread_chat(&summary, &HashMap::new()));
+    }
+
+    /// Reading your own newest message pushes the watermark past the last one
+    /// received, which an inequality would report as unread.
+    #[test]
+    fn no_unread_chat_when_the_watermark_has_overtaken_the_last_received() {
+        let summary = summary_with_last_message_at(Some(100));
+        let mut watermarks = HashMap::new();
+        watermarks.insert("game-1".to_string(), 150);
         assert!(!has_unread_chat(&summary, &watermarks));
     }
 

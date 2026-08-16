@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 // changes to tabs that are already open, because api skew was still the
 // only reload trigger when they were written. The last bump that will ever
 // need to do that: the same release moves client-update delivery onto a
-// hash of the bundle (`/version.txt`), so from here a client-only change
+// build id in `/version.txt`, so from here a client-only change
 // moves nothing here and this number goes back to meaning the contract.
 // Carries the 502 fix (a proxy 502 no longer counts as "the server is up")
 // and the switch itself.
@@ -74,7 +74,7 @@ use serde::{Deserialize, Serialize};
 // moves" for which changes bump this.
 pub const API_VERSION: ApiVersion = ApiVersion {
     major: 2,
-    minor: 10,
+    minor: 13,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -383,13 +383,19 @@ pub struct GameSummaryDto {
     /// Set when `relationship` is `InvitedByName` or `InvitedOpen` — the
     /// invitation to accept/reject directly from the list.
     pub invitation_id: Option<String>,
-    /// When the most recent chat message was sent, if there's ever been one
-    /// — deliberately separate from `last_activity_at` (moves), so the
-    /// client can tell "new chat" apart from "new move" and show an unread
-    /// indicator. The client compares this against its own locally-stored
-    /// "last seen" watermark per game; the server has no concept of read
-    /// receipts.
-    pub last_message_at: Option<i64>,
+    /// When the most recent message **from somebody else** was sent, if there
+    /// has been one — deliberately separate from `last_activity_at` (moves), so
+    /// the client can tell "new chat" apart from "new move" and show an unread
+    /// indicator. The client compares this against its own locally-stored "last
+    /// seen" watermark per game; the server has no concept of read receipts.
+    ///
+    /// **Caller-relative**, like `relationship` and `invitation_id`: your own
+    /// messages are excluded, because an unread mark for something you just
+    /// typed says nothing. Answering that here rather than shipping the sender
+    /// and making every client work it out keeps the question and its answer in
+    /// one place — and the client already knows the sender of every message it
+    /// has actually loaded, so the gap was only ever in the games list.
+    pub last_message_received_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -689,6 +695,24 @@ pub struct InvitationPreviewDto {
 /// `/auth/validate` returns to the player themselves) because rating is an
 /// operator-facing join, not part of a player's own identity payload —
 /// a player reads their rating from `/players/{id}/stats` instead.
+/// One day's record of what the database holds — see migration 0007 and #90.
+///
+/// A gap in the series means the service was quiet that day, not that anything
+/// broke: the row is written by a sweep that only runs when somebody uses the
+/// service, which is the accepted cost of having no scheduler on the VM.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdminDatabaseSizeDto {
+    pub recorded_on: String,
+    pub recorded_at: i64,
+    pub players: i64,
+    pub sessions: i64,
+    pub games: i64,
+    pub invitations: i64,
+    pub chat_messages: i64,
+    pub database_bytes: i64,
+    pub games_in_memory: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AdminPlayerSummaryDto {
     pub id: String,
