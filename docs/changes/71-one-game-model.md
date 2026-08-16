@@ -603,6 +603,122 @@ the middle. That is what makes the external harness a plug-in rather than a
 second way to play — and stops the two drifting, which is the real cost of
 leaving the loop in place.
 
+## The client has the same defect
+
+The server's problem is that many writers may move the version and only some
+remember to. The client's is the same sentence with different nouns: many
+handlers change what is on screen, and only some remember to refresh the panes
+that depended on it.
+
+**There is no selection state.** Which game is selected is read back out of the
+loaded DTO:
+
+```rust
+selected_id: game().as_ref().map(|current| current.id.clone()),   // app.rs
+```
+
+So `game: Signal<Option<GameStateDto>>` is doing two jobs — *what is selected*
+and *what has been loaded* — and they are not the same fact. There is no way to
+say "game X is selected, not loaded yet", and the only way to say "nothing is
+selected" is to throw the DTO away. Deselecting and clearing the panes are
+therefore the same action, which is exactly why one can happen without the
+other.
+
+The board pane is never unmounted. With nothing selected the view falls back to
+a placeholder game, and `is_live` is carried separately:
+
+```rust
+let game_for_view = game().clone().unwrap_or_else(empty_live_game);
+```
+
+Reasonable as a landing view, but it means nothing *forces* a dependent pane to
+be recomputed when the selection changes. Only a remembered call does.
+
+### The same job, solved five times
+
+| what | clears | called from |
+| --- | --- | --- |
+| `reset_composer_state` | 7 signals | **10 sites** |
+| `clear_session_state` | those 7, plus session, game, summaries, socket | 3 |
+| `on_clear_staged`, inline | 5 of the 7 — omits `exchange_mode`, `exchange_selected` | 1 |
+| `on_remove_game` | `game.set(None)` and nothing else | 1 |
+| `rack_order` reset | a bare `if` in the render body | — |
+
+`clear_session_state` is already the right shape — deselect *and* reset,
+together — because the bug that prompted it was visible: the login modal
+appeared over the previous player's board. The other paths never adopted it.
+
+And nothing on the *update* path resets anything. `apply_game_update` compares
+versions and swaps the DTO; it never touches the composer. So every
+server-pushed change — including one that ends the game — leaves a
+half-composed move in place.
+
+### The state, grouped by what makes it invalid
+
+- **Selection** — `selected_game: Option<GameId>`. Intent, and nothing else.
+- **Server cache** — `game`, `game_summaries`. Replaced, never edited. Valid
+  only for the current selection.
+- **Composition** — the seven composer signals. **Valid only against one game,
+  and only while it is still that player's turn in it.**
+- **Session**, **transport** (`IS_ONLINE`, `websocket_game_id`), and
+  **presentation** (`rack_order`, chat visibility) — orthogonal to all of it.
+
+Composition is the only category that goes stale, and it has a key. So rather
+than rely on discipline, give it that key:
+
+```rust
+selected_game: Option<GameId>,
+composition:   Option<Composition>,   // { game_id, turn_number, staged, cursor, exchange, … }
+```
+
+"Is this stale?" becomes a comparison the render already has the inputs for,
+rather than a call somebody must remember to make. `on_remove_game`'s defect
+becomes unwritable — there is nothing left to forget.
+
+### Shape
+
+A `UiState` grouping the cluster, with a small number of **transition
+methods** — `select_game(Option<GameId>)`, `apply_server_state(dto)`,
+`end_session()` — each owning one invariant. Handlers call a transition; no
+handler pokes a field.
+
+Deliberately *not* the full server mirror of one event enum and one reducer.
+Signals already are the client's update mechanism, so a central reducer fights
+the framework rather than replacing anything, and it would mean rewriting a
+5,500-line component to get a property the transitions already give. The
+symmetry would read well here and be worse to live with.
+
+### The open question
+
+**What voids a composition?** Not any version bump — an opponent's chat message
+would then wipe a half-typed word. `(game_id, turn_number)` is the candidate.
+`reset_composer_state` is called today on "a turn started", and whether those
+are the same thing has not been checked.
+
+### How we will know the client is right
+
+`e2e/tests/ui-state.spec.ts` states the rule from outside the client: **after
+any event that changes which game is selected, every dependent pane matches the
+new selection — including when the new selection is nothing.** Eight cases,
+written against the intended behaviour rather than the current one. Six pass
+today. Two fail, and they are the bug that prompted this section:
+
+- *aborting a game clears the move being composed* — it does not; the staged
+  tile survives onto a game that is over.
+- *Remove after composing a move leaves nothing behind* — it does not; the
+  staged tile is left drawing on an empty board with no game selected.
+
+The Remove case was mutation-tested: deleting `game.set(None)` from
+`on_remove_game` turns *Remove clears the board and rack* red with seven rack
+tiles still on screen, so the passing tests are holding something up rather
+than passing vacuously.
+
+### This is a chunk, not a prerequisite
+
+Client-only. No server change, no API version move, no migration. It does not
+depend on any other part of this note, and nothing here depends on it — so it
+can ship in its own release, before or after the rest.
+
 ## What this makes possible
 
 **Undo.** With one sequence covering every change, the history is keyed and

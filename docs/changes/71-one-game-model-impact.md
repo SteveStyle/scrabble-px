@@ -214,8 +214,17 @@ with something for a person to look at.
 **E — the engine as a client.** Depends on A. Small in `engine-core`, mostly in
 how the turn is driven.
 
-A and B are independent of the design's open questions and useful whatever the
-note concludes. They are the natural first chunks.
+**F — the client state model.** `selected_game` as real state, composition
+keyed to the game and turn it belongs to, and one transition per invariant. See
+*The client has the same defect* in the note. Client-only: no server change, no
+API move, no migration, and no dependency in either direction on A–E. It has a
+failing test already (`e2e/tests/ui-state.spec.ts`), which makes it the one
+chunk that can start without anything else moving first.
+
+A, B and F are independent of the design's open questions and useful whatever
+the note concludes. They are the natural first chunks — and F is the one to
+take first if the point is to get familiar with the parts of the code that were
+not written by hand.
 
 ---
 
