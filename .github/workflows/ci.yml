@@ -34,7 +34,7 @@ env:
 
 jobs:
   check:
-    name: fmt · clippy · test · wasm
+    name: fmt · clippy · test · wasm · docs
     runs-on: ubuntu-latest
     steps:
       # fetch-depth: 0 — deploy.test.sh runs deploy.sh's gates against real
@@ -45,6 +45,15 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      # Markdown is linted here because it was not linted anywhere. The config
+      # (.markdownlint.jsonc) has existed for weeks and was only ever run by
+      # hand — so an error reached `main` on 2026-08-16 and would have stayed,
+      # and the linter itself existed only in one machine's npx cache, which is
+      # not a dependency anybody declared. Pinned, and first in the job because
+      # it takes two seconds and the Rust steps take minutes.
+      - name: Lint markdown
+        run: npx --yes markdownlint-cli2@0.23.2 "**/*.md" "#target" "#e2e/node_modules" "#old-crates"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
