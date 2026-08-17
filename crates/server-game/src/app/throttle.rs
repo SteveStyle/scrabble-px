@@ -238,8 +238,10 @@ const RETRY_JITTER_SECONDS: u64 = 2;
 /// from the moment of refusal, so it is almost never a whole number of
 /// seconds, and 2.99s was reported as 2 — a client obeying it exactly was
 /// refused again, every time. The value arrives already truncated, so adding
-/// one is the ceiling. This subsumes the old `.max(1)`: a sub-second wait
-/// still reports 1, and zero is never offered, since zero invites the
+/// one reaches the ceiling — for a whole number of seconds it goes one past it,
+/// which is the harmless direction and the only one available once the
+/// fraction has been thrown away. This subsumes the old `.max(1)`: a sub-second
+/// wait still reports 1, and zero is never offered, since zero invites the
 /// immediate retry a limited caller should not make.
 ///
 /// Shared with `auth::with_hash_permit`, which refuses for a different reason
@@ -490,6 +492,32 @@ mod tests {
     ///
     /// Built with the real `refusal` handler rather than governor's default
     /// response, because the header under test is the one our handler writes.
+    ///
+    /// **The grace below is the test admitting what it can measure.** With
+    /// `jitter` at zero — one run in three — `told` is the exact ceiling of a
+    /// wait of about 2.999s, leaving roughly a millisecond of margin. Two
+    /// different clocks are then asked to agree inside it: the limiter counts
+    /// with `quanta` (`tower_governor` hardcodes `DefaultClock`, so this is not
+    /// ours to choose), while `sleep` counts with `std::time::Instant`, and
+    /// tokio's timer wheel is granular to about a millisecond in any case. The
+    /// margin is real but not measurable at that scale, and asserting on it
+    /// cost one unexplained failure in `--workspace` on 2026-08-17 (#163).
+    ///
+    /// A hundred milliseconds is negligible against the three seconds under
+    /// test and enormous against clock noise, so "obey `Retry-After` and you
+    /// are served" stays proven to any standard a real client could care
+    /// about. **It is not a licence for the wait to be short.** A refusal that
+    /// outlasted the grace would fail exactly as before — the assertion still
+    /// pins the boundary, it just stops pretending to resolve microseconds.
+    ///
+    /// A remote client barely exercises this margin — its retry crosses a
+    /// network and arrives later than the instant it was given. But that is
+    /// latency we neither control nor measure, and **a local client does not
+    /// have it**: an engine driven as a client (#71) or the bot harness (#10),
+    /// both named in `retry_after` above as callers that will schedule from the
+    /// header, would retry over loopback or from inside this process. So the
+    /// header has to be right on its own, which is why the rounding is there
+    /// and why this grace belongs to the test rather than to the value.
     #[tokio::test]
     async fn a_caller_that_obeys_retry_after_is_served() {
         let config = GovernorConfigBuilder::default()
@@ -530,10 +558,21 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_secs(told)).await;
 
+        // Retrying is free: governor's GCRA does not advance its clock on a
+        // refusal, so a poll inside the grace cannot push the permit further
+        // away and turn a passing case into a failing one.
+        const GRACE: std::time::Duration = std::time::Duration::from_millis(100);
+        let deadline = std::time::Instant::now() + GRACE;
+        let mut status = call(app.clone()).await.status();
+        while status != StatusCode::OK && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            status = call(app.clone()).await.status();
+        }
+
         assert_eq!(
-            call(app).await.status(),
+            status,
             StatusCode::OK,
-            "waiting exactly as long as Retry-After said must be enough"
+            "waiting as long as Retry-After said must be enough (within {GRACE:?})"
         );
     }
 

@@ -40,6 +40,12 @@ set -uo pipefail
 # answer must never read like a passing one. That is the failure this repository
 # has hit most often, and the verdict line carries it too — a `--quick` run says
 # what it did not do.
+#
+# ## `note` is not a failure
+#
+# One verdict reports rather than asserts: housekeeping that is worth seeing and
+# blocks nothing. It never changes the exit status, so a non-zero exit keeps
+# meaning "something is wrong" rather than "something is worth a look".
 
 QUICK=0
 [[ "${1:-}" == "--quick" ]] && QUICK=1
@@ -55,9 +61,16 @@ red()   { printf '\033[31m%s\033[0m' "$1"; }
 amber() { printf '\033[33m%s\033[0m' "$1"; }
 
 # Records a verdict and prints it as it lands.
+#
+# `note` is not a fourth kind of failure. It reports something worth being aware
+# of that is nobody's fault and blocks nothing — housekeeping, not correctness —
+# so it must not colour the exit status, or the exit status stops meaning
+# "something is wrong". Owner, 2026-08-17, on merged branches left behind:
+# "Being notified is enough. It is good to be aware it is happening."
 pass() { RESULT[$1]=ok;      DETAIL[$1]="${3:-}"; printf '  %s   %s\n' "$(green ok)" "$2"; }
 fail() { RESULT[$1]=FAIL;    DETAIL[$1]="${3:-}"; failures=$((failures + 1)); printf '  %s %s\n' "$(red FAIL)" "$2"; }
 skip() { RESULT[$1]=skipped; DETAIL[$1]="${3:-}"; printf '  %s %s\n' "$(amber '--')" "$2"; }
+note() { RESULT[$1]=note;    DETAIL[$1]="${3:-}"; printf '  %s %s\n' "$(amber 'note')" "$2"; }
 
 # ---------------------------------------------------------------------------
 # The checks. Each sets its own verdict; none depends on another having run.
@@ -97,6 +110,36 @@ check_ci() {
     pass ci "push run passed for $(git rev-parse --short HEAD)"
   else
     fail ci "push run has not passed for HEAD" "$(printf '%s' "$out" | tail -3)"
+  fi
+}
+
+LABEL[branches]="No merged branches left behind"
+check_branches() {
+  # 3.3's "Delete the branch once its change is live" is a two-part step, and
+  # only the first part can be automated away: GitHub can delete the *remote*
+  # branch on merge, but nothing reaches this workstation to remove the local
+  # one. `git fetch --prune` drops the remote-tracking ref and leaves the branch
+  # — which is exactly how issue-33 and issue-50 survived their own releases
+  # until 2026-08-17.
+  #
+  # Deliberately conservative: upstream gone *and* merged into origin/main. A
+  # branch that never had an upstream might be a scratch branch mid-thought, and
+  # naming it would train the reader to ignore this line.
+  if ! git rev-parse --verify -q origin/main > /dev/null; then
+    fail branches "cannot tell — no origin/main to compare against"; return
+  fi
+  local lines="" names="" ref track
+  while read -r ref track; do
+    [[ "$track" == "[gone]" ]] || continue
+    git merge-base --is-ancestor "$ref" origin/main 2> /dev/null || continue
+    names="$names $ref"
+    lines+="$(printf '%s  (merged, remote deleted)' "$ref")"$'\n'
+  done < <(git for-each-ref --format='%(refname:short) %(upstream:track)' refs/heads)
+  if [[ -z "$names" ]]; then
+    pass branches "no merged branches left behind"
+  else
+    lines+="delete with: git branch -d$names"$'\n'
+    note branches "merged branches still here:$names" "$lines"
   fi
 }
 
@@ -196,8 +239,12 @@ check_gates() {
 # Run fastest-first. Summarise in the order a release follows.
 # ---------------------------------------------------------------------------
 
-RUN_ORDER=(tree pushed envs milestone ci tests gates)
-PROCESS_ORDER=(tree pushed ci tests envs milestone gates)
+# `branches` runs straight after `pushed`, which is what does the fetch — it
+# compares against origin/main and would otherwise read a stale one. In process
+# order it comes last: tidying up after a change has shipped is the final step,
+# and it is the only line here that is housekeeping rather than readiness.
+RUN_ORDER=(tree pushed branches envs milestone ci tests gates)
+PROCESS_ORDER=(tree pushed ci tests envs milestone gates branches)
 
 printf '\n\033[1mChecking\033[0m  (fastest first, so a failure shows early)\n'
 for key in "${RUN_ORDER[@]}"; do "check_$key"; done
@@ -205,27 +252,36 @@ for key in "${RUN_ORDER[@]}"; do "check_$key"; done
 printf '\n\033[1mIn process order\033[0m\n'
 for key in "${PROCESS_ORDER[@]}"; do
   case "${RESULT[$key]:-notrun}" in
-    ok)      printf '  %s   %s\n' "$(green ok)"   "${LABEL[$key]}" ;;
-    FAIL)    printf '  %s %s\n'   "$(red FAIL)"   "${LABEL[$key]}" ;;
-    skipped) printf '  %s %s\n'   "$(amber '--')" "${LABEL[$key]} (skipped)" ;;
-    *)       printf '  %s %s\n'   "$(amber '??')" "${LABEL[$key]} (did not run)" ;;
+    ok)      printf '  %s   %s\n' "$(green ok)"     "${LABEL[$key]}" ;;
+    FAIL)    printf '  %s %s\n'   "$(red FAIL)"     "${LABEL[$key]}" ;;
+    note)    printf '  %s %s\n'   "$(amber 'note')" "${LABEL[$key]}" ;;
+    skipped) printf '  %s %s\n'   "$(amber '--')"   "${LABEL[$key]} (skipped)" ;;
+    *)       printf '  %s %s\n'   "$(amber '??')"   "${LABEL[$key]} (did not run)" ;;
   esac
-  if [[ "${RESULT[$key]:-}" == "FAIL" && -n "${DETAIL[$key]:-}" ]]; then
+  if [[ "${RESULT[$key]:-}" =~ ^(FAIL|note)$ && -n "${DETAIL[$key]:-}" ]]; then
     printf '%s\n' "${DETAIL[$key]}" | while read -r l; do
       [[ -n "$l" ]] && printf '         %s\n' "$l"
     done
   fi
 done
 
+# Notes are counted for the verdict line only — never for the exit status.
+notes=0
+for key in "${PROCESS_ORDER[@]}"; do
+  [[ "${RESULT[$key]:-}" == "note" ]] && notes=$((notes + 1))
+done
+note_suffix=""
+(( notes > 0 )) && note_suffix=" $(amber "($notes note(s) — nothing blocking)")"
+
 printf '\n'
 if (( failures > 0 )); then
-  printf '%s\n' "$(red "$failures check(s) failed")"
+  printf '%s%s\n' "$(red "$failures check(s) failed")" "$note_suffix"
   (( QUICK )) && printf '%s\n' "$(amber '(quick run: tooling tests and deploy gates were not run)')"
   exit 1
 fi
 if (( QUICK )); then
-  printf '%s — %s\n' "$(green 'Everything checked is in place')" \
-    "$(amber 'quick run: tooling tests and deploy gates not run')"
+  printf '%s — %s%s\n' "$(green 'Everything checked is in place')" \
+    "$(amber 'quick run: tooling tests and deploy gates not run')" "$note_suffix"
 else
-  printf '%s\n' "$(green 'Everything in place.')"
+  printf '%s%s\n' "$(green 'Everything in place.')" "$note_suffix"
 fi
