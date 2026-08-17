@@ -1136,10 +1136,28 @@ it changes, and how a turn reaches the thing that takes it.
 - **A round-trip property test** over every type crossing the wire. Written
   first: it states what "invisible" means precisely enough to know when the
   move is finished.
-- **A mixed-roster test** — a game holding every seat state at once, which
-  nothing exercised before this note was drafted.
 - **An engine run both ways** against the same position, in the server and as
   a client, producing the same move.
 - **The existing lifecycle suite**, which already walks a game from creation
   through resignation, abort, timeout and retention, and should pass unchanged
-  except where it asserts a behaviour this note deliberately alters.
+  except where it asserts a behaviour this note deliberately alters — **plus a
+  game holding every kind of seat at once**, which it has never had.
+
+The mixed roster belongs *in* the lifecycle suite rather than beside it, and
+that is a decision rather than a filing convenience. Every scenario there
+builds a uniform roster, so the composite case — the ordinary one in a game
+with more than two players — is the one nothing has ever walked. Making it a
+separate test would leave the lifecycle suite still proving the uniform case
+and nothing else; putting it inside means creation, resignation, abort, timeout
+and retention are each exercised against a roster that is genuinely mixed.
+
+It is also the test that checks the claim this note rests on. *The whole state
+is composite* — the game has four states of its own and every seat has its own
+lifecycle, running independently — and nothing may assume a game is in a single
+invitation phase. A suite that only ever sees uniform rosters cannot tell
+whether that holds.
+
+`issue-71-mixed-roster-coverage` covered part of this against the old seat
+model and was dropped on 2026-08-17, since `SeatState` replaces what it
+asserted. The gap it found is real and gets wider here: there are now more
+states to mix.
