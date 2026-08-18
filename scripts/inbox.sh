@@ -70,15 +70,33 @@ REVIEWS="$(gh api "repos/{owner}/{repo}/pulls/comments?since=$SINCE&sort=updated
 
 ALL="$(printf '%s\n%s\n' "$COMMENTS" "$REVIEWS" | grep -v '^$' | sort -t$'\t' -k1,1n -k2,2)"
 
+# The issue list, fetched once and used twice: for the headings above and the
+# opened/closed section below. It was two calls asking the same question with
+# different `--json` fields — 1.2s each, and the largest avoidable cost in the
+# script. Measured after the owner noticed the first section was slow.
+#
+# Not parallelised. The three remaining calls could run at once and save about
+# a second and a half, but background jobs in bash bring temp-file cleanup and
+# exit-status handling with them, and this repository has already shipped one
+# production bug to a shell subtlety. A second and a half, once a day, is not
+# worth that.
+ISSUES="$(gh issue list --state all --limit 200 \
+  --json number,title,createdAt,closedAt \
+  --jq '.[] | [(.number|tostring), .title, .createdAt, (.closedAt // "")] | @tsv' 2>/dev/null)"
+
 if [[ -z "$ALL" ]]; then
   printf '\n  %s\n' "$(dim 'no comments in this window')"
 else
+  declare -A TITLE
+  while IFS=$'\t' read -r n t; do
+    [[ -n "$n" ]] && TITLE[$n]="${t:0:66}"
+  done < <(printf '%s\n' "$ISSUES" | cut -f1,2)
+
   last=""
   while IFS=$'\t' read -r num when who body; do
     [[ -z "$num" ]] && continue
     if [[ "$num" != "$last" ]]; then
-      title="$(gh issue view "$num" --json title --jq '.title' 2>/dev/null || echo '?')"
-      printf '\n%s  %s\n' "$(bold "#$num")" "$(dim "${title:0:66}")"
+      printf '\n%s  %s\n' "$(bold "#$num")" "$(dim "${TITLE[$num]:-}")"
       last="$num"
     fi
     case "$who" in
@@ -96,10 +114,11 @@ printf '\n%s\n' "$(bold 'OPENED OR CLOSED')"
 # `gh --jq` takes no `--arg`, so the window is interpolated by the shell. Found
 # by this script reporting nothing on a day four issues opened and four closed:
 # the malformed call failed into `2>/dev/null` and looked like a quiet week.
-EVENTS="$(gh issue list --state all --limit 200 \
-  --json number,title,createdAt,closedAt \
-  --jq ".[] | select(.createdAt >= \"$SINCE\" or (.closedAt // \"\") >= \"$SINCE\")
-       | \"\(.number)\t\(if .createdAt >= \"$SINCE\" then (if (.closedAt // \"\") >= \"$SINCE\" then \"both\" else \"opened\" end) else \"closed\" end)\t\(.title)\"" | sort -n)"
+EVENTS="$(printf '%s\n' "$ISSUES" | awk -F'\t' -v since="$SINCE" '
+  $3 >= since && $4 >= since { print $1 "\tboth\t"   $2; next }
+  $3 >= since               { print $1 "\topened\t" $2; next }
+  $4 != "" && $4 >= since   { print $1 "\tclosed\t" $2 }
+' | sort -n)"
 if [[ -z "$EVENTS" ]]; then
   printf '  %s\n' "$(dim 'nothing opened or closed')"
 else
