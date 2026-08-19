@@ -57,6 +57,7 @@ QUERY = """
 { repository(owner: "%s", name: "%s") {
     issues(states: OPEN, first: 100) {
       nodes { number title body
+              labels(first: 20) { nodes { name } }
               parent { number }
               subIssues(first: 50) { nodes { number title state } } } }
     pullRequests(states: OPEN, first: 50) {
@@ -129,9 +130,22 @@ def main() -> int:
     started = branches()
 
     def status(num: int, state: str) -> tuple[str, str]:
-        """completed · in progress · not started — derived, never recorded."""
+        """Where a project is: its phase if it has one, else derived progress.
+
+        A **phase** is hand-set with a `phase:` label, because the interesting
+        boundaries are judgements — "user testing is finished" is not visible to
+        a script. It is a rare, deliberate act, which is when hand-set state is
+        honest. Owner, 2026-08-19: *"the point is to identify a project phase as
+        much as to identify decision gates."*
+
+        Everything without a phase falls back to the three derived states, so an
+        issue that is not a project still says whether anybody has started.
+        """
         if state != "OPEN":
             return "completed", DIM
+        for label in [l["name"] for l in issues.get(num, {}).get("labels", {}).get("nodes", [])]:
+            if label.startswith("phase:"):
+                return label.split(":", 1)[1].replace("-", " "), ""
         if num in pr_for or num in started:
             return "in progress", ""
         return "not started", DIM
