@@ -15,8 +15,10 @@ flowchart TB
     %% .
     %% Every arrow is numbered, in the order events happen, so the whole
     %% sequence can be followed by reading the numbers. A letter suffix
-    %% breaks one runbook step into its ordered parts — 1.a-1.e are things
-    %% you do, 7.a-7.e are what one command does on your behalf.
+    %% breaks one runbook step into its ordered parts — 1.a-1.b are things
+    %% you do, 6.a-6.e are what one command does on your behalf. The numbers
+    %% are the runbook's own section numbers in docs/3.3 part 1: arrow 5 is
+    %% step 1.5, so the diagram and the text can be read together.
     %% .
     %%   {  }   a decision on an action arrow — the action stops here and
     %%          is tested before it continues. Checks feed into it.
@@ -63,20 +65,20 @@ flowchart TB
 **$ cargo test**`"| DEV
     DEV -->|"`1.b · **$ git add**
 **$ git commit**`"| LG
-    LG -->|"`1.c · **$ git push**`"| REPO
-    REPO -->|"1.d · CI runs (automatic)"| ACT
-    ACT -.->|"`1.e · **$ ci-status.sh --wait**`"| LG
-    PROD -.->|"`2 · **$ deploy-preview.sh at prod**`"| STG
-    LG -->|"`3 · **$ deploy-preview.sh**`"| STG
-    STG -.->|"`4 · **$ curl /health**`"| STG
-    STG -.->|"`5 · **user test**`"| STG
-    LG -->|"`6 · **$ deploy-rehearsal.sh**`"| REH
-    LG -->|"`7.a · **$ deploy.sh**`"| GATE{"gate"}
-    GATE -->|"7.d · ships the image"| PROD
-    ACT -.->|"7.b · CI green for this commit?"| GATE
-    REH -.->|"7.c · rehearsal on this commit?"| GATE
-    LG -->|"7.e · tag + version bump"| REPO
-    PROD -.->|"`8 · **$ deploy-preview.sh verify**`"| STG
+    LG -->|"`2.a · **$ git push**`"| REPO
+    REPO -->|"2.b · CI runs (automatic)"| ACT
+    ACT -.->|"`2.c · **$ ci-status.sh --wait**`"| LG
+    PROD -.->|"`3.a · **$ deploy-preview.sh at prod**`"| STG
+    LG -->|"`3.b · **$ deploy-preview.sh**`"| STG
+    STG -.->|"`3.c · **$ curl /health**`"| STG
+    STG -.->|"`4 · **user test**`"| STG
+    LG -->|"`5 · **$ deploy-rehearsal.sh**`"| REH
+    LG -->|"`6.a · **$ deploy.sh**`"| GATE{"gate"}
+    GATE -->|"6.d · ships the image"| PROD
+    ACT -.->|"6.b · CI green for this commit?"| GATE
+    REH -.->|"6.c · rehearsal on this commit?"| GATE
+    LG -->|"6.e · tag + version bump"| REPO
+    PROD -.->|"`7 · **$ deploy-preview.sh verify**`"| STG
 
     classDef gate fill:#fbe9dc,stroke:#b06a2c,color:#7a4318
     classDef env fill:#e4eff8,stroke:#39698c,color:#12303f
