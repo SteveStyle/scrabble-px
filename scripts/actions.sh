@@ -105,8 +105,10 @@ fi
 # note goes out, comes back with questions, is revised and goes out again — so
 # what matters is not "approved yet?" but *whose turn is it now*.
 #
-# The turn is carried by the `awaiting-review` label: present means Steve's,
-# absent means still Claude's. The two more natural mechanisms are both closed
+# The turn is carried by two labels: `awaiting-review` means Steve's, `approved`
+# means his review is done and the merge is mine, and neither means it is still
+# being written. Approval is a label rather than a GitHub review because a pull
+# request author may never approve their own — see below. The two more natural mechanisms are both closed
 # to us:
 #
 #   - **draft -> ready for review** is the obvious signal, and the token cannot
@@ -117,15 +119,35 @@ fi
 #     never approve their own, and every commit here is authored by the one
 #     account. See #171 — an argument for a second account that has nothing to
 #     do with attribution.
-PRS="$(gh pr list --state open --limit 50 --json number,title,labels \
-  --jq '.[] | "\(if ([.labels[].name] | index("awaiting-review")) then "yours" else "mine" end)\t\(.number)\t\(.title)"' 2>/dev/null)"
+# The document is named, not just the pull request: what these reviews are *of*
+# is a file, and "read #178" costs a click to find out which one. Ranked by
+# churn, so a rename (delete plus add) names the file that now exists rather
+# than the one that does not.
+PRS="$(gh pr list --state open --limit 50 --json number,title,labels,files \
+  --jq '.[]
+        | ([.labels[].name]) as $l
+        | (if ($l | index("approved")) then "merge"
+           elif ($l | index("awaiting-review")) then "yours"
+           else "mine" end) as $turn
+        | ([.files[] | {path: .path, churn: (.additions + .deletions)}] | sort_by(-.churn)) as $f
+        | [$turn, .number, .title, ($f[0].path // ""), (($f | length) - 1)] | @tsv' 2>/dev/null)"
 
 print_prs() {  # print_prs <heading> <key> <note>
   local rows; rows="$(printf '%s\n' "$PRS" | grep -E "^$2"$'\t' 2>/dev/null)"
   [[ -z "$rows" ]] && return
   printf '\n%s %s\n' "$(bold "$1")" "$(dim "$3")"
-  printf '%s\n' "$rows" | while IFS=$'\t' read -r _ num title; do
+  printf '%s\n' "$rows" | while IFS=$'\t' read -r _ num title path extra; do
     printf '  %-6s %s\n' "#$num" "$title"
+    [[ -z "$path" ]] && continue
+    # Deep paths keep their last two segments: the folder is what identifies
+    # `.../174-logs-and-backups/design.md`, and the basename alone would not.
+    local short="$path"
+    if [[ "$(tr -cd / <<< "$path" | wc -c)" -gt 1 ]]; then
+      short=".../${path#"${path%/*/*}/"}"
+    fi
+    local more=""
+    (( extra > 0 )) && more=" $(dim "+$extra more")"
+    printf '         %s%s\n' "$short" "$more"
   done
 }
 
@@ -133,6 +155,7 @@ if [[ -z "$WHO" || "$WHO" == "Steve" ]]; then
   print_prs "To review" "yours" "(labelled awaiting-review — your turn)"
 fi
 if [[ -z "$WHO" || "$WHO" == "Claude" ]]; then
+  print_prs "To merge" "merge" "(approved — mine to land)"
   print_prs "In hand" "mine" "(not handed over yet)"
 fi
 
