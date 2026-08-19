@@ -36,10 +36,22 @@ import sys
 
 BOLD, DIM, OFF = "\033[1m", "\033[2m", "\033[0m"
 
-# `--mine` / `--claude` filter the actions, never the structure: a workstream
-# with nothing of yours in it still shows its pull requests, because "what is
-# waiting on me" includes a review.
-WHO = {"--mine": "Steve", "--claude": "Claude"}.get(sys.argv[1] if len(sys.argv) > 1 else "", "")
+# **The default is Steve's view, and it prunes.** Owner, 2026-08-19: *"actions.sh
+# should be there primarily to show me the workstreams, issues and PRs with
+# actions for me. I can then look at them in GitHub."* So a workstream with
+# nothing waiting on him does not appear at all — this is a pointer at GitHub,
+# not a reader for it, and every line that is not his is a line in the way.
+#
+#   (no flag)   waiting on Steve: his actions, and pull requests labelled
+#               awaiting-review
+#   --claude    the same for Claude's side
+#   --all       everything, including what is finished and what is nobody's
+MODE = sys.argv[1] if len(sys.argv) > 1 else ""
+if MODE not in ("", "--claude", "--all"):
+    print("usage: actions.py [--claude|--all]", file=sys.stderr)
+    sys.exit(2)
+WHO = "Claude" if MODE == "--claude" else "" if MODE == "--all" else "Steve"
+ALL = MODE == "--all"
 
 QUERY = """
 { repository(owner: "%s", name: "%s") {
@@ -135,20 +147,39 @@ def main() -> int:
             return "your turn"
         return "draft" if pr["isDraft"] else "in hand"
 
+    def mine(num: int) -> tuple[list[str], list[dict]]:
+        """The actions and pull requests this run is about — the filter, in one place."""
+        items = [a for a in actions_in(issues.get(num, {}).get("body", ""))
+                 if ALL or a.startswith(f"({WHO})")]
+        wanted = pr_for.get(num, [])
+        if not ALL:
+            label = "awaiting-review" if WHO == "Steve" else "approved"
+            wanted = [pr for pr in wanted
+                      if label in [l["name"] for l in pr["labels"]["nodes"]]
+                      or (WHO == "Claude" and not pr["isDraft"] and turn(pr) == "in hand")]
+        return items, wanted
+
     def show_prs_and_actions(num: int, indent: str = "  ") -> None:
-        for pr in pr_for.get(num, []):
+        items, wanted = mine(num)
+        # Actions before pull requests: the thing to *do* reads first, and a
+        # pull request is a thing to look at. Owner's preference, 2026-08-19.
+        for item in items:
+            text = re.sub(r"^\((?:Steve|Claude)\)\s*", "", item)
+            who = "Steve " if item.startswith("(Steve)") else "Claude" if item.startswith("(Claude)") else "      "
+            print(f"{indent}   - {who if ALL else '     '} {text}")
+        for pr in wanted:
             doc = sorted(pr["files"]["nodes"], key=lambda f: -(f["additions"] + f["deletions"]))
             path = doc[0]["path"] if doc else ""
             extra = f"  +{len(doc) - 1} more" if len(doc) > 1 else ""
             print(f"{indent}   PR #{pr['number']:<5} {pr['title']}  {DIM}[{turn(pr)}]{OFF}")
             if path:
                 print(f"{indent}            {DIM}{path}{extra}{OFF}")
-        for item in actions_in(issues.get(num, {}).get("body", "")):
-            who = "Steve " if item.startswith("(Steve)") else "Claude" if item.startswith("(Claude)") else "      "
-            if WHO and not item.startswith(f"({WHO})"):
-                continue
-            text = re.sub(r"^\((?:Steve|Claude)\)\s*", "", item)
-            print(f"{indent}   - {who} {text}")
+
+    def has_something(num: int, state: str) -> bool:
+        if ALL:
+            return True
+        items, wanted = mine(num)
+        return state == "OPEN" and bool(items or wanted)
 
     def show_issue(num: int, title: str, state: str = "OPEN", indent: str = "  ") -> None:
         label, shade = status(num, state)
@@ -159,25 +190,35 @@ def main() -> int:
         if label != "completed":
             show_prs_and_actions(num, indent)
 
-    print(f"{BOLD}ACTIONS{OFF}  {DIM}workstreams first, then issues that belong to none{OFF}")
+    whose = "everything" if ALL else f"waiting on {WHO}"
+    print(f"{BOLD}ACTIONS{OFF}  {DIM}{whose} — open it in GitHub to act on it{OFF}")
 
+    shown = False
     for p in sorted(parents, key=lambda i: i["number"]):
+        kids = [c for c in p["subIssues"]["nodes"] if has_something(c["number"], c["state"])]
+        parent_items, parent_prs = mine(p["number"])
+        if not (kids or parent_items or parent_prs):
+            continue
+        shown = True
         print(f"\n{BOLD}workstream #{p['number']}  {p['title']}{OFF}")
         # The parent has its own pull requests and its own actions: a change to
         # the workstream's design lands against the parent, not against a chunk.
         show_prs_and_actions(p["number"], indent="")
-        for c in p["subIssues"]["nodes"]:
+        for c in (p["subIssues"]["nodes"] if ALL else kids):
             show_issue(c["number"], c["title"], c["state"])
 
     loose = [i for i in issues.values()
              if i["number"] not in children and not i["subIssues"]["nodes"]
-             and (actions_in(i["body"]) or i["number"] in pr_for)]
+             and has_something(i["number"], "OPEN")]
     if loose:
         print(f"\n{BOLD}on their own{OFF}")
         for i in sorted(loose, key=lambda i: i["number"]):
             show_issue(i["number"], i["title"])
 
-    if homeless:
+    if not (shown or loose or homeless):
+        print(f"\n  {DIM}nothing waiting{OFF}")
+
+    if homeless and ALL:
         print(f"\n{BOLD}pull requests with no issue in the branch name{OFF}")
         for pr in homeless:
             print(f"  PR #{pr['number']:<5} {pr['title']}  {DIM}[{turn(pr)}] {pr['headRefName']}{OFF}")
