@@ -54,6 +54,18 @@ QUERY = """
 """
 
 
+def branches() -> set[int]:
+    """Issue numbers with a branch of their own, local or on the remote.
+
+    The same signal `status.sh` uses: a branch named `issue-<n>-…` means somebody
+    started. Without it "not started" and "in progress" look identical from the
+    issue alone, and the difference is the whole point of the distinction.
+    """
+    out = subprocess.run(["git", "branch", "-a", "--format=%(refname:short)"],
+                         capture_output=True, text=True).stdout
+    return {int(m.group(1)) for m in re.finditer(r"issue-(\d+)-", out)}
+
+
 def gh(*args: str) -> str:
     return subprocess.run(["gh", *args], capture_output=True, text=True).stdout
 
@@ -102,6 +114,16 @@ def main() -> int:
         m = re.match(r"issue-(\d+)-", pr["headRefName"])
         (pr_for.setdefault(int(m.group(1)), []).append(pr) if m else homeless.append(pr))
 
+    started = branches()
+
+    def status(num: int, state: str) -> tuple[str, str]:
+        """completed · in progress · not started — derived, never recorded."""
+        if state != "OPEN":
+            return "completed", DIM
+        if num in pr_for or num in started:
+            return "in progress", ""
+        return "not started", DIM
+
     parents = [i for i in issues.values() if i["subIssues"]["nodes"]]
     children = {c["number"] for p in parents for c in p["subIssues"]["nodes"]}
 
@@ -129,9 +151,13 @@ def main() -> int:
             print(f"{indent}   - {who} {text}")
 
     def show_issue(num: int, title: str, state: str = "OPEN", indent: str = "  ") -> None:
-        mark = "" if state == "OPEN" else f" {DIM}({state.lower()}){OFF}"
-        print(f"{indent}issue #{num:<5} {title}{mark}")
-        show_prs_and_actions(num, indent)
+        label, shade = status(num, state)
+        print(f"{indent}{shade}issue #{num:<5} {title}  [{label}]{OFF if shade else ''}")
+        # A completed issue is one line. Its pull request is merged and its
+        # actions are done, so printing them is length without information —
+        # which is what makes a growing workstream unreadable.
+        if label != "completed":
+            show_prs_and_actions(num, indent)
 
     print(f"{BOLD}ACTIONS{OFF}  {DIM}workstreams first, then issues that belong to none{OFF}")
 
