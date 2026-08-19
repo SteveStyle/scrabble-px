@@ -1,6 +1,6 @@
 name: Docs
 
-# The document review workflow (#183). Three jobs, one principle:
+# The document review workflow (#183). Two jobs, one principle:
 #
 #   **A workflow reports and labels. It never acts on the repository.**
 #
@@ -40,17 +40,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 1. The documentation's own gate: lint, links, placement. Runs the same
-  #    script a person runs before pushing — see scripts/check-docs.sh.
-  checks:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Lint, links and placement
-        run: ./scripts/check-docs.sh
-
-  # 2. The review checklist as a check. Fails while any box under a `## Review`
+  # Lint, links and placement are **not** here. CI already runs
+  #    `scripts/check-docs.sh` on every push, so a copy on pull requests would
+  #    be the same check twice and two places to change it. This file carries
+  #    only what CI cannot: the parts of a review that are a person's.
+  #
+  # 1. The review checklist as a check. Fails while any box under a `## Review`
   #    heading in the pull request body is unticked; ticking one edits the body,
   #    which re-runs this, which goes green.
   #
@@ -88,7 +83,7 @@ jobs:
           fi
           echo "Every review item is ticked."
 
-  # 3. Comment commands, owner only. Labels and nothing else.
+  # 2. Comment commands, owner only. Labels and nothing else.
   #
   #      /ready     it is Steve's turn      -> awaiting-review
   #      /changes   it is Claude's turn     -> neither

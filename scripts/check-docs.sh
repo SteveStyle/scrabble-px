@@ -28,12 +28,11 @@ cd "$HERE" || exit 1
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 FAILED=0
 
+# Pinned, and the same globs CI used before this script existed — the linter is
+# otherwise "whatever is in one machine's npx cache", which is not a dependency
+# anybody declared.
 bold "1. markdownlint"
-if npx --yes markdownlint-cli2 "docs/**/*.md" "*.md" 2>&1 | tail -3; then
-  :
-else
-  FAILED=1
-fi
+npx --yes markdownlint-cli2@0.23.2 "**/*.md" "#target" "#e2e/node_modules" "#old-crates" 2>&1 | tail -4 || FAILED=1
 
 bold "2. links"
 python3 scripts/check-doc-links.py || FAILED=1

@@ -1,3 +1,4 @@
+<!-- markdownlint-disable-file MD041 -->
 <!--
 What the change is, and why. Enough that the reviewer knows what to look for
 before they open a file.
@@ -13,11 +14,11 @@ comments stay together, and a review that produced changes still reads as one
 thing afterwards.
 
 - [ ] the change does what the issue asked
-      > 
+      >
 
 ### Any other comments
 
 Anything that does not belong under an item above — including "this is fine",
 and including what nobody thought to ask about.
 
-> 
+>
