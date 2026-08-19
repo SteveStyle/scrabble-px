@@ -62,8 +62,11 @@ jobs:
   #    the shell: `${{ github.event.pull_request.body }}` in a `run:` block is a
   #    script-injection vector, since anybody who can write a body can write
   #    shell.
+  #    **Drafts are skipped.** A draft is work in progress, not a review — gating
+  #    it would make every branch red while it is being written, and a check that
+  #    is usually red is a check nobody reads.
   review-checklist:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - name: Unticked boxes under '## Review'
