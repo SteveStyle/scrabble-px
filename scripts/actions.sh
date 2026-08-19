@@ -23,9 +23,9 @@ set -uo pipefail
 # without this printing half of it. A line that is indented and does not start a
 # new item belongs to the item above.
 #
-# **Draft pull requests are listed too.** They are not task-list items, but they
-# are the other thing that sits waiting on a person, and the point of this
-# script is not having to look in two places.
+# **Pull requests are listed too**, split by whose turn it is. They are not
+# task-list items, but they are the other thing that sits waiting on a person,
+# and the point of this script is not having to look in two places.
 #
 # Read-only, and derived like `status.sh` and `roadmap.sh`: nothing is stored,
 # so nothing can drift. The issue body is the record; this is only a view of it.
@@ -100,16 +100,40 @@ if [[ -z "$ROWS" ]]; then
   printf '  %s\n' "$(dim 'none — no unchecked task-list items in any open issue')"
 fi
 
-# Draft PRs: the other thing waiting on a person, and not a task-list item.
+# Pull requests, which are not task-list items but are the other thing sitting
+# waiting on a person. **A review here is a cycle, not an ending** — a design
+# note goes out, comes back with questions, is revised and goes out again — so
+# what matters is not "approved yet?" but *whose turn is it now*.
+#
+# The turn is carried by the `awaiting-review` label: present means Steve's,
+# absent means still Claude's. The two more natural mechanisms are both closed
+# to us:
+#
+#   - **draft -> ready for review** is the obvious signal, and the token cannot
+#     set it: `markPullRequestReadyForReview` is refused to a fine-grained PAT
+#     and the REST `draft` field is ignored, so only a person in the UI can
+#     flip it.
+#   - **an approving review** cannot happen at all: a pull request author may
+#     never approve their own, and every commit here is authored by the one
+#     account. See #171 — an argument for a second account that has nothing to
+#     do with attribution.
+PRS="$(gh pr list --state open --limit 50 --json number,title,labels \
+  --jq '.[] | "\(if ([.labels[].name] | index("awaiting-review")) then "yours" else "mine" end)\t\(.number)\t\(.title)"' 2>/dev/null)"
+
+print_prs() {  # print_prs <heading> <key> <note>
+  local rows; rows="$(printf '%s\n' "$PRS" | grep -E "^$2"$'\t' 2>/dev/null)"
+  [[ -z "$rows" ]] && return
+  printf '\n%s %s\n' "$(bold "$1")" "$(dim "$3")"
+  printf '%s\n' "$rows" | while IFS=$'\t' read -r _ num title; do
+    printf '  %-6s %s\n' "#$num" "$title"
+  done
+}
+
 if [[ -z "$WHO" || "$WHO" == "Steve" ]]; then
-  DRAFTS="$(gh pr list --state open --limit 50 --json number,title,isDraft \
-    --jq '.[] | select(.isDraft) | "\(.number)\t\(.title)"' 2>/dev/null)"
-  if [[ -n "$DRAFTS" ]]; then
-    printf '\n%s %s\n' "$(bold 'Drafts awaiting a read')" "$(dim '(not task-list items)')"
-    printf '%s\n' "$DRAFTS" | while IFS=$'\t' read -r num title; do
-      printf '  %-6s %s\n' "#$num" "$title"
-    done
-  fi
+  print_prs "To review" "yours" "(labelled awaiting-review — your turn)"
+fi
+if [[ -z "$WHO" || "$WHO" == "Claude" ]]; then
+  print_prs "In hand" "mine" "(not handed over yet)"
 fi
 
 printf '\n%s\n' "$(dim 'Read-only, derived at run time — the issue body is the record.')"
