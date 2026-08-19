@@ -80,11 +80,14 @@ print_group() {  # print_group <owner-label> <grep-args...>
   printf '\n%s\n' "$(bold "$label")"
   printf '%s\n' "$rows" | while IFS=$'\t' read -r num text; do
     text="${text#\(Steve\) }"; text="${text#\(Claude\) }"
-    printf '  %-6s %s\n' "#$num" "$text"
+    printf '  %-12s %s\n' "issue #$num" "$text"
   done
 }
 
-printf '%s  %s\n' "$(bold 'ACTIONS')" "$(dim 'unchecked items in open issues — tick them in the issue body')"
+# Issue numbers and pull request numbers come from one sequence, so a bare `#185`
+# does not say which it is. Every row names its kind.
+printf '%s  %s\n' "$(bold 'ACTIONS')" "$(dim 'unchecked items in open *issue* bodies — tick them there')"
+printf '%s\n' "$(dim "a review checklist lives in a pull request body and is not an action: it is the review itself, and shows under 'To review'")"
 
 if [[ -z "$WHO" || "$WHO" == "Steve" ]]; then
   print_group "Steve" -E $'\t\\(Steve\\) '
@@ -137,7 +140,7 @@ print_prs() {  # print_prs <heading> <key> <note>
   [[ -z "$rows" ]] && return
   printf '\n%s %s\n' "$(bold "$1")" "$(dim "$3")"
   printf '%s\n' "$rows" | while IFS=$'\t' read -r _ num title path extra; do
-    printf '  %-6s %s\n' "#$num" "$title"
+    printf '  %-12s %s\n' "PR #$num" "$title"
     [[ -z "$path" ]] && continue
     # Deep paths keep their last two segments: the folder is what identifies
     # `.../174-logs-and-backups/design.md`, and the basename alone would not.
@@ -147,7 +150,7 @@ print_prs() {  # print_prs <heading> <key> <note>
     fi
     local more=""
     (( extra > 0 )) && more=" $(dim "+$extra more")"
-    printf '         %s%s\n' "$short" "$more"
+    printf '  %-12s %s%s\n' "" "$short" "$more"
   done
 }
 
