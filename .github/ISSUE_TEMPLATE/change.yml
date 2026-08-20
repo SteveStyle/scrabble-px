@@ -1,0 +1,71 @@
+name: Change
+description: Anything that changes the application, the process, or how either is run
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Three questions before the description. They decide what this change
+        owes and how it reaches users — and answering them here is cheaper than
+        arguing about them later.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What is wrong, and what should be true instead
+      description: The scope. What is excluded is worth saying too.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: Type — what this change is
+      description: One only. If two apply, it is two changes.
+      options:
+        - "bug — the app does the wrong thing"
+        - "minor-function — behaviour a user could notice"
+        - "major-function — changes the design, architecture or principles"
+        - "appearance — visual only"
+        - "documentation — the whole change is documentation"
+        - "non-prod-tooling — dev, test and preview tooling"
+        - "prod-tooling — acts on production without changing the app"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: route
+    attributes:
+      label: Route — how it reaches production
+      description: >-
+        Where several apply, pick the one that decides the risk: the artifact
+        beats the deploy, the deploy beats the host.
+      options:
+        - "in the artifact — built into an image we ship"
+        - "carried by the deploy — sent to the VM, but not built"
+        - "applied on the host — by hand on the production machine, no artifact"
+        - "applied to a service we use — GitHub, OCI, DNS, the mail provider"
+        - "never leaves the repository — live the moment it merges"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: release
+    attributes:
+      label: Release — what carries it to users
+      description: Leave as "not decided" if it is not scheduled yet.
+      options:
+        - "nothing — live at merge"
+        - "a patch, on its own"
+        - "grouped into a minor release"
+        - "grouped into a major release"
+        - "not decided yet"
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: What would show it works
+      description: >-
+        Evidence follows what the change does, not its type — a migration owes a
+        restore, a rate limit owes a script, a document owes a reader.
