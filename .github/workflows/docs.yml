@@ -85,9 +85,19 @@ jobs:
 
   # 2. Comment commands, owner only. Labels and nothing else.
   #
-  #      /ready     it is Steve's turn      -> awaiting-review
-  #      /changes   it is Claude's turn     -> neither
-  #      /approve   reviewed, merge is mine -> approved
+  # Four, because a review has three outcomes and not two. Owner, 2026-08-20:
+  # *"I need to say 'approved', 'approved with changes', 'change and re-review'.
+  # I guess we don't need 'reject'."*
+  #
+  #   /ready                  it is Steve's turn            -> awaiting-review
+  #   /approve                done; Claude merges           -> approved
+  #   /approve-with-changes   make the notes, then merge    -> approved-with-changes
+  #   /rework                 change it and hand it back    -> neither
+  #
+  # The middle one is the useful addition: it says *"yes, once you have done
+  # what I wrote"*, which is most reviews, and it saves a lap that exists only
+  # to confirm what was already agreed. There is no /reject — a change that
+  # should not happen is a closed pull request and a comment saying why.
   commands:
     if: >-
       github.event_name == 'issue_comment' &&
@@ -115,18 +125,27 @@ jobs:
           CMD="$(printf '%s' "$COMMENT" | head -1 \
                  | tr '[:upper:]' '[:lower:]' \
                  | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+          # Longest first: /approve-with-changes must not be caught by /approve*.
           case "$CMD" in
+            /approve-with-changes*|/approve\ with\ changes*)
+              gh issue edit "$NUMBER" --repo "$REPO" \
+                --add-label approved-with-changes \
+                --remove-label awaiting-review --remove-label approved
+              echo "approved with changes — Claude makes them, then merges" ;;
             /approve*)
               gh issue edit "$NUMBER" --repo "$REPO" \
-                --add-label approved --remove-label awaiting-review
+                --add-label approved \
+                --remove-label awaiting-review --remove-label approved-with-changes
               echo "approved" ;;
-            /changes*)
+            /rework*|/changes*)
               gh issue edit "$NUMBER" --repo "$REPO" \
-                --remove-label awaiting-review --remove-label approved
-              echo "turn returned to Claude" ;;
+                --remove-label awaiting-review --remove-label approved \
+                --remove-label approved-with-changes
+              echo "back to Claude, for change and re-review" ;;
             /ready*)
               gh issue edit "$NUMBER" --repo "$REPO" \
-                --add-label awaiting-review --remove-label approved
+                --add-label awaiting-review \
+                --remove-label approved --remove-label approved-with-changes
               echo "handed over for review" ;;
             *)
               echo "Not a command — nothing to do."
