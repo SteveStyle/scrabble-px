@@ -49,6 +49,11 @@ def main() -> int:
         path = pathlib.Path(name)
         own = headings(path)
         text = path.read_text(encoding="utf-8")
+        # Inline code is an example, not a link. `docs/3.0` describes this very
+        # check with a literal `](#anchor)` in a table cell, and without this the
+        # checker read its own documentation as a broken link — the second time
+        # in a day that documenting a convention broke the tool that reads it.
+        text = re.sub(r"`[^`\n]*`", "``", text)
         for m in re.finditer(r"\]\(([^)\s]+)?#([a-zA-Z0-9_-]+)\)", text):
             target, anchor = m.group(1), m.group(2).lower()
             if target is None:
