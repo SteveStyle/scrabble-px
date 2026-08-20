@@ -548,7 +548,7 @@ Three attributes on an issue, replacing the single lane:
 | attribute | values | answers |
 | --- | --- | --- |
 | **type** (already have it) | the seven labels | what it is, and what evidence it owes |
-| **route** | *in the artifact* · *carried by the deploy* · *applied on the host* · *never leaves the repo* | does it reach production, and how |
+| **route** | *in the artifact* · *carried by the deploy* · *applied on the host* · *applied to a service we use* · *never leaves the repository* | does it reach production, and how |
 | **release** | patch (alone) · minor · major · none | what carries it to users, and which milestone closes it |
 
 Authorisation then falls out without a label of its own, landing on ITIL's three
@@ -836,53 +836,92 @@ by whoever filed it.
 | **dictionaries and word lists** | the lexicons and what may be played | #116 |
 | **desktop and distribution** | shipping something that is not the web client | #38, #15 |
 
-### Every open issue, assigned — the test the list has to pass
+### Every open issue, on all three axes and a workstream
 
-**D2 is answered yes**, so the list has to survive contact with all 44 open
-issues, not the ten that suggested it. Owner, 2026-08-20: *"The list of
-workstreams also needs testing and may evolve."*
+**The whole tracker, in one table.** Owner, 2026-08-20: *"As you have mapped
+every open issue to the axes and workstream can we see that in one table."* This
+is the test the list and the axes both have to pass, and the work list if D1 and
+D2 are adopted.
 
-| workstream | issues |
-| --- | --- |
-| **game model and rules** | 66 · 68 · 71 · 73 · 88 · 105 · 106 · 166 |
-| **process and tooling** | 91 · 128 · 134 · 135 · 144 · 148 · 150 · 155 · 156 · 160 · 171 · 179 · 183 |
-| **interaction design** | 84 · 103 · 146 · 152 · 157 |
-| **accounts and identity** | 57 · 58 · 80 · 140 |
-| **notification and liveness** | 15 · 87 · 142 · 151 |
-| **infrastructure and persistence** | 29 · 165 |
-| **capacity planning** | 89 |
-| **production operations** | 40 · 174 · 175 · 176 |
-| **dictionaries and word lists** | 116 |
-| **desktop and distribution** | 10 · 38 |
-| **?** | **130** |
+Routes are abbreviated: **artifact** · **deploy** · **host** · **service** ·
+**repo**. *Release* is `not decided` wherever the work is not scheduled, which
+is most of the backlog and is the honest answer.
 
-Forty-three of forty-four placed without argument. What the test found:
+| # | title | type | route | release | workstream |
+| --- | --- | --- | --- | --- | --- |
+| **10** | Bot client harness: run an engine as an extern… | non-prod-tooling | repo | none | process and tooling |
+| **15** | Desktop has no client-update signal since 2.9 | major-function | artifact | not decided | desktop and distribution |
+| **29** | Memory and startup grow with every game ever p… | major-function | artifact | not decided | infrastructure and persistence |
+| **38** | A download site for desktop builds — or a deci… | major-function | service · a download site is a service we would run | not decided | desktop and distribution |
+| **40** | Rehearsal holds production user data on a publ… | non-prod-tooling | **?** · Caddyfile or a firewall rule — shape not chosen | none | production operations |
+| **57** | A player closing their own account | major-function | artifact | not decided | accounts and identity |
+| **58** | Shutting out a problematic player | major-function | artifact | not decided | accounts and identity |
+| **66** | A rating graph point can link to a swept game | bug | artifact | patch | game model and rules |
+| **68** | Retention for games that never started: the 30… | major-function | artifact | not decided | game model and rules |
+| **71** | One game model: version, seats, DTOs and the e… | major-function | artifact | major | game model and rules |
+| **73** | Undo, from a history keyed on the game's versi… | major-function | artifact | major | game model and rules |
+| **80** | Changing your display name does not reach othe… | bug | artifact | patch | accounts and identity |
+| **84** | Games list appearance | appearance | artifact | not decided | interaction design |
+| **87** | Tell a player a message has arrived when they … | major-function | artifact | not decided | notification and liveness |
+| **88** | out-of-turn staging and rearranging tiles | minor-function | artifact | not decided | game model and rules |
+| **89** | Notice unusual growth in the database, startin… | major-function | artifact · the daily record is in the image | not decided | capacity planning |
+| **91** | Stress testing: find where the service breaks,… | non-prod-tooling | repo | none | process and tooling |
+| **103** | Browser tab icon | appearance | artifact | patch | interaction design |
+| **105** | withdrawing should immediately hide the game | minor-function | artifact | patch | game model and rules |
+| **106** | inviting yourself should automatically accept | minor-function | artifact | patch | game model and rules |
+| **116** | Curate the denylist | minor-function | artifact · the list is compiled in | patch | dictionaries and word lists |
+| **128** | e2e-clean cleans dev's database whatever envir… | non-prod-tooling | repo | none | process and tooling |
+| **130** | Show the server's version in dev, where the to… | — | artifact · dev-only, but it ships in the binary | minor | **unassigned** |
+| **134** | Ship the build we tested, rather than rebuildi… | prod-tooling | repo · deploy.sh runs from a laptop | none | process and tooling |
+| **135** | Make a release branch rebuildable, so a change… | non-prod-tooling | repo | none | process and tooling |
+| **140** | Admin CLI: sign an account out, so the delete … | — | artifact · the admin CLI is in the image | not decided | accounts and identity |
+| **142** | A reconnected WebSocket never re-fetches state… | minor-function | artifact | not decided | notification and liveness |
+| **144** | Check CI before merging into a release branch,… | prod-tooling | repo | none | process and tooling |
+| **146** | Rework the play controls: Pass/Exchange/Play, … | — | artifact | not decided | interaction design |
+| **148** | check-rate-limits.sh leaves its test accounts … | prod-tooling | repo | none | process and tooling |
+| **150** | deploy.sh closed the milestone on an emergency… | prod-tooling | repo | none | process and tooling |
+| **151** | Check for a new bundle on visibilitychange, no… | — | artifact | patch | notification and liveness |
+| **152** | removing a game should clear the board and rac… | appearance | artifact | patch | interaction design |
+| **155** | Process decisions: agree them here, apply them… | documentation | repo | none | process and tooling |
+| **156** | A log with one entry per release | documentation | repo | none | process and tooling |
+| **157** | Remove leaves a staged tile on the board after… | bug | artifact | patch | interaction design |
+| **160** | Use more of GitHub where it replaces something… | non-prod-tooling | service · GitHub's own configuration | none | process and tooling |
+| **165** | Retry-After is rebuilt from an already-rounded… | minor-function | artifact | patch | infrastructure and persistence |
+| **166** | Nothing happens when a move time limit expires… | minor-function | artifact | not decided | game model and rules |
+| **171** | A separate GitHub account for Claude, if the f… | non-prod-tooling | service · a second GitHub account | none | process and tooling |
+| **174** | Container logs are discarded on every deploy, … | minor-function | artifact · **+ host** — the journald drop-in | not decided | production operations |
+| **175** | No backup leaves the VM: losing the instance l… | prod-tooling | **?** · host or deploy — shape not chosen | none | production operations |
+| **176** | Nothing alerts on the production disk filling,… | prod-tooling | service · an OCI alarm | none | production operations |
+| **179** | Process workstream | documentation | repo · the parent issue itself | none | process and tooling |
+| **183** | A document review workflow in Actions: lint, l… | non-prod-tooling | repo · a workflow file is a repo file | none | process and tooling |
 
-**#130 fits nowhere well.** *Show the server's version in dev* is developer
-tooling that ships in the client binary: process-and-tooling by purpose,
-interaction-design by location, and neither by feel. It is the same issue that
-strains the *route* question, and for the same reason — a change whose intent
-and its mechanism point at different places. **Left unassigned deliberately**,
-as the evidence for whichever rule we settle.
+#### What the table shows
 
-**Two workstreams are thin.** *Capacity planning* holds one issue and
-*dictionaries* one. Neither is wrong — both will fill, and #89 and #116 are real
-— but a workstream with one issue is indistinguishable from an issue, and worth
-watching rather than defending.
+**Four issues carry no type label** — 130, 140, 146, 151 — which the form would
+have made impossible: type is a required field. That is the first concrete
+argument for the form over labels applied afterwards.
 
-**Two boundaries had to be stated to place things:**
+**Two cannot answer *route*.** #40 and #175 do not know their own shape yet: a
+firewall rule or a `Caddyfile` change; a script on the host or one in the image.
+Route needs a *not decided yet*, exactly as release has one.
 
-- **#151** (check for a new bundle on `visibilitychange`) went to *notification
-  and liveness* rather than *interaction design*: it is about a client learning
-  that something changed, which is the capability, not about how the change
-  looks.
-- **#165** (`Retry-After` rebuilt from a rounded number) went to *infrastructure*
-  rather than *capacity planning*: throttling policy is capacity, but the header
-  arithmetic is the machinery underneath it.
+**One carries two routes.** #174 is JSON logging in the artifact **and** a
+journald drop-in on the host. The tie-break picks artifact; nothing yet records
+the half that stays manual.
 
-**The list did not need to change to hold them**, which is the result worth
-having: ten capabilities, one genuinely ambiguous issue, and two boundaries that
-needed a sentence each.
+**One fits no workstream.** #130 is dev-only tooling that ships in the client
+binary — process by purpose, interaction design by location. Left unassigned as
+evidence rather than forced.
+
+**Two workstreams hold one issue each, and that is fine.** Owner: *"It may be a
+fairly focussed workstream. It may be that the issue was well scoped with a
+complete thought out set of changes."* A capability is not less real for having
+one open question about it today. What would be evidence against it is a
+workstream nothing ever lands in.
+
+**The release column is mostly *not decided*, and should be.** Twenty-three of
+forty-five. Deciding what ships together is scheduling, and scheduling before
+there is a project to schedule is guessing.
 
 ### The two rules that keep it clean
 
