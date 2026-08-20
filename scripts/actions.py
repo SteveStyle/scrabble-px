@@ -182,6 +182,8 @@ def main() -> int:
 
     def turn(pr: dict) -> str:
         names = [l["name"] for l in pr["labels"]["nodes"]]
+        if "provisionally-approved" in names:
+            return "approved with changes — mine to make, then merge"
         if "approved" in names:
             return "approved — mine to merge"
         if "awaiting-review" in names:
@@ -194,9 +196,10 @@ def main() -> int:
                  if ALL or a.startswith(f"({WHO})")]
         wanted = pr_for.get(num, [])
         if not ALL:
-            label = "awaiting-review" if WHO == "Steve" else "approved"
+            mine_labels = (["awaiting-review"] if WHO == "Steve"
+                           else ["approved", "provisionally-approved"])
             wanted = [pr for pr in wanted
-                      if label in [l["name"] for l in pr["labels"]["nodes"]]
+                      if any(l["name"] in mine_labels for l in pr["labels"]["nodes"])
                       or (WHO == "Claude" and not pr["isDraft"] and turn(pr) == "in hand")]
         return items, wanted
 
