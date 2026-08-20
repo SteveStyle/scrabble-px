@@ -77,6 +77,62 @@ The form asks three questions — **type**, **route**, **release** — and the
 answers land in the issue body where `actions.py` and `roadmap.sh` can read
 them. Draft in `.github/ISSUE_TEMPLATE/change.yml`.
 
+#### The four axes, defined
+
+Owner, 2026-08-20: *"each of these three axes needs a table with definitions.
+Workstream as well."* Four tables, one per axis, each value defined rather than
+listed.
+
+##### type — what the change is
+
+The seven, and **`docs/3.3` §2.9.6 is the definition** — how each ships, what
+version it moves, and what evidence it owes. Summarised here only so the axes
+can be read together; when this is applied, 3.3's table gains the other three
+rather than repeating this one.
+
+| value | what it is |
+| --- | --- |
+| `bug` | the app does the wrong thing. A bug in a script is tooling, not this |
+| `minor-function` | behaviour a user could notice, client or server |
+| `major-function` | changes the design, architecture or principles — owes a design note first |
+| `appearance` | visual only, no change in behaviour |
+| `documentation` | the **whole** change is documentation. Every other type updates its own docs as part of being done |
+| `non-prod-tooling` | dev, preview and test tooling: it does not act on production |
+| `prod-tooling` | acts on production without changing the app |
+
+##### route — how it reaches production
+
+| value | what it means | examples | consequence |
+| --- | --- | --- | --- |
+| **in the artifact** | built into an image we ship | client and server code, migrations, the `Caddyfile`, the admin CLI | the full release path |
+| **carried by the deploy** | sent to the VM by `deploy.sh`, but built by nothing | `docker-compose.yml`, the `sa` alias | the full release path — it reaches production and can break it |
+| **applied on the host** | changed by hand on the production machine; no artifact exists | `.env`, a journald drop-in, a cron entry | no release. Document it, and close the issue by hand |
+| **applied to a service we use** | changed in somebody else's console | OCI alarms, DNS, GitHub's own settings, the mail provider | no release, same obligations as the host |
+| **never leaves the repository** | nothing is sent anywhere; it is live when it merges | `docs/`, `scripts/` we run locally, CI config, tests | the merge lane |
+
+> **Where several apply: the artifact beats the deploy, the deploy beats the
+> host.** Pick the one that decides the risk. A file in the repository is repo
+> route whatever executes it — otherwise every CI change becomes a service
+> change.
+
+##### release — what carries it to users
+
+| value | what it means | which milestone closes it |
+| --- | --- | --- |
+| **nothing — live at merge** | the merge lane: it reaches its consumer when it lands on `main` | none. The commit says `Closes #N`, because nothing else will |
+| **a patch, on its own** | shipped alone, usually a fix — the fasttrack | the patch version's milestone |
+| **grouped into a minor** | rides with other changes in a `0.x.0` | that release's milestone |
+| **grouped into a major** | rides in a `x.0.0` — structural, or a breaking wire change | that release's milestone |
+| **not decided yet** | nobody has scheduled it. **The honest answer for most of the backlog** | none, until it is scheduled |
+
+##### workstream — which capability it belongs to
+
+The ten are defined in [Capability
+workstreams](#capability-workstreams) below, with what each covers and the two
+rules that keep the list clean. A workstream is a **capability**, worked on
+indefinitely — not a bag of issues that arrived in the same week — and every
+open issue has one, which is the test that list had to pass.
+
 #### The routes, and the tie-break
 
 | route | means |
