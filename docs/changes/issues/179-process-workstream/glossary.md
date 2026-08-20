@@ -324,6 +324,61 @@ genuinely broken.
 if a release goes wrong and nobody noticed, that is the evidence for making it
 automatic — which is exactly how the emergency retrospective came about.
 
+### D6 · What is a release, and what gets logged as one?
+
+Owner, 2026-08-20: *"These are attributes of the issue. We also need to
+categorise a release. Are we going to log any change as a release, or only code
+changes…"*
+
+**Releases have attributes of their own**, and they are not the issue's. An issue
+says what a change is; a release says what happened to production on one
+occasion.
+
+| attribute | values |
+| --- | --- |
+| **version** | `X.Y.Z` — patch, minor or major, per the rules already in 3.3 |
+| **kind** | **normal** · **fasttrack** (a patch shipped alone) · **emergency** (gates skipped, retrospective owed) · **rollback** (production moved backwards) |
+| **carried** | the milestone's issues — derivable, and `deploy.sh` already closes them |
+| **outcome** | went live · rolled back · **went live and was wrong**, which #67 was |
+| **facts** | tag, commit, date — all derivable from `git tag --list 'prod-*'` |
+
+#### What gets logged
+
+Three options, and the question is really *what is the log for*:
+
+| option | | |
+| --- | --- | --- |
+| **A. deploys only** | one entry per `prod-*` tag | clean and fully derivable, and it misses every production change that arrives without a deploy — the journald cap, an OCI alarm, a DNS record |
+| **B. anything that changes production** | deploys, **plus** host and service changes | matches the route axis exactly: artifact and deploy get a version, host and service get a dated entry with no version |
+| **C. every change** | including merge-lane work | the commit log already does this, better, and nobody would read a log that grows by a dozen entries a week |
+
+**Recommended: B**, and the reason is the one the route axis already found. A
+change applied on the host or in somebody's console leaves **nothing in the
+repository** unless we put it there — that is why those routes are *done when
+their documentation is*. The release log is where that documentation naturally
+lives, because the question it answers is *"what changed in production, and
+when?"*, and a firewall rule answers to that question exactly as a deploy does.
+
+So the log has two kinds of entry:
+
+```text
+0.6.2   2026-08-17  normal    bytes RUSTSEC fix, throttle test    went live
+—       2026-08-19  host      journald retention raised to 7d     OCI console
+0.6.1   2026-08-14  fasttrack #67's real fix                      went live
+0.6.0   2026-08-14  normal    twelve issues                       #67 was wrong
+```
+
+**The version column is empty for a host or service change**, which is the point:
+it says at a glance that this one had no release, and therefore no smoke test, no
+rollback path and no milestone. That is worth seeing.
+
+#### The part that is not derivable
+
+Version, date, commit and contents all come from tags and milestones. **Outcome
+does not**, and it is the column worth having: *"went live and was wrong"* is
+what makes 0.6.0's entry useful, and no tag knows it. That is #156's
+generated-skeleton-plus-a-written-line, arrived at from the other end.
+
 ### D5 · Does `main` get a ruleset? — **answered: yes**
 
 **Decided 2026-08-20**, reviewing PR #184. Requiring CI's `check` job on `main`,
