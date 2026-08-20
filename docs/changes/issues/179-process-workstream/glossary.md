@@ -66,6 +66,85 @@ cheapest — when the issue is written — and it needs no new labels. It also g
 issue #160 something concrete: this is GitHub replacing something we would otherwise
 hand-maintain.
 
+### D1 · Does the lane become three attributes? — **answered: yes, as an issue form**
+
+**Decided 2026-08-20**, with the criteria still to settle. Owner: *"we should be
+using the issues form. I would like to see how this categorises some example
+real issues. The merge lane one's are the hardest. We still need to settle the
+criteria."*
+
+The form asks three questions — **type**, **route**, **release** — and the
+answers land in the issue body where `actions.py` and `roadmap.sh` can read
+them. Draft in `.github/ISSUE_TEMPLATE/change.yml`.
+
+#### The routes, and the tie-break
+
+| route | means |
+| --- | --- |
+| **in the artifact** | built into an image we ship |
+| **carried by the deploy** | sent to the VM, but not built — `docker-compose.yml`, the `sa` alias |
+| **applied on the host** | by hand on the production machine — `.env`, a journald drop-in |
+| **applied to a service we use** | GitHub, OCI, DNS, the mail provider |
+| **never leaves the repository** | live the moment it merges |
+
+> **Where several apply, the artifact beats the deploy, and the deploy beats the
+> host.** Pick the one that decides the risk.
+
+The fourth route is new, and it appeared the moment real issues were tried
+against the proposal: #136's alarms and #147's DNS are neither an artifact nor
+the production host, and filing them under *the host* was the first thing that
+broke.
+
+#### Twenty real issues, run through the three questions
+
+Chosen to exercise every route, every type, and each case #154 called hard —
+not to demonstrate that it works.
+
+| issue | type | route | release | what it tests |
+| --- | --- | --- | --- | --- |
+| #71 one game model | major-function | artifact | major | the ordinary case |
+| #166 move timeouts | minor-function | artifact | not decided | a rule that needs a background task is still the app |
+| #157 staged tile after removal | bug | artifact | patch | bug → patch, no argument |
+| #103 browser tab icon | appearance | artifact | patch | appearance is still the artifact |
+| #116 curate the denylist | minor-function | artifact | patch | data compiled into the image is the artifact |
+| **#130 server version in dev** | minor-function | **artifact** | minor | **the surprise**: dev-only client code still ships in the binary |
+| **#134 ship the build we tested** | prod-tooling | **never leaves the repo** | none | **the case that started #154** — `deploy.sh` runs from a laptop |
+| #144 check CI before merging | prod-tooling | never leaves the repo | none | same shape, no argument |
+| #128 e2e-clean | non-prod-tooling | never leaves the repo | none | test tooling is repo-side |
+| #91 stress testing | non-prod-tooling | never leaves the repo | none | so is a load test |
+| #156 the release log | documentation | never leaves the repo | none | documents are repo-side, even about releases |
+| **#183 the docs workflow** | non-prod-tooling | **never leaves the repo** | none | **runs on GitHub, but it is a file in the repo** — the file decides, not the executor |
+| **#176 disk alarm** | prod-tooling | **a service we use** | none | the new route, and it needs no artifact |
+| #136 OCI alarms (closed) | prod-tooling | a service we use | none | confirms it against a change already made |
+| #147 rehearsal DNS (closed) | prod-tooling | a service we use | none | DNS is a service, not a host |
+| `.env` on the VM | prod-tooling | applied on the host | none | the config-only case, closed by hand |
+| the `sa` alias `deploy.sh` writes | prod-tooling | carried by the deploy | with a release | not built, but it reaches production |
+| `docker-compose.yml` | prod-tooling | carried by the deploy | with a release | same, and the case that made "built into" too narrow |
+| **#174 container logs** | minor-function | **artifact** (JSON logging) **+ host** (journald) | with a release | **two routes** — the tie-break sends it to the artifact |
+| **#175 the backup** | prod-tooling | **host, or deploy** — undecided | none | **the shape is not known until the fix is chosen** |
+| **#40 rehearsal access** | non-prod-tooling | **artifact or service** — undecided | none | same, and #154 named it |
+
+#### What the test found
+
+**Three answers changed nothing**, which is the point: #134, #144 and #128 come
+out merge-lane without an argument, where the old criterion produced one.
+
+**Two issues cannot answer *route* yet.** #175 and #40 do not know their own
+shape — a backup script could ship in the image or live on the host; access
+control could be a `Caddyfile` change or a firewall rule. The form has *"not
+decided yet"* for release and **nothing equivalent for route**, so today it
+forces a guess. That is a gap, and the fix is one option.
+
+**One issue has two routes.** #174 is JSON logging in the image *and* a journald
+drop-in on the host. The tie-break answers it — artifact wins, so it takes the
+release path — but the host half still has to happen by hand afterwards, and
+nothing in the form records that. Either it is two issues, or *route* needs to
+be multi-select.
+
+**One boundary needed stating.** #183's workflow *runs* on GitHub but is a file
+in the repository. The rule that settles it: **the file decides, not the
+executor** — otherwise every CI change becomes a service change.
+
 ### D2 · Do we adopt capability workstreams, and when?
 
 | option | |
@@ -756,6 +835,54 @@ by whoever filed it.
 | **production operations** | *is it healthy now* — logs, alerts, backups, disk, access | #174, #175, #176, #40 |
 | **dictionaries and word lists** | the lexicons and what may be played | #116 |
 | **desktop and distribution** | shipping something that is not the web client | #38, #15 |
+
+### Every open issue, assigned — the test the list has to pass
+
+**D2 is answered yes**, so the list has to survive contact with all 44 open
+issues, not the ten that suggested it. Owner, 2026-08-20: *"The list of
+workstreams also needs testing and may evolve."*
+
+| workstream | issues |
+| --- | --- |
+| **game model and rules** | 66 · 68 · 71 · 73 · 88 · 105 · 106 · 166 |
+| **process and tooling** | 91 · 128 · 134 · 135 · 144 · 148 · 150 · 155 · 156 · 160 · 171 · 179 · 183 |
+| **interaction design** | 84 · 103 · 146 · 152 · 157 |
+| **accounts and identity** | 57 · 58 · 80 · 140 |
+| **notification and liveness** | 15 · 87 · 142 · 151 |
+| **infrastructure and persistence** | 29 · 165 |
+| **capacity planning** | 89 |
+| **production operations** | 40 · 174 · 175 · 176 |
+| **dictionaries and word lists** | 116 |
+| **desktop and distribution** | 10 · 38 |
+| **?** | **130** |
+
+Forty-three of forty-four placed without argument. What the test found:
+
+**#130 fits nowhere well.** *Show the server's version in dev* is developer
+tooling that ships in the client binary: process-and-tooling by purpose,
+interaction-design by location, and neither by feel. It is the same issue that
+strains the *route* question, and for the same reason — a change whose intent
+and its mechanism point at different places. **Left unassigned deliberately**,
+as the evidence for whichever rule we settle.
+
+**Two workstreams are thin.** *Capacity planning* holds one issue and
+*dictionaries* one. Neither is wrong — both will fill, and #89 and #116 are real
+— but a workstream with one issue is indistinguishable from an issue, and worth
+watching rather than defending.
+
+**Two boundaries had to be stated to place things:**
+
+- **#151** (check for a new bundle on `visibilitychange`) went to *notification
+  and liveness* rather than *interaction design*: it is about a client learning
+  that something changed, which is the capability, not about how the change
+  looks.
+- **#165** (`Retry-After` rebuilt from a rounded number) went to *infrastructure*
+  rather than *capacity planning*: throttling policy is capacity, but the header
+  arithmetic is the machinery underneath it.
+
+**The list did not need to change to hold them**, which is the result worth
+having: ten capabilities, one genuinely ambiguous issue, and two boundaries that
+needed a sentence each.
 
 ### The two rules that keep it clean
 
