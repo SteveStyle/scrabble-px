@@ -378,7 +378,7 @@ Three options, and the question is really *what is the log for*:
 | option | | |
 | --- | --- | --- |
 | **A. deploys only** | one entry per `prod-*` tag | clean and fully derivable, and it misses every production change that arrives without a deploy — the journald cap, an OCI alarm, a DNS record |
-| **B. anything that changes production** | deploys, **plus** host and service changes | matches the route axis exactly: artifact and deploy get a version, host and service get a dated entry with no version |
+| **B. anything that changes an environment we maintain** | deploys, **plus** host and service changes, **and which environment** each touched | matches the route axis exactly: artifact and deploy get a version, host and service get a dated entry with no version. And it holds for rehearsal and preview, which are also things we maintain — #147 changed rehearsal's DNS and nothing in production |
 | **C. every change** | including merge-lane work | the commit log already does this, better, and nobody would read a log that grows by a dozen entries a week |
 
 **Recommended: B**, and the reason is the one the route axis already found. A
@@ -391,15 +391,23 @@ when?"*, and a firewall rule answers to that question exactly as a deploy does.
 So the log has two kinds of entry:
 
 ```text
-0.6.2   2026-08-17  normal    bytes RUSTSEC fix, throttle test    went live
-—       2026-08-19  host      journald retention raised to 7d     OCI console
-0.6.1   2026-08-14  fasttrack #67's real fix                      went live
-0.6.0   2026-08-14  normal    twelve issues                       #67 was wrong
+version  date        kind       where       what                              outcome
+0.6.2    2026-08-17  normal     production  bytes RUSTSEC fix, throttle test  went live
+—        2026-08-19  host       production  journald retention raised to 7d   —
+0.6.1    2026-08-14  fasttrack  production  #67's real fix                    went live
+—        2026-08-14  service    rehearsal   DNS: rehearsal.tileliteelite.com  —
+0.6.0    2026-08-14  normal     production  twelve issues                     #67 was wrong
 ```
 
 **The version column is empty for a host or service change**, which is the point:
 it says at a glance that this one had no release, and therefore no smoke test, no
-rollback path and no milestone. That is worth seeing.
+rollback path and no milestone.
+
+**And the environment column is there because production is not everything we
+maintain.** A rehearsal DNS record and a preview volume are changes to things we
+own, and the log's question — *what changed, where, and when* — is the same for
+them. Filtering to production is then a column, where excluding them would have
+been a decision nobody could reverse later.
 
 #### The part that is not derivable
 
@@ -732,7 +740,7 @@ Three attributes on an issue, replacing the single lane:
 | attribute | values | answers |
 | --- | --- | --- |
 | **type** (already have it) | the seven labels | what it is, and what evidence it owes |
-| **route** | *in the artifact* · *carried by the deploy* · *applied on the host* · *applied to a service we use* · *never leaves the repository* | does it reach production, and how |
+| **route** | *in the artifact* · *carried by the deploy* · *applied on the host* · *applied to a service we use* · *never leaves the repository* | how it reaches its consumer, and which environment it changes |
 | **release** | patch (alone) · minor · major · none | what carries it to users, and which milestone closes it |
 
 Authorisation then falls out without a label of its own, landing on ITIL's three
@@ -758,9 +766,10 @@ an argument.
 | **instrumentation** — JSON logs, metrics (#174) | minor-function | in the artifact | with a release |
 | `docker-compose.yml` | prod-tooling | carried by the deploy | with a release |
 | the `sa` alias `deploy.sh` writes on the VM | prod-tooling | carried by the deploy | with a release |
-| **journald retention drop-in** (#174) | prod-tooling | applied on the host | none — document it, close by hand |
-| **OCI alarms** (#136), rehearsal DNS (#147) | prod-tooling | applied on the host | none — same |
-| `.env` on the VM | prod-tooling | applied on the host | none — same |
+| **journald retention drop-in** (#174) | prod-tooling | applied on the **production** host | none — document it, close by hand |
+| **OCI alarms** (#136) | prod-tooling | applied to a service, for **production** | none — same |
+| **rehearsal DNS** (#147) | prod-tooling | applied to a service, for **rehearsal** | none — same, and it changed no production service at all |
+| `.env` on the VM | prod-tooling | applied on the **production** host | none — same |
 | **the backup job** (#175) | prod-tooling | applied on the host, from a script in the repo | none, unless it ships in the image |
 
 The two rows that used to have no answer at all — config-only and
