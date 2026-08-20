@@ -107,7 +107,15 @@ jobs:
         run: |
           # The comment reaches the script as an environment variable, never as
           # an interpolated string — see the note at the top of the file.
-          case "$(printf '%s' "$COMMENT" | head -1)" in
+          #
+          # Lowercased, because `/Approve` from a phone keyboard is the same
+          # instruction. Trimmed with `sed` rather than `xargs`: xargs treats
+          # quotes as syntax, so a comment containing an apostrophe — "/approve
+          # it's fine" — makes it warn and truncate.
+          CMD="$(printf '%s' "$COMMENT" | head -1 \
+                 | tr '[:upper:]' '[:lower:]' \
+                 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+          case "$CMD" in
             /approve*)
               gh issue edit "$NUMBER" --repo "$REPO" \
                 --add-label approved --remove-label awaiting-review
@@ -121,5 +129,12 @@ jobs:
                 --add-label awaiting-review --remove-label approved
               echo "handed over for review" ;;
             *)
-              echo "Not a command — nothing to do." ;;
+              echo "Not a command — nothing to do."
+              exit 0 ;;
           esac
+
+          # Say it was heard. A label changing is silent, and a command that
+          # appears to do nothing gets typed again.
+          gh api --silent -X POST \
+            "repos/$REPO/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content=+1 || true
