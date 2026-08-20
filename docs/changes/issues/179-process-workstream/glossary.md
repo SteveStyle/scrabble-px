@@ -100,7 +100,14 @@ rather than repeating this one.
 | `non-prod-tooling` | dev, preview and test tooling: it does not act on production |
 | `prod-tooling` | acts on production without changing the app |
 
-##### route — how it reaches production
+##### route — how it reaches its consumer
+
+Named for production because that is where the risk is, but the honest question
+is **how does this reach whoever uses it**. Owner, 2026-08-20: *"the production
+service is not everything we are maintaining."* A document's consumer is
+whoever reads it, a script's is the person who runs it, and for both of those
+the answer is *at merge* — which is why the merge lane exists and why "live"
+means a consumer has it rather than that production does.
 
 | value | what it means | examples | consequence |
 | --- | --- | --- | --- |
@@ -588,11 +595,21 @@ asked the same question.
 
 | level | ours | the industry's | definition |
 | --- | --- | --- | --- |
-| the whole thing | **programme** | evergreen programme · continuous value stream | the application and its support: unbounded scope, no end date |
+| the whole thing | **programme** | evergreen programme · continuous value stream | the application **and everything we maintain to keep it going**: the production service, the dev, preview and rehearsal environments, the documentation, and the process itself. Unbounded scope, no end date |
 | an area of it | **workstream** | functional or capability workstream | one capability, worked on indefinitely — the game model, the process, production operations |
 | a bounded piece | **project** | project | *a temporary endeavour undertaken to create a unique product or result* — fixed scope, ends when the scope is complete |
 | a unit of build | **work package** | work package (PRINCE2, WBS) | one development unit within a project: "the client changes for #71". We said *chunk* until 2026-08-19 |
 | what ships | **release** | release | one or more changes built, tested and deployed together |
+
+**Everything in the programme is under change control, not only the production
+service.** Owner, 2026-08-20: *"The whole application includes not only the
+production service, but also the dev and test environments, the design
+documentation, the processes and so on. A change to any of these should be
+recorded and controlled."* That is why `documentation` and `non-prod-tooling`
+are types rather than exemptions, why the merge lane is a lane rather than a way
+of avoiding one, and why this document exists at all. What differs between them
+is the **evidence** each owes and the **route** it takes — never whether it is
+tracked.
 
 **A workstream is a capability area, not a bag of related changes.** That is the
 sharper definition, and it gives a test: two pieces of work belong in the same
