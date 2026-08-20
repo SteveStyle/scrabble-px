@@ -1,0 +1,169 @@
+name: Docs
+
+# The document review workflow (#183). Two jobs, one principle:
+#
+#   **A workflow reports and labels. It never acts on the repository.**
+#
+# Owner, 2026-08-19: *"I am not keen on approval automatically closing a PR, or
+# doing anything other than updating the state."* So nothing here merges,
+# pushes, closes or deploys — the worst a bug in this file can do is set a
+# wrong label and puzzle a reader. Merging stays a deliberate act, because
+# approving and merging are different decisions: a document can be approved
+# while its merge waits for something else to land.
+#
+# It needs no secrets. `GITHUB_TOKEN` is enough, and Actions minutes are free
+# on a public repository.
+#
+# **One footgun, in the third job.** `issue_comment` workflows always run the
+# copy of this file on the **default branch**, never the one in the pull
+# request. Changes to the command handling take effect only after they merge —
+# so a command tested on a branch will appear not to work, and the branch is
+# not the reason.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+    paths:
+      - 'docs/**'
+      - '*.md'
+      - '.markdownlint.jsonc'
+      - 'scripts/check-doc*'
+      - '.github/workflows/docs.yml'
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Lint, links and placement are **not** here. CI already runs
+  #    `scripts/check-docs.sh` on every push, so a copy on pull requests would
+  #    be the same check twice and two places to change it. This file carries
+  #    only what CI cannot: the parts of a review that are a person's.
+  #
+  # 1. The review checklist as a check. Fails while any box under a `## Review`
+  #    heading in the pull request body is unticked; ticking one edits the body,
+  #    which re-runs this, which goes green.
+  #
+  #    **Advisory until a ruleset makes it required** — `main` is unprotected, so
+  #    a red check here is a red X somebody can merge past. That is deliberate
+  #    for now and worth revisiting with the ruleset question on #183.
+  #
+  #    The body is read from the API into a file rather than interpolated into
+  #    the shell: `${{ github.event.pull_request.body }}` in a `run:` block is a
+  #    script-injection vector, since anybody who can write a body can write
+  #    shell.
+  #    **Drafts are skipped.** A draft is work in progress, not a review — gating
+  #    it would make every branch red while it is being written, and a check that
+  #    is usually red is a check nobody reads.
+  review-checklist:
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Unticked boxes under '## Review'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/$REPO/pulls/$NUMBER" --jq '.body // ""' > /tmp/pr-body.md
+          if ! grep -qi '^## Review' /tmp/pr-body.md; then
+            echo "No '## Review' section — nothing to check."
+            exit 0
+          fi
+          UNTICKED="$(sed -n '/^## [Rr]eview/,/^## /p' /tmp/pr-body.md | grep -c '^\s*- \[ \]' || true)"
+          sed -n '/^## [Rr]eview/,/^## /p' /tmp/pr-body.md
+          if [ "$UNTICKED" -gt 0 ]; then
+            echo "::error::$UNTICKED review item(s) still unticked."
+            exit 1
+          fi
+          echo "Every review item is ticked."
+
+  # 2. Comment commands, owner only. Labels and nothing else.
+  #
+  # Four, because a review has three outcomes and not two. Owner, 2026-08-20:
+  # *"I need to say 'approved', 'approved with changes', 'change and re-review'.
+  # I guess we don't need 'reject'."*
+  #
+  #   /ready                    it is Steve's turn       -> awaiting-review
+  #   /approve                  done; Claude merges      -> approved
+  #   /provisionally-approved   notes first, then merge  -> provisionally-approved
+  #   /rework                   change and hand it back  -> neither
+  #
+  # **Any unambiguous prefix works**, so the canonical form can be long enough
+  # to read as a sentence while four characters are enough to type: `/prov`,
+  # `/appr`, `/rew`, `/read`. Owner, 2026-08-20 — the record shows what was
+  # typed, so the long form is what a reader finds in the thread six months
+  # later, and the short form is what a thumb types on a phone.
+  #
+  # The label matches the command rather than paraphrasing it: one name to know,
+  # not two. What it *means* is spelled out by `actions.py`, which renders it as
+  # "approved with changes — mine to make, then merge".
+  #
+  # The middle one is the useful addition: it says *"yes, once you have done
+  # what I wrote"*, which is most reviews, and it saves a lap that exists only
+  # to confirm what was already agreed. There is no /reject — a change that
+  # should not happen is a closed pull request and a comment saying why.
+  commands:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      github.event.comment.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Apply the command, if the comment is one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          COMMENT: ${{ github.event.comment.body }}
+        run: |
+          # The comment reaches the script as an environment variable, never as
+          # an interpolated string — see the note at the top of the file.
+          #
+          # Lowercased, because `/Approve` from a phone keyboard is the same
+          # instruction. Trimmed with `sed` rather than `xargs`: xargs treats
+          # quotes as syntax, so a comment containing an apostrophe — "/approve
+          # it's fine" — makes it warn and truncate.
+          CMD="$(printf '%s' "$COMMENT" | head -1 \
+                 | tr '[:upper:]' '[:lower:]' \
+                 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+          # Longest first: /approve-with-changes must not be caught by /approve*.
+          case "$CMD" in
+            /prov*|/approve-with-changes*|/approve\ with\ changes*)
+              gh issue edit "$NUMBER" --repo "$REPO" \
+                --add-label provisionally-approved \
+                --remove-label awaiting-review --remove-label approved
+              echo "approved with changes — Claude makes them, then merges" ;;
+            /appr*)
+              gh issue edit "$NUMBER" --repo "$REPO" \
+                --add-label approved \
+                --remove-label awaiting-review --remove-label provisionally-approved
+              echo "approved" ;;
+            /rew*|/changes*)
+              gh issue edit "$NUMBER" --repo "$REPO" \
+                --remove-label awaiting-review --remove-label approved \
+                --remove-label provisionally-approved
+              echo "back to Claude, for change and re-review" ;;
+            /read*)
+              gh issue edit "$NUMBER" --repo "$REPO" \
+                --add-label awaiting-review \
+                --remove-label approved --remove-label provisionally-approved
+              echo "handed over for review" ;;
+            *)
+              echo "Not a command — nothing to do."
+              exit 0 ;;
+          esac
+
+          # Say it was heard. A label changing is silent, and a command that
+          # appears to do nothing gets typed again.
+          gh api --silent -X POST \
+            "repos/$REPO/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content=+1 || true
