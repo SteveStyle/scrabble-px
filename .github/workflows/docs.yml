@@ -89,19 +89,20 @@ jobs:
   # *"I need to say 'approved', 'approved with changes', 'change and re-review'.
   # I guess we don't need 'reject'."*
   #
-  #   /ready         it is Steve's turn                 -> awaiting-review
-  #   /approve       done; Claude merges                -> approved
-  #   /provisional   make the notes, then merge         -> approved-with-changes
-  #   /rework        change it and hand it back         -> neither
+  #   /ready                    it is Steve's turn       -> awaiting-review
+  #   /approve                  done; Claude merges      -> approved
+  #   /provisionally-approved   notes first, then merge  -> provisionally-approved
+  #   /rework                   change and hand it back  -> neither
   #
-  # **Short commands, explicit labels.** The command is typed, often on a phone
-  # and into a box that opens its own menu on `/`, so it wants to be short.
-  # The label is *read* — by both of us and by `actions.py` — so it says what
-  # the state is: `approved-with-changes`, not `provisional`, which is an
-  # adjective with no object. Owner, 2026-08-20, asking for the short form.
+  # **Any unambiguous prefix works**, so the canonical form can be long enough
+  # to read as a sentence while four characters are enough to type: `/prov`,
+  # `/appr`, `/rew`, `/read`. Owner, 2026-08-20 — the record shows what was
+  # typed, so the long form is what a reader finds in the thread six months
+  # later, and the short form is what a thumb types on a phone.
   #
-  # /approve-with-changes stays as an alias, since it is in the documentation
-  # already read.
+  # The label matches the command rather than paraphrasing it: one name to know,
+  # not two. What it *means* is spelled out by `actions.py`, which renders it as
+  # "approved with changes — mine to make, then merge".
   #
   # The middle one is the useful addition: it says *"yes, once you have done
   # what I wrote"*, which is most reviews, and it saves a lap that exists only
@@ -136,25 +137,25 @@ jobs:
                  | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
           # Longest first: /approve-with-changes must not be caught by /approve*.
           case "$CMD" in
-            /provisional*|/approve-with-changes*|/approve\ with\ changes*)
+            /prov*|/approve-with-changes*|/approve\ with\ changes*)
               gh issue edit "$NUMBER" --repo "$REPO" \
-                --add-label approved-with-changes \
+                --add-label provisionally-approved \
                 --remove-label awaiting-review --remove-label approved
               echo "approved with changes — Claude makes them, then merges" ;;
-            /approve*)
+            /appr*)
               gh issue edit "$NUMBER" --repo "$REPO" \
                 --add-label approved \
-                --remove-label awaiting-review --remove-label approved-with-changes
+                --remove-label awaiting-review --remove-label provisionally-approved
               echo "approved" ;;
-            /rework*|/changes*)
+            /rew*|/changes*)
               gh issue edit "$NUMBER" --repo "$REPO" \
                 --remove-label awaiting-review --remove-label approved \
-                --remove-label approved-with-changes
+                --remove-label provisionally-approved
               echo "back to Claude, for change and re-review" ;;
-            /ready*)
+            /read*)
               gh issue edit "$NUMBER" --repo "$REPO" \
                 --add-label awaiting-review \
-                --remove-label approved --remove-label approved-with-changes
+                --remove-label approved --remove-label provisionally-approved
               echo "handed over for review" ;;
             *)
               echo "Not a command — nothing to do."
