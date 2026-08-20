@@ -46,14 +46,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Markdown is linted here because it was not linted anywhere. The config
-      # (.markdownlint.jsonc) has existed for weeks and was only ever run by
-      # hand — so an error reached `main` on 2026-08-16 and would have stayed,
-      # and the linter itself existed only in one machine's npx cache, which is
-      # not a dependency anybody declared. Pinned, and first in the job because
-      # it takes two seconds and the Rust steps take minutes.
-      - name: Lint markdown
-        run: npx --yes markdownlint-cli2@0.23.2 "**/*.md" "#target" "#e2e/node_modules" "#old-crates"
+      # The documents are checked here because they were not checked anywhere:
+      # the config (.markdownlint.jsonc) existed for weeks and was only ever run
+      # by hand, so an error reached `main` on 2026-08-16 and would have stayed.
+      #
+      # It runs `scripts/check-docs.sh` rather than a copy of the command, so
+      # the check made before pushing and the one CI enforces are the same code
+      # — the same reason `ci-status.sh` is shared between `deploy.sh` and the
+      # terminal. The script adds two checks to the lint: every `](#anchor)`
+      # resolves, and change documents sit in the folders #156 settled.
+      #
+      # First in the job because it takes seconds and the Rust steps take
+      # minutes.
+      - name: Check documents
+        run: ./scripts/check-docs.sh
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
