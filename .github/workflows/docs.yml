@@ -89,10 +89,19 @@ jobs:
   # *"I need to say 'approved', 'approved with changes', 'change and re-review'.
   # I guess we don't need 'reject'."*
   #
-  #   /ready                  it is Steve's turn            -> awaiting-review
-  #   /approve                done; Claude merges           -> approved
-  #   /approve-with-changes   make the notes, then merge    -> approved-with-changes
-  #   /rework                 change it and hand it back    -> neither
+  #   /ready         it is Steve's turn                 -> awaiting-review
+  #   /approve       done; Claude merges                -> approved
+  #   /provisional   make the notes, then merge         -> approved-with-changes
+  #   /rework        change it and hand it back         -> neither
+  #
+  # **Short commands, explicit labels.** The command is typed, often on a phone
+  # and into a box that opens its own menu on `/`, so it wants to be short.
+  # The label is *read* — by both of us and by `actions.py` — so it says what
+  # the state is: `approved-with-changes`, not `provisional`, which is an
+  # adjective with no object. Owner, 2026-08-20, asking for the short form.
+  #
+  # /approve-with-changes stays as an alias, since it is in the documentation
+  # already read.
   #
   # The middle one is the useful addition: it says *"yes, once you have done
   # what I wrote"*, which is most reviews, and it saves a lap that exists only
@@ -127,7 +136,7 @@ jobs:
                  | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
           # Longest first: /approve-with-changes must not be caught by /approve*.
           case "$CMD" in
-            /approve-with-changes*|/approve\ with\ changes*)
+            /provisional*|/approve-with-changes*|/approve\ with\ changes*)
               gh issue edit "$NUMBER" --repo "$REPO" \
                 --add-label approved-with-changes \
                 --remove-label awaiting-review --remove-label approved
