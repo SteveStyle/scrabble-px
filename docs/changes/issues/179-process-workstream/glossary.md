@@ -117,6 +117,31 @@ means a consumer has it rather than that production does.
 | **applied to a service we use** | changed in somebody else's console | OCI alarms, DNS, GitHub's own settings, the mail provider | no release, same obligations as the host |
 | **never leaves the repository** | nothing is sent anywhere; it is live when it merges | `docs/`, `scripts/` we run locally, CI config, tests | the merge lane |
 
+**And what a defect in each one reaches.** Owner, 2026-08-20: *"things have a
+different IMPACT if there is a defect. The production service will impact users.
+Capacity might also impact users. Design documents impact developers."*
+
+| route | a defect reaches | when |
+| --- | --- | --- |
+| in the artifact · carried by the deploy | **users** | as soon as it is live |
+| applied on the host or a service, for **production** | **users** — and with no smoke test or rollback to catch it | as soon as it is applied |
+| applied on the host or a service, for **rehearsal or preview** | **developers** | next time somebody uses that environment |
+| never leaves the repository | **developers** | next time somebody follows it |
+
+**Impact is not a fourth axis**, because for most changes it follows from route
+and environment — and a dropdown that can be derived is a dropdown nobody should
+be asked to fill in. It is stated here because it is the reason the routes take
+different paths: *care scales with who a defect reaches, and how soon.*
+
+**Two kinds of change have deferred impact**, and they are the ones this rule
+would otherwise flatter:
+
+- **capacity** — a defect reaches users only when load arrives, which may be
+  months after the change, and by then nobody is looking at it
+- **design documents** — a wrong design reaches developers immediately and users
+  eventually, through whatever gets built from it. That is the argument for
+  reviewing a design note as carefully as the code it produces
+
 > **Where several apply: the artifact beats the deploy, the deploy beats the
 > host.** Pick the one that decides the risk. A file in the repository is repo
 > route whatever executes it — otherwise every CI change becomes a service
@@ -278,17 +303,15 @@ I now think releases are too volatile and imprecise."* That reverses the folder
 rule agreed yesterday: a project's documents live under its **name**, not under
 a version that may move or split.
 
-The five `phase:` labels exist and are in use nowhere, after the process
-workstream turned out to have no projects.
+**The options as they stood, kept as the record:**
 
 | option | |
 | --- | --- |
-| **projects in delivering workstreams only** | a standing workstream has issues and pull requests and nothing between |
-| **every issue** | more state to maintain, and most of it derivable |
-| **drop them** | fall back to the derived three: not started, in progress, completed |
+| **projects in delivering workstreams only** — *chosen* | a standing workstream has issues and pull requests and nothing between |
+| every issue | more state to maintain, and most of it derivable |
+| drop them | fall back to the derived three: not started, in progress, completed |
 
-**Recommended: projects only.** The first real test will be #71, which is the
-one workstream that genuinely has projects.
+The first real test will be #71, the one workstream that genuinely has projects.
 
 ### D4 · Is the post-implementation review built, and how? — **answered: yes, as a lessons-learned review**
 
@@ -317,19 +340,21 @@ anyway, a rule landing in two documents, gates skipped, a tool failing silently.
 **When:** once the project's last release has been live and used, not on the day
 it ships — a week is usually enough for the interesting failures to surface.
 
-Nothing asks whether a *normal* release did what it was for. #67 is the worked
+**The options as they stood, kept as the record:**
+
+Nothing asked whether a *normal* release did what it was for. #67 is the worked
 example: closed by a milestone, listed as deferred in the testing report, and
 genuinely broken.
 
 | option | |
 | --- | --- |
-| **an action on the project at close** | one checkbox, no machinery, and it can be skipped silently |
-| **an issue raised by `deploy.sh`** | as it already does for an emergency. Impossible to skip, and it will sometimes be noise |
-| **nothing** | the status quo |
+| **an action on the project at close** — *chosen* | one checkbox, no machinery, and it can be skipped silently |
+| an issue raised by `deploy.sh` | as it already does for an emergency. Impossible to skip, and it will sometimes be noise |
+| nothing | the status quo |
 
-**Recommended: the action first, the issue later.** Start where it costs nothing;
-if a release goes wrong and nobody noticed, that is the evidence for making it
-automatic — which is exactly how the emergency retrospective came about.
+Start where it costs nothing; if a release goes wrong and nobody notices, that is
+the evidence for making it automatic — which is how the emergency retrospective
+came about.
 
 ### Route is the join between an issue and a release
 
@@ -422,14 +447,15 @@ generated-skeleton-plus-a-written-line, arrived at from the other end.
 and nothing more. Still to do: create the ruleset, which may need a token
 permission we do not have.
 
+**The options as they stood, kept as the record:**
+
 | option | |
 | --- | --- |
-| **none** | today. Anything can be pushed, and nothing has gone wrong yet |
-| **require the CI check** | a red push cannot land on `main` |
-| **require CI and the review checklist** | and a pull request for every change, which the merge lane deliberately does not ask for |
+| none | anything can be pushed, and nothing had gone wrong yet |
+| **require the CI check** — *chosen* | a red push cannot land on `main` |
+| require CI and the review checklist | and a pull request for every change, which the merge lane deliberately does not ask for |
 
-**Recommended, and agreed: require CI's `check` job, nothing else, and only
-after #184 merges.** It is the one gate whose answer is objective and whose
+**Agreed: require CI's `check` job, nothing else, and only after #184 merges.** It is the one gate whose answer is objective and whose
 failure is expensive. Requiring a review checklist with one author is ceremony,
 and requiring pull requests would undo the merge lane.
 
