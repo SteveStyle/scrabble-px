@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""actions.py — every outstanding action and review, in one query, in workstream order.
+
+Owner, 2026-08-19: *"We need to see: the workstream parent issue (if there is
+one), child issues, child PRs, actions."* And, on whether the two are the same
+thing: *"Are all actions on a PR? Then show the PR and action together."*
+
+**They are not the same thing, and the distinction is the point.**
+
+  - an **action** is an unchecked `- [ ]` in an *issue* body. It is the only
+    surface we have that can carry state: an issue holds one bit, a comment is
+    append-only, a pull request body freezes at merge. See #181.
+  - a **review checklist** is the same syntax in a *pull request* body, and is
+    not an action — it is the review itself, and it appears as the pull request
+    rather than as a list of boxes.
+
+So a pull request and the actions on its issue are shown together, under that
+issue, which is what the request amounts to once the two are separated.
+
+**Structure comes from GitHub, not from a convention we maintain.** Parent and
+sub-issue links are real (`subIssues`, `parent`), so a workstream is read rather
+than inferred — unlike `roadmap.sh`'s "mentioned by", which reads prose because
+nothing better existed when it was written.
+
+A pull request is attached to its issue by **branch name** (`issue-<n>-…`),
+which is the convention `status.sh` already relies on, and listed separately
+when the name does not follow it — a branch that cannot be placed is worth
+seeing rather than hiding.
+
+Read-only and derived: nothing is stored, so nothing can drift.
+"""
+import json
+import re
+import subprocess
+import sys
+
+BOLD, DIM, OFF = "\033[1m", "\033[2m", "\033[0m"
+
+# **The default is Steve's view, and it prunes.** Owner, 2026-08-19: *"actions.sh
+# should be there primarily to show me the workstreams, issues and PRs with
+# actions for me. I can then look at them in GitHub."* So a workstream with
+# nothing waiting on him does not appear at all — this is a pointer at GitHub,
+# not a reader for it, and every line that is not his is a line in the way.
+#
+#   (no flag)   waiting on Steve: his actions, and pull requests labelled
+#               awaiting-review
+#   --claude    the same for Claude's side
+#   --all       everything, including what is finished and what is nobody's
+MODE = sys.argv[1] if len(sys.argv) > 1 else ""
+if MODE not in ("", "--claude", "--all"):
+    print("usage: actions.py [--claude|--all]", file=sys.stderr)
+    sys.exit(2)
+WHO = "Claude" if MODE == "--claude" else "" if MODE == "--all" else "Steve"
+ALL = MODE == "--all"
+
+QUERY = """
+{ repository(owner: "%s", name: "%s") {
+    issues(states: OPEN, first: 100) {
+      nodes { number title body
+              labels(first: 20) { nodes { name } }
+              parent { number }
+              subIssues(first: 50) { nodes { number title state } } } }
+    pullRequests(states: OPEN, first: 50) {
+      nodes { number title headRefName isDraft
+              labels(first: 20) { nodes { name } }
+              files(first: 30) { nodes { path additions deletions } } } } } }
+"""
+
+
+def branches() -> set[int]:
+    """Issue numbers with a branch of their own, local or on the remote.
+
+    The same signal `status.sh` uses: a branch named `issue-<n>-…` means somebody
+    started. Without it "not started" and "in progress" look identical from the
+    issue alone, and the difference is the whole point of the distinction.
+    """
+    out = subprocess.run(["git", "branch", "-a", "--format=%(refname:short)"],
+                         capture_output=True, text=True).stdout
+    return {int(m.group(1)) for m in re.finditer(r"issue-(\d+)-", out)}
+
+
+def gh(*args: str) -> str:
+    return subprocess.run(["gh", *args], capture_output=True, text=True).stdout
+
+
+def actions_in(body: str) -> list[str]:
+    """Unchecked items under an `Open actions` heading, wrapped lines joined.
+
+    **Only that section is read.** Owner, 2026-08-20, having left two tables in an
+    issue body he wanted to delete: *"I left the tables because I wasn't sure if
+    they were automated and I didn't want to break the tooling."* A tool that
+    reads a whole body makes every edit a risk, because nothing tells you which
+    part is load-bearing. Scoping it to one named heading makes the contract
+    visible from inside the document, and matches `docs.yml`, which reads only
+    the `## Review` section of a pull request body.
+
+    So: everything outside `## Open actions` is prose, and free.
+
+    An item ends at a blank line, at the next item, or at anything not indented.
+    Without the blank-line rule this swallowed the paragraph after the list —
+    which it did, visibly, the first time it ran.
+    """
+    out: list[str] = []
+    open_item = False
+    in_section = False
+    fence = False
+    for line in (body or "").split("\n"):
+        # A fenced block is an example, not content. #181 documents the
+        # convention by showing an `## Open actions` block, and without this the
+        # tool read its own documentation as live actions — which it did.
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if heading:
+            in_section = bool(re.match(r"open actions", heading.group(2).strip(), re.I))
+            open_item = False
+            continue
+        if not in_section:
+            continue
+        if re.match(r"^\s*- \[[ x]\]", line):
+            if re.match(r"^\s*- \[ \]", line):
+                out.append(re.sub(r"^\s*- \[ \]\s*", "", line))
+                open_item = True
+            else:
+                open_item = False
+        elif open_item and line.strip() and re.match(r"^\s+\S", line):
+            out[-1] += " " + line.strip()
+        else:
+            open_item = False
+    return out
+
+
+def main() -> int:
+    repo = gh("repo", "view", "--json", "owner,name",
+              "--jq", '"\\(.owner.login) \\(.name)"').split()
+    if len(repo) != 2:
+        print("actions.py: could not identify the repository", file=sys.stderr)
+        return 1
+    raw = gh("api", "graphql", "-f", "query=" + QUERY % (repo[0], repo[1]))
+    if not raw:
+        print("actions.py: no answer from GitHub", file=sys.stderr)
+        return 1
+    data = json.loads(raw)["data"]["repository"]
+
+    issues = {n["number"]: n for n in data["issues"]["nodes"]}
+    prs = data["pullRequests"]["nodes"]
+
+    pr_for: dict[int, list[dict]] = {}
+    homeless: list[dict] = []
+    for pr in prs:
+        m = re.match(r"issue-(\d+)-", pr["headRefName"])
+        (pr_for.setdefault(int(m.group(1)), []).append(pr) if m else homeless.append(pr))
+
+    started = branches()
+
+    def status(num: int, state: str) -> tuple[str, str]:
+        """Where a project is: its phase if it has one, else derived progress.
+
+        A **phase** is hand-set with a `phase:` label, because the interesting
+        boundaries are judgements — "user testing is finished" is not visible to
+        a script. It is a rare, deliberate act, which is when hand-set state is
+        honest. Owner, 2026-08-19: *"the point is to identify a project phase as
+        much as to identify decision gates."*
+
+        Everything without a phase falls back to the three derived states, so an
+        issue that is not a project still says whether anybody has started.
+        """
+        if state != "OPEN":
+            return "completed", DIM
+        for label in [l["name"] for l in issues.get(num, {}).get("labels", {}).get("nodes", [])]:
+            if label.startswith("phase:"):
+                return label.split(":", 1)[1].replace("-", " "), ""
+        if num in pr_for or num in started:
+            return "in progress", ""
+        return "not started", DIM
+
+    parents = [i for i in issues.values() if i["subIssues"]["nodes"]]
+    children = {c["number"] for p in parents for c in p["subIssues"]["nodes"]}
+
+    def turn(pr: dict) -> str:
+        names = [l["name"] for l in pr["labels"]["nodes"]]
+        if "approved" in names:
+            return "approved — mine to merge"
+        if "awaiting-review" in names:
+            return "your turn"
+        return "draft" if pr["isDraft"] else "in hand"
+
+    def mine(num: int) -> tuple[list[str], list[dict]]:
+        """The actions and pull requests this run is about — the filter, in one place."""
+        items = [a for a in actions_in(issues.get(num, {}).get("body", ""))
+                 if ALL or a.startswith(f"({WHO})")]
+        wanted = pr_for.get(num, [])
+        if not ALL:
+            label = "awaiting-review" if WHO == "Steve" else "approved"
+            wanted = [pr for pr in wanted
+                      if label in [l["name"] for l in pr["labels"]["nodes"]]
+                      or (WHO == "Claude" and not pr["isDraft"] and turn(pr) == "in hand")]
+        return items, wanted
+
+    def show_prs_and_actions(num: int, indent: str = "  ") -> None:
+        items, wanted = mine(num)
+        # Actions before pull requests: the thing to *do* reads first, and a
+        # pull request is a thing to look at. Owner's preference, 2026-08-19.
+        for item in items:
+            text = re.sub(r"^\((?:Steve|Claude)\)\s*", "", item)
+            who = "Steve " if item.startswith("(Steve)") else "Claude" if item.startswith("(Claude)") else "      "
+            print(f"{indent}   - {who if ALL else '     '} {text}")
+        for pr in wanted:
+            doc = sorted(pr["files"]["nodes"], key=lambda f: -(f["additions"] + f["deletions"]))
+            path = doc[0]["path"] if doc else ""
+            extra = f"  +{len(doc) - 1} more" if len(doc) > 1 else ""
+            print(f"{indent}   PR #{pr['number']:<5} {pr['title']}  {DIM}[{turn(pr)}]{OFF}")
+            if path:
+                print(f"{indent}            {DIM}{path}{extra}{OFF}")
+
+    def has_something(num: int, state: str) -> bool:
+        if ALL:
+            return True
+        items, wanted = mine(num)
+        return state == "OPEN" and bool(items or wanted)
+
+    def show_issue(num: int, title: str, state: str = "OPEN", indent: str = "  ") -> None:
+        label, shade = status(num, state)
+        print(f"{indent}{shade}issue #{num:<5} {title}  [{label}]{OFF if shade else ''}")
+        # A completed issue is one line. Its pull request is merged and its
+        # actions are done, so printing them is length without information —
+        # which is what makes a growing workstream unreadable.
+        if label != "completed":
+            show_prs_and_actions(num, indent)
+
+    whose = "everything" if ALL else f"waiting on {WHO}"
+    print(f"{BOLD}ACTIONS{OFF}  {DIM}{whose} — open it in GitHub to act on it{OFF}")
+
+    shown = False
+    for p in sorted(parents, key=lambda i: i["number"]):
+        kids = [c for c in p["subIssues"]["nodes"] if has_something(c["number"], c["state"])]
+        parent_items, parent_prs = mine(p["number"])
+        if not (kids or parent_items or parent_prs):
+            continue
+        shown = True
+        print(f"\n{BOLD}workstream #{p['number']}  {p['title']}{OFF}")
+        # The parent has its own pull requests and its own actions: a change to
+        # the workstream's design lands against the parent, not against a chunk.
+        show_prs_and_actions(p["number"], indent="")
+        for c in (p["subIssues"]["nodes"] if ALL else kids):
+            show_issue(c["number"], c["title"], c["state"])
+
+    loose = [i for i in issues.values()
+             if i["number"] not in children and not i["subIssues"]["nodes"]
+             and has_something(i["number"], "OPEN")]
+    if loose:
+        print(f"\n{BOLD}on their own{OFF}")
+        for i in sorted(loose, key=lambda i: i["number"]):
+            show_issue(i["number"], i["title"])
+
+    if not (shown or loose or homeless):
+        print(f"\n  {DIM}nothing waiting{OFF}")
+
+    if homeless and ALL:
+        print(f"\n{BOLD}pull requests with no issue in the branch name{OFF}")
+        for pr in homeless:
+            print(f"  PR #{pr['number']:<5} {pr['title']}  {DIM}[{turn(pr)}] {pr['headRefName']}{OFF}")
+
+    print(f"\n{DIM}Read-only, derived at run time — the issue body is the record.{OFF}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
