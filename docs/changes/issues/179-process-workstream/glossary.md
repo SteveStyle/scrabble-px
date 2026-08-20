@@ -324,6 +324,28 @@ genuinely broken.
 if a release goes wrong and nobody noticed, that is the evidence for making it
 automatic — which is exactly how the emergency retrospective came about.
 
+### Route is the join between an issue and a release
+
+**Owner, 2026-08-20: *"I guess route ties issues and releases together."*** That
+is the framing, and it is worth stating before D6 rather than discovering it
+inside it.
+
+An issue's other two axes describe the issue: *type* says what it is and what it
+owes, *workstream* says which capability it belongs to. Neither says anything
+about production. **Route does** — and in saying how a change reaches
+production, it decides whether a release exists at all, what kind, and what
+counts as done:
+
+| route | is there a release? | what the record is |
+| --- | --- | --- |
+| in the artifact · carried by the deploy | **yes** — versioned, tagged, smoke-tested, closing a milestone | a release entry |
+| applied on the host · applied to a service | **no**, but production changed | a dated entry with **no version** |
+| never leaves the repository | no, and production did not change | the commit |
+
+So the release log's shape is not a separate design: it falls out of the route
+values, one entry-kind per class. If a new route ever appears, the log gains a
+kind — which is a good test of whether the route is real.
+
 ### D6 · What is a release, and what gets logged as one?
 
 Owner, 2026-08-20: *"These are attributes of the issue. We also need to
