@@ -103,7 +103,16 @@ def actions_in(body: str) -> list[str]:
     out: list[str] = []
     open_item = False
     in_section = False
+    fence = False
     for line in (body or "").split("\n"):
+        # A fenced block is an example, not content. #181 documents the
+        # convention by showing an `## Open actions` block, and without this the
+        # tool read its own documentation as live actions — which it did.
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        if fence:
+            continue
         heading = re.match(r"^(#{1,6})\s+(.*)$", line)
         if heading:
             in_section = bool(re.match(r"open actions", heading.group(2).strip(), re.I))
