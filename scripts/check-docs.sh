@@ -51,7 +51,6 @@ GRANDFATHERED=(
   "docs/changes/25-rate-limiting-test-plan.md"
   "docs/changes/41-user-deletion-test-plan.md"
   "docs/changes/glossary-draft-2026-08-15.md"
-  "docs/changes/process-review-2026-08-13.md"
 )
 STRAY=0
 while IFS= read -r file; do
