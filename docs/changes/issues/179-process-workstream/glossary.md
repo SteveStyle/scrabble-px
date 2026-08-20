@@ -125,6 +125,40 @@ rather than repeating this one.
 | **grouped into a major** | rides in a `x.0.0` — structural, or a breaking wire change | that release's milestone |
 | **not decided yet** | nobody has scheduled it. **The honest answer for most of the backlog** | none, until it is scheduled |
 
+##### When the release is *nothing* — what to do, and how you know it is done
+
+Owner, 2026-08-20: *"Where the release is 'nothing' how do we know what to do?
+How do we know when we have done it?"* A release is the completion event for
+everything that has one: the milestone closes, `deploy.sh` announces it, and the
+issue closes itself. Without one, both questions need answering separately —
+and the answer comes from **route**, which is the other reason the axis earns
+its place.
+
+| route | what to do | done when | what proves it |
+| --- | --- | --- | --- |
+| **never leaves the repository** | 1.1 record · 1.2 push · merge. Steps 1.3 – 1.7 do not apply — there is nothing to deploy | it merges | the commit, which says `Closes #N` because nothing else will ever close it |
+| **applied on the host** | make the change · **write it down** · merge the documentation · close the issue by hand | the documentation merges | the documentation commit, which is the only durable record that the change was made |
+| **applied to a service we use** | the same, and say **where** — which console, which account, which setting | the documentation merges | the same |
+
+**The rule underneath: a change with no artifact is done when its documentation
+is.** That is not bureaucracy — for `.env`, an OCI alarm or a DNS record, the
+documentation *is* the only thing in the repository that knows the change
+happened, and the only thing that survives a rebuilt host or a forgotten
+console. `50-cap.conf` is the counter-example that proves it: a journald cap
+applied by hand on 2026-07-30, recorded nowhere, and rediscovered three weeks
+later only because it silently defeated a requirement.
+
+**Two consequences worth stating:**
+
+- **Nothing closes these issues automatically.** `deploy.sh` closes a
+  milestone's issues on release, and there is no release — so a host or service
+  change stays open until somebody closes it. That is a known gap, not an
+  oversight: #136 and #147 were both closed by hand for this reason.
+- **"Live at merge" is not "finished".** `check-docs.sh` was live the moment it
+  merged, and its convention was not adopted anywhere yet. Where the two differ,
+  the issue closes on **live**, and whatever remains is a new issue rather than
+  an open one nobody can act on.
+
 ##### workstream — which capability it belongs to
 
 The ten are defined in [Capability
