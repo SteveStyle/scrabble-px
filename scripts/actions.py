@@ -84,7 +84,17 @@ def gh(*args: str) -> str:
 
 
 def actions_in(body: str) -> list[str]:
-    """Unchecked items, with wrapped continuation lines joined.
+    """Unchecked items under an `Open actions` heading, wrapped lines joined.
+
+    **Only that section is read.** Owner, 2026-08-20, having left two tables in an
+    issue body he wanted to delete: *"I left the tables because I wasn't sure if
+    they were automated and I didn't want to break the tooling."* A tool that
+    reads a whole body makes every edit a risk, because nothing tells you which
+    part is load-bearing. Scoping it to one named heading makes the contract
+    visible from inside the document, and matches `docs.yml`, which reads only
+    the `## Review` section of a pull request body.
+
+    So: everything outside `## Open actions` is prose, and free.
 
     An item ends at a blank line, at the next item, or at anything not indented.
     Without the blank-line rule this swallowed the paragraph after the list —
@@ -92,7 +102,24 @@ def actions_in(body: str) -> list[str]:
     """
     out: list[str] = []
     open_item = False
+    in_section = False
+    fence = False
     for line in (body or "").split("\n"):
+        # A fenced block is an example, not content. #181 documents the
+        # convention by showing an `## Open actions` block, and without this the
+        # tool read its own documentation as live actions — which it did.
+        if line.lstrip().startswith("```"):
+            fence = not fence
+            continue
+        if fence:
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if heading:
+            in_section = bool(re.match(r"open actions", heading.group(2).strip(), re.I))
+            open_item = False
+            continue
+        if not in_section:
+            continue
         if re.match(r"^\s*- \[[ x]\]", line):
             if re.match(r"^\s*- \[ \]", line):
                 out.append(re.sub(r"^\s*- \[ \]\s*", "", line))
