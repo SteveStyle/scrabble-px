@@ -486,3 +486,29 @@ echo "    Types: docs/3.3, \"The six types of change\"."
 echo "    State comes from \"Refs #N\" in the commits, so a branch covering"
 echo "    several issues shows under each. A change with neither a Refs"
 echo "    trailer nor an issue-<N>-* branch reads \"not started\"."
+
+# --- the documents, as a check rather than a gate ---------------------------
+#
+# Owner, 2026-08-21, answering D5: *"the CI checks are only needed for code
+# releases, not document changes… for the document checks, they can run after
+# the push has succeeded as a warning rather than a blocker… if we notice
+# document errors whenever we do a deployment to Preview etc then that is
+# okay."*
+#
+# So this **reports and does not refuse** — a check, not a gate (docs/3.6
+# §2.16). Preview exists to look at anything at any time, and a broken anchor
+# is no reason to stop somebody looking at their change on a phone.
+#
+# Production is a different matter and is already covered: `check-docs.sh` is
+# the first step of CI's check job, and `deploy.sh` refuses to ship a commit
+# whose push-to-main run did not pass. The gate that matters was already there.
+#
+# Same in `status.sh`, which is the other command run often enough to notice.
+if ! "$(dirname "$0")/check-docs.sh" > /tmp/check-docs.$$ 2>&1; then
+  echo
+  echo "==> NOTE: the document checks fail on this working tree."
+  echo "    Nothing here is blocked by it, and a production deploy would be."
+  sed -n 's/^/    /p' /tmp/check-docs.$$ | grep -E "BROKEN|STRAY|error " | head -8
+  echo "    Full output: ./scripts/check-docs.sh"
+fi
+rm -f /tmp/check-docs.$$
