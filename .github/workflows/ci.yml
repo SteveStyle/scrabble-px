@@ -95,6 +95,7 @@ jobs:
           ./scripts/tests/check-release-version.test.sh
           ./scripts/tests/check-commit-stamp.test.sh
           ./scripts/tests/backup-to-oci.test.sh
+          ./scripts/tests/restore-backup.test.sh
           ./scripts/tests/ci-status.test.sh
           ./scripts/tests/deploy.test.sh
           ./scripts/tests/commit-msg-hook.test.sh
