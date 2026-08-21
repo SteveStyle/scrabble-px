@@ -3,6 +3,15 @@
 # automatic HTTPS, since there's no real domain to provision a Let's
 # Encrypt certificate for on a local/WSL machine.
 
+# The same loopback-only health listener as ./Caddyfile, so the HEALTHCHECK
+# baked into the image works here too. Preview has no TLS and no redirect, so
+# :80 would have served a probe perfectly well — but the image carries one
+# health check, and it has to find the same listener in both.
+http://127.0.0.1:2020 {
+	root * /srv
+	file_server
+}
+
 :80 {
 	encode zstd gzip
 

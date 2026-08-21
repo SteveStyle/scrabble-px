@@ -131,17 +131,22 @@ FROM caddy:2-alpine AS runtime-web
 COPY --from=builder /workspace/target/dx/tile-lite-elite-ui/release/web/public /srv
 COPY Caddyfile /etc/caddy/Caddyfile
 EXPOSE 80
-# NOT going through the public :80/:443 site — verified live against
-# production that a bare loopback probe there fails: Caddy's global
-# HTTP->HTTPS auto-redirect fires for any Host on :80, including one that
-# matches none of the configured hostnames, and the TLS handshake on :443
-# then fails (no cert for that SNI). Preview's Caddyfile.preview has no
-# TLS/redirect at all, so this bug only showed up once actually deployed
-# to production — a real lesson in why "verified" means checked against
-# the environment that actually differs, not just checked anywhere.
-# Caddy's admin API is the reliable signal instead: alive + config loaded.
-# Must be 127.0.0.1, not localhost — the admin listener is IPv4-only, and
-# busybox wget resolves "localhost" to the IPv6 loopback first, which
-# gets a misleading "connection refused" instead of actually probing it.
+# Probes the site's own files, through a loopback-only listener the Caddyfile
+# adds for exactly this (`http://127.0.0.1:2020`). It proves routing, the file
+# server and the static build — a broken static root fails it.
+#
+# NOT the public :80/:443 site, and not because nobody tried: a bare loopback
+# probe there fails in production, because Caddy's global HTTP->HTTPS redirect
+# fires for any Host on :80 and the TLS handshake on :443 then fails with no
+# cert for that SNI. Preview has no TLS, so that only showed up once deployed —
+# a real lesson in why "verified" means checked against the environment that
+# actually differs.
+#
+# It was Caddy's admin API until 2026-08-21 (#174), which answered "the process
+# is alive and a config is loaded" and nothing about whether the site serves —
+# and logged every probe, at 2,858 lines a day against 19 real ones.
+#
+# Must be 127.0.0.1, not localhost: busybox wget resolves "localhost" to the
+# IPv6 loopback first, which gets a misleading "connection refused".
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
-    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:2019/config/ || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:2020/version.txt || exit 1
