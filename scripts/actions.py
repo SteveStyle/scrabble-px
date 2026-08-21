@@ -179,6 +179,13 @@ def main() -> int:
 
     parents = [i for i in issues.values() if i["subIssues"]["nodes"]]
     children = {c["number"] for p in parents for c in p["subIssues"]["nodes"]}
+    # A parent that is itself somebody's sub-issue is a **project**; a parent
+    # with nobody above it is a **workstream**. The levels are read off the
+    # graph rather than declared, so nothing has to be kept in step — and an
+    # issue that becomes a project by acquiring sub-issues starts being drawn
+    # as one on the next run (docs/3.6 §2.11).
+    def level(num: int) -> str:
+        return "project" if num in children else "workstream"
 
     def turn(pr: dict) -> str:
         names = [l["name"] for l in pr["labels"]["nodes"]]
@@ -218,6 +225,16 @@ def main() -> int:
             print(f"{indent}   PR #{pr['number']:<5} {pr['title']}  {DIM}[{turn(pr)}]{OFF}")
             if path:
                 print(f"{indent}            {DIM}{path}{extra}{OFF}")
+        # Every other open pull request on this issue, one dim line each.
+        # Owner, 2026-08-21: *"can actions.py also show the project and the PR
+        # number?"* — the filter above decides what is **actionable**, and that
+        # is a different question from what is **relevant**. An issue you are
+        # already reading should say which pull request belongs to it, even
+        # when the turn is not yours: otherwise the number has to be looked up
+        # somewhere else every time.
+        rest = [pr for pr in pr_for.get(num, []) if pr not in wanted]
+        for pr in rest:
+            print(f"{indent}   {DIM}PR #{pr['number']:<5} {pr['title']}  [{turn(pr)}]{OFF}")
 
     def has_something(num: int, state: str) -> bool:
         if ALL:
@@ -225,9 +242,10 @@ def main() -> int:
         items, wanted = mine(num)
         return state == "OPEN" and bool(items or wanted)
 
-    def show_issue(num: int, title: str, state: str = "OPEN", indent: str = "  ") -> None:
+    def show_issue(num: int, title: str, state: str = "OPEN", indent: str = "  ",
+                   kind: str = "issue") -> None:
         label, shade = status(num, state)
-        print(f"{indent}{shade}issue #{num:<5} {title}  [{label}]{OFF if shade else ''}")
+        print(f"{indent}{shade}{kind} #{num:<5} {title}  [{label}]{OFF if shade else ''}")
         # A completed issue is one line. Its pull request is merged and its
         # actions are done, so printing them is length without information —
         # which is what makes a growing workstream unreadable.
@@ -239,17 +257,37 @@ def main() -> int:
 
     shown = False
     for p in sorted(parents, key=lambda i: i["number"]):
-        kids = [c for c in p["subIssues"]["nodes"] if has_something(c["number"], c["state"])]
+        if p["number"] in children:
+            continue  # drawn under its own workstream, below
+        kids = [c for c in p["subIssues"]["nodes"]
+                if has_something(c["number"], c["state"])
+                or any(has_something(g["number"], g["state"])
+                       for g in issues.get(c["number"], {}).get("subIssues", {}).get("nodes", []))]
         parent_items, parent_prs = mine(p["number"])
         if not (kids or parent_items or parent_prs):
             continue
         shown = True
-        print(f"\n{BOLD}workstream #{p['number']}  {p['title']}{OFF}")
+        print(f"\n{BOLD}{level(p['number'])} #{p['number']}  {p['title']}{OFF}")
         # The parent has its own pull requests and its own actions: a change to
         # the workstream's design lands against the parent, not against a chunk.
         show_prs_and_actions(p["number"], indent="")
         for c in (p["subIssues"]["nodes"] if ALL else kids):
-            show_issue(c["number"], c["title"], c["state"])
+            # A sub-issue that has sub-issues of its own is a project under this
+            # workstream, so it gets its heading and its children are indented
+            # beneath it — three levels, which is what the model has.
+            grand = issues.get(c["number"], {}).get("subIssues", {}).get("nodes", [])
+            if grand:
+                print(f"  {BOLD}project #{c['number']}  {c['title']}{OFF}")
+                show_prs_and_actions(c["number"], indent="  ")
+                for g in grand:
+                    if ALL or has_something(g["number"], g["state"]):
+                        show_issue(g["number"], g["title"], g["state"], indent="    ")
+            else:
+                # A workstream's direct children are its projects, whether or
+                # not any of them has sub-issues yet — a project with one
+                # requirement is still a project (docs/3.6 §2.11), and calling
+                # it an issue here is the vocabulary the levels replaced.
+                show_issue(c["number"], c["title"], c["state"], kind="project")
 
     loose = [i for i in issues.values()
              if i["number"] not in children and not i["subIssues"]["nodes"]
