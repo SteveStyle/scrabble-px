@@ -40,7 +40,26 @@ import pathlib
 import re
 import sys
 
-DOC = pathlib.Path(__file__).resolve().parent.parent / "docs" / "4.7-log-events.md"
+def _doc() -> pathlib.Path:
+    """Where `4.7-log-events.md` is, in both places this runs.
+
+    In a checkout it is `../docs/4.7-log-events.md`. **On the production host
+    there is no checkout** — `deploy.sh` ships images, not source — so the
+    delivery copies this script, the document and the nightly wrapper into
+    `/opt/tile-lite-elite/` together, side by side. They are one artefact in
+    three files: the validator is useless without the schema, and a logging
+    change that re-copies one without the other leaves the host validating
+    against last month's document.
+    """
+    here = pathlib.Path(__file__).resolve().parent
+    for candidate in (here.parent / "docs" / "4.7-log-events.md",
+                      here / "4.7-log-events.md"):
+        if candidate.exists():
+            return candidate
+    return here.parent / "docs" / "4.7-log-events.md"
+
+
+DOC = _doc()
 ENVELOPE = {"timestamp", "level", "message", "target"}
 # Deliberately loose. A false positive costs somebody ten seconds; a missed
 # address is the thing this whole part of the project exists to prevent.
