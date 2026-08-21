@@ -132,9 +132,27 @@ jobs:
           # instruction. Trimmed with `sed` rather than `xargs`: xargs treats
           # quotes as syntax, so a comment containing an apostrophe — "/approve
           # it's fine" — makes it warn and truncate.
-          CMD="$(printf '%s' "$COMMENT" | head -1 \
+          #
+          # **Every line is examined, not only the first.** It was `head -1`
+          # until 2026-08-21, when a review on PR #177 ended with
+          # `/provisionally-approved` after five numbered points and nothing
+          # happened — silently, which is the worst way for a command to fail.
+          # Writing the verdict at the end of the review is the normal case; it
+          # was the parser that was unusual.
+          #
+          # Three rules keep that from firing by accident:
+          #   - fenced blocks are skipped, so a pasted transcript containing
+          #     `/approve` is quoted text rather than an instruction
+          #   - the command must START a line — "the file /readme.md" is prose
+          #   - the word must END there: `/readme.md` is not `/read`, while
+          #     `/rework, please` and `/prov.` are the command with punctuation
+          # The LAST command wins. Somebody who types two has changed their mind.
+          CMD="$(printf '%s\n' "$COMMENT" \
+                 | awk '/^[[:space:]]*```/ {f = !f; next} !f' \
                  | tr '[:upper:]' '[:lower:]' \
-                 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+                 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+                 | grep -E '^/(prov|appr|rew|changes|read)[a-z-]*([[:space:],;:!?)]|\.?$)' \
+                 | tail -1 || true)"
           # Longest first: /approve-with-changes must not be caught by /approve*.
           case "$CMD" in
             /prov*|/approve-with-changes*|/approve\ with\ changes*)
