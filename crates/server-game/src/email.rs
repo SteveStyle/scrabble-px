@@ -75,7 +75,15 @@ pub async fn send_welcome(
         WELCOME_TEMPLATE,
         &[("display_name", display_name), ("base_url", base_url)],
     );
-    send(config, to, &subject, &body, MessageKind::Welcome, Some(player_id)).await;
+    send(
+        config,
+        to,
+        &subject,
+        &body,
+        MessageKind::Welcome,
+        Some(player_id),
+    )
+    .await;
 }
 
 pub async fn send_invitation(
@@ -94,7 +102,15 @@ pub async fn send_invitation(
             ("base_url", base_url),
         ],
     );
-    send(config, to, &subject, &body, MessageKind::Invitation, player_id).await;
+    send(
+        config,
+        to,
+        &subject,
+        &body,
+        MessageKind::Invitation,
+        player_id,
+    )
+    .await;
 }
 
 /// Unlike `send_invitation`, `to` has no known `Player` account behind it
@@ -112,15 +128,18 @@ pub async fn send_join_invitation(
     );
     // No `player_id`: this is the case where there is deliberately no account
     // behind the address yet, so the log's `player_id` is empty and says so.
-    send(config, to, &subject, &body, MessageKind::JoinInvitation, None).await;
+    send(
+        config,
+        to,
+        &subject,
+        &body,
+        MessageKind::JoinInvitation,
+        None,
+    )
+    .await;
 }
 
-pub async fn send_password_reset(
-    config: &EmailConfig,
-    to: &str,
-    player_id: &str,
-    reset_url: &str,
-) {
+pub async fn send_password_reset(config: &EmailConfig, to: &str, player_id: &str, reset_url: &str) {
     let (subject, body) = render(PASSWORD_RESET_TEMPLATE, &[("reset_url", reset_url)]);
     send(
         config,
