@@ -66,6 +66,17 @@ def main() -> int:
                 elif anchor not in headings(other):
                     broken.append(f"{name}: {target}#{anchor} — no such heading there")
 
+        # A link to a document with no anchor was not checked at all until
+        # 2026-08-21, when `docs/3.3` gained a link to `4.8-artefacts.md` before
+        # the file existed and this reported "all anchors resolve". The anchor
+        # half was always the interesting case, which is how the plain half came
+        # to be missed — and a link to a file that is not there is the more
+        # obvious defect of the two.
+        for m in re.finditer(r"\]\(([^)\s#]+\.md)\)", text):
+            other = (path.parent / m.group(1)).resolve()
+            if not other.exists():
+                broken.append(f"{name}: {m.group(1)} — no such file")
+
     print(f"link check: {len(files)} files")
     for line in broken:
         print(f"  BROKEN  {line}")

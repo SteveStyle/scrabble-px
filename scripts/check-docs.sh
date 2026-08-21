@@ -44,12 +44,19 @@ python3 scripts/check-doc-links.py || FAILED=1
 # The five files already in the flat directory stay there: GitHub does not
 # follow a rename and several issue comments point at them. They are listed
 # rather than pattern-matched so that the list can only shrink.
+#
+# Two of them were renamed on 2026-08-21 when *test plan* became *test design
+# specification* — which broke exactly the links this list was protecting. The
+# reason for grandfathering those two is therefore spent: the cost has been
+# paid, so they should move into the convention's folders when the folder move
+# happens rather than being protected from a second rename that now costs
+# nothing.
 bold "3. placement"
 GRANDFATHERED=(
   "docs/changes/README.md"
   "docs/changes/0.6.0-user-testing.md"
-  "docs/changes/25-rate-limiting-test-plan.md"
-  "docs/changes/41-user-deletion-test-plan.md"
+  "docs/changes/25-rate-limiting-test-design.md"
+  "docs/changes/41-user-deletion-test-design.md"
   "docs/changes/glossary-draft-2026-08-15.md"
 )
 STRAY=0
