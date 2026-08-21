@@ -156,6 +156,7 @@ pub(crate) async fn invite_player_to_game(
         crate::email::send_invitation(
             &state.email,
             &invited_player.email,
+            Some(invited_player.id.as_str()),
             &invited_player.display_name,
             &inviting_player.display_name,
             &state.public_base_url,
