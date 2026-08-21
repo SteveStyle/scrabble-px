@@ -105,7 +105,20 @@ RUN BUNDLE_DIR=target/dx/tile-lite-elite-ui/release/web/public \
 FROM debian:bookworm-slim AS runtime-server
 # curl is otherwise unused here — pulled in solely so HEALTHCHECK below has
 # something to hit /health with, without reaching for a heavier base image.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+#
+# sqlite3 is here for two jobs the image could not do without it (#174).
+#
+# **The nightly backup needs a *consistent* copy while the server is running.**
+# `VACUUM INTO` gives one; a tar of the volume gives a crash-consistent set that
+# depends on the WAL being caught with the file it completes. The alternative
+# was `docker compose stop server` every night — which is what `deploy.sh` does,
+# and is fine as a deliberate act at a chosen moment, less so unattended at
+# 03:00 while somebody is mid-move.
+#
+# **And it retires a wart `docs/3.4` already complains about**: reading the
+# database on production installed the sqlite package into a throwaway Alpine
+# container on every single invocation, needing the network each time.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl sqlite3 \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /data
 
