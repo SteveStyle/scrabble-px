@@ -1,5 +1,6 @@
 name: Change
 description: Anything that changes the application, the process, or how either is run
+labels: ["needs-triage"]
 body:
   - type: markdown
     attributes:
@@ -8,8 +9,12 @@ body:
         owes and how it reaches users, and answering them here is cheaper than
         arguing about them later.
 
-        Neither is final. Triage revisits both, and *release* has an honest
-        "not decided yet" — see
+        You can set the labels yourself in the sidebar instead — the dropdowns
+        are here because they **prompt**, they explain each option in place, and
+        they are a tap on a phone where the sidebar is not.
+
+        Neither answer is final. Triage revisits both, and *release* leads with
+        an honest "not decided yet" — see
         [docs/3.6 §2.18](https://github.com/SteveStyle/tile-lite-elite/blob/main/docs/3.6-change-lifecycle.md).
 
         **Raising an issue is meant to be a five-second act.** Nothing
