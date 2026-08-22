@@ -228,13 +228,24 @@ async fn send(
         // have sent something") so the flow stays usable and testable in local
         // dev with zero Resend setup.
         //
-        // **Guarded on a debug build as well as on the missing key** (#174).
-        // The two used to be the same condition, which meant an unset key in
-        // production would have written every reset link and every address into
-        // a log that is now copied off the box nightly. They are different
-        // questions — "is there a provider?" and "is this a developer's
-        // machine?" — and only the second may turn this on.
-        if cfg!(debug_assertions) {
+        // **Guarded on an explicit switch as well as on the missing key**
+        // (#174). The two used to be the same condition, which meant an unset
+        // key in production would have written every reset link and every
+        // address into the log. They are different questions — "is there a
+        // provider?" and "is this somewhere it is safe to print an email?" —
+        // and only the second may turn this on.
+        //
+        // The switch is an environment variable rather than `debug_assertions`,
+        // which is what it was until preview showed the proxy was wrong:
+        // preview builds `--release`, so a build-profile guard turned it off in
+        // exactly the place it is most useful — reading an invitation link out
+        // of the log is how an invitation flow is tested there. Set in
+        // `docker-compose.preview.yml` and nowhere else; production would have
+        // to opt in by hand, in a file that is reviewed.
+        if matches!(
+            std::env::var("TILE_LITE_ELITE_LOG_EMAIL_BODIES").as_deref(),
+            Ok("1") | Ok("true")
+        ) {
             tracing::info!(
                 kind = kind.as_str(),
                 player_id,
