@@ -26,8 +26,11 @@ What it asserts, in order of how much each is worth:
      that has quietly stopped guarding passes everything, so the property is
      checked rather than trusted — JSON Schema is permissive by default and one
      omission would be a silent hole
-  4. no `debugOnly` event appears in a production stream. A release build cannot
-     emit one, so its presence means production is running a debug binary
+  4. no `debugOnly` event appears in a production stream. Only
+     `docker-compose.preview.yml` sets the variable that permits it, so its
+     presence on production means somebody set it there — which is a stronger
+     signal than the build-profile guard it replaced, because a build profile
+     can slip and a compose file is reviewed
 
 An event the schema does not mention is **not** an error: the schema deliberately
 covers the events carrying player identifiers, and `docs/4.7` says so. Rule 1
@@ -126,8 +129,9 @@ def main() -> int:
         # 4
         if debug_only and args.source == "production":
             problems.append(
-                f"line {number}: {message!r} is debug-only and cannot be emitted by a "
-                "release build — production is running a debug binary")
+                f"line {number}: {message!r} may not appear on production — it "
+                "carries a whole email, and something has set "
+                "TILE_LITE_ELITE_LOG_EMAIL_BODIES there")
 
         # 1 — skipped only for the one event whose whole purpose is to carry a
         # message body, and only where a debug build is expected.
