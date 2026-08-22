@@ -242,10 +242,17 @@ async fn send(
         // of the log is how an invitation flow is tested there. Set in
         // `docker-compose.preview.yml` and nowhere else; production would have
         // to opt in by hand, in a file that is reviewed.
-        if matches!(
-            std::env::var("TILE_LITE_ELITE_LOG_EMAIL_BODIES").as_deref(),
-            Ok("1") | Ok("true")
-        ) {
+        // `cfg!(test)` alongside the variable, because a test process is the
+        // original case this exists for — four tests read the message back to
+        // assert an invitation reached the right address, and they broke the
+        // moment the guard stopped being `debug_assertions`. It cannot leak:
+        // `cfg!(test)` is false in every binary that is not a test build.
+        if cfg!(test)
+            || matches!(
+                std::env::var("TILE_LITE_ELITE_LOG_EMAIL_BODIES").as_deref(),
+                Ok("1") | Ok("true")
+            )
+        {
             tracing::info!(
                 kind = kind.as_str(),
                 player_id,
