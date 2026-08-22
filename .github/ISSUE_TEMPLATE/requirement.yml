@@ -1,5 +1,5 @@
-name: Change
-description: Anything that changes the application, the process, or how either is run
+name: Requirement
+description: Something that should be true and is not — a defect, a change, a gap. Raise it in five seconds
 labels: ["needs-triage"]
 body:
   - type: markdown

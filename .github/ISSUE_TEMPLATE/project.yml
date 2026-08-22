@@ -1,0 +1,90 @@
+name: Project
+description: A bounded piece of work that owns requirements, a design, and one or more deliveries
+labels: ["phase:scope-and-design"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **A project is where work happens; a requirement issue is where it was
+        noticed.** Raise this one when a requirement justifies a project — even
+        a single requirement, because the two bodies have opposite lifecycles.
+        This one is kept current; a requirement issue is never edited.
+
+        **Then fold the requirement issues into it**: copy what matters here
+        first, then close each with the `folded` label and a comment naming this
+        project. Fold *before* you freeze — closing an issue whose requirement
+        was never copied loses it.
+
+        **Short is right.** A small project holds all five headings as text; a
+        larger one links to documents in `docs/changes/…` and keeps the body
+        brief so the two do not drift. See
+        [docs/3.6 §2.11](https://github.com/SteveStyle/tile-lite-elite/blob/main/docs/3.6-change-lifecycle.md).
+
+  - type: textarea
+    id: requirements
+    attributes:
+      label: Requirements
+      description: >-
+        What must be true when this is done, and the issues folded in. What is
+        out of scope is worth saying too.
+      value: |
+        **R1 · **
+
+        **Out of scope.**
+    validations:
+      required: true
+
+  - type: textarea
+    id: design
+    attributes:
+      label: Design
+      description: How it will be done — text here, or a link to a design note.
+    validations:
+      required: true
+
+  - type: textarea
+    id: artefacts
+    attributes:
+      label: Impacted artefacts
+      description: >-
+        Everything it touches, each new or modified, grouped by delivery. A guess
+        now, accurate once the design is agreed — and worth writing wrong,
+        because it is how two projects discover they collide. Route is derived
+        from the artefact; show it as a column.
+      value: |
+        *Provisional until the design is agreed.*
+
+        | artefact | | route |
+        | --- | --- | --- |
+        | | | |
+    validations:
+      required: true
+
+  - type: textarea
+    id: test-approach
+    attributes:
+      label: Test approach
+      description: >-
+        Environment, tools, and what is measured against what criteria. Plus the
+        two questions every delivery answers: does this involve functional
+        changes needing user testing, and technical changes needing technical
+        testing?
+    validations:
+      required: true
+
+  - type: textarea
+    id: deliveries
+    attributes:
+      label: Deliveries
+      description: >-
+        One runbook per delivery. The steps and their routes now; the commands
+        before the delivery starts; which version carried each step, and when,
+        afterwards.
+      value: |
+        ### Delivery 1 — 
+
+        | # | step | route |
+        | --- | --- | --- |
+        | 1 | | |
+    validations:
+      required: true
