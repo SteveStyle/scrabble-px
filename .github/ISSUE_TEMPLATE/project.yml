@@ -15,7 +15,7 @@ body:
         project. Fold *before* you freeze — closing an issue whose requirement
         was never copied loses it.
 
-        **Short is right.** A small project holds all five headings as text; a
+        **Short is right.** A small project holds all six headings as text; a
         larger one links to documents in `docs/changes/…` and keeps the body
         brief so the two do not drift. See
         [docs/3.6 §2.11](https://github.com/SteveStyle/tile-lite-elite/blob/main/docs/3.6-change-lifecycle.md).
@@ -38,7 +38,11 @@ body:
     id: design
     attributes:
       label: Design
-      description: How it will be done — text here, or a link to a design note.
+      description: >-
+        How it will be done — text here, or a link to a design note. **Include
+        the context**: where the shape was chosen because of other work, say
+        which work, so that if it is dropped the shape becomes reviewable rather
+        than mysterious.
     validations:
       required: true
 
@@ -57,6 +61,23 @@ body:
         | artefact | | route |
         | --- | --- | --- |
         | | | |
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and related work
+      description: >-
+        One line per relation, naming the issue and the reason. **waits on** —
+        cannot start or ship until that one has. **overlaps** — touches the same
+        artefact, which comparing artefact lists will tell you. **anticipates** —
+        this design makes room for that project, and naming it is what keeps it
+        from being speculation.
+      value: |
+        - **waits on #** — 
+        - **overlaps #** — 
+        - **anticipates #** — 
     validations:
       required: true
 
