@@ -27,15 +27,20 @@ if [[ -z "$PAR_URL" && -r "$HOME/.tile-lite-elite-backup-par" ]]; then
 fi
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-OUT="$(mktemp)"; trap 'rm -f "$OUT"' EXIT
+OUT="$(mktemp)"; trap 'rm -f "$OUT" "$OUT.marker"' EXIT
 
 # `-o cat` gives the message as written — our JSON line and nothing of
 # journald's own framing around it.
 if journalctl CONTAINER_TAG=tle-server -o cat --since "$SINCE" \
    | python3 "$HERE/check-log-hygiene.py" --source production - > "$OUT" 2>&1; then
   printf '%s clean\n' "$STAMP" >> "$EXCEPTIONS"
-  [[ -n "$PAR_URL" ]] && printf '%s\n' "$STAMP" \
-    | curl --fail --silent --show-error --max-time 60 -T - "${PAR_URL}marker-logcheck-ok"
+  # From a file, not stdin: OCI rejects chunked uploads with 501. See the note
+  # in backup-to-oci.sh.
+  if [[ -n "$PAR_URL" ]]; then
+    printf '%s\n' "$STAMP" > "$OUT.marker"
+    curl --fail --silent --show-error --max-time 60 \
+      -T "$OUT.marker" "${PAR_URL}marker-logcheck-ok"
+  fi
   exit 0
 fi
 
