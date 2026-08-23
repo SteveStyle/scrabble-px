@@ -84,7 +84,10 @@ fi
 
 # --- say the drill happened ---------------------------------------------------
 if [[ -n "$MARK" ]]; then
-  printf '%s\n' "$(date -u +%Y%m%dT%H%M%SZ)" | curl --fail --silent --show-error \
-    --max-time 60 -T - "${MARK}marker-restore-ok" \
+  # From a file, not stdin: OCI rejects chunked uploads with 501. See the note
+  # in backup-to-oci.sh.
+  printf '%s\n' "$(date -u +%Y%m%dT%H%M%SZ)" > "$WORK/marker"
+  curl --fail --silent --show-error \
+    --max-time 60 -T "$WORK/marker" "${MARK}marker-restore-ok" \
     && echo "restore marker refreshed — the 100-day alarm is reset"
 fi

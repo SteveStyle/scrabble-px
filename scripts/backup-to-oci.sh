@@ -80,6 +80,14 @@ echo "uploaded db-$STAMP.sqlite3.gz ($SIZE bytes)"
 # of success** rather than for a failure message. That also catches this script
 # crashing, the timer never being enabled, the host being down, or the credential
 # expiring — none of which would ever send a failure.
-printf '%s\n' "$STAMP" | curl --fail --silent --show-error --max-time 60 \
-  -T - "${PAR_URL}marker-backup-ok" \
+#
+# **Uploaded from a file, never from stdin.** `curl -T -` cannot know the length
+# in advance, so it sends `Transfer-Encoding: chunked` — which OCI Object
+# Storage rejects with **501 Not Implemented**. Measured on the production host,
+# 2026-08-23: stdin 501, the identical bytes from a file 200. All three markers
+# in this project had the same bug, so none of the three alarms could ever have
+# been satisfied.
+printf '%s\n' "$STAMP" > "$WORK/marker"
+curl --fail --silent --show-error --max-time 60 \
+  -T "$WORK/marker" "${PAR_URL}marker-backup-ok" \
   || echo "warning: backup uploaded but the marker did not; the alarm will fire" >&2

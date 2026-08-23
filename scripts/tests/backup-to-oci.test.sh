@@ -100,5 +100,31 @@ else
 fi
 rm -rf "$dir"
 
+# --- the one thing a stubbed curl can never check -----------------------------
+#
+# Every case above answers through a fake `curl`, which accepts any arguments it
+# is given. That is what let a real defect pass a green suite on 2026-08-23: all
+# three marker uploads used `curl -T -`, reading the body from stdin. curl cannot
+# know the length in advance, so it sends `Transfer-Encoding: chunked` — and OCI
+# Object Storage answers **501 Not Implemented**. Measured on the production host:
+# stdin 501, the identical bytes from a file 200.
+#
+# The alarms all watch marker objects for *absence of success*, so not one of the
+# three could ever have been satisfied. Backups would have run nightly while the
+# alarms insisted they had not.
+#
+# A stub cannot catch that: the difference is in what the real service accepts.
+# What can be checked is the flag, in every script that uploads. A lint rather
+# than a behaviour test, and here because the behaviour needs a bucket to test.
+for f in backup-to-oci.sh restore-backup.sh check-log-hygiene-nightly.sh; do
+  [[ -e "$HERE/$f" ]] || continue
+  # Uncommented occurrences only — the explanatory comments quote the flag.
+  if grep -vE '^[[:space:]]*#' "$HERE/$f" | grep -q -- '-T -'; then
+    echo "FAIL  $f uploads from stdin (-T -); OCI rejects chunked with 501"
+    failures=1
+  fi
+done
+(( failures )) || echo "ok    no script uploads a marker from stdin"
+
 if (( failures )); then echo; echo "backup-to-oci.sh: FAILURES"; exit 1; fi
 echo; echo "backup-to-oci.sh: all cases pass"
