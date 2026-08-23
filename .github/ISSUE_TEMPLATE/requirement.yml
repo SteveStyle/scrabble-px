@@ -1,0 +1,70 @@
+name: Requirement
+description: Something that should be true and is not — a defect, a change, a gap. Raise it in five seconds
+labels: ["needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Two questions before the description.** They decide what this change
+        owes and how it reaches users, and answering them here is cheaper than
+        arguing about them later.
+
+        You can set the labels yourself in the sidebar instead — the dropdowns
+        are here because they **prompt**, they explain each option in place, and
+        they are a tap on a phone where the sidebar is not.
+
+        Neither answer is final. Triage revisits both, and *release* leads with
+        an honest "not decided yet" — see
+        [docs/3.6 §2.18](https://github.com/SteveStyle/tile-lite-elite/blob/main/docs/3.6-change-lifecycle.md).
+
+        **Raising an issue is meant to be a five-second act.** Nothing
+        downstream assumes it is well formed, so write what you noticed and
+        move on.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What is wrong, and what should be true instead
+      description: The scope. What is excluded is worth saying too.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: Type — what this change is
+      description: One only. If two apply, it is two changes.
+      options:
+        - "bug — the app does the wrong thing"
+        - "minor-function — behaviour a user could notice"
+        - "major-function — changes the design, architecture or principles"
+        - "appearance — visual only"
+        - "documentation — the whole change is documentation"
+        - "non-prod-tooling — dev, test and preview tooling"
+        - "prod-tooling — acts on production without changing the app"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: release
+    attributes:
+      label: Release — what carries it to users
+      description: "\"Not decided yet\" is the honest answer for most of the backlog."
+      options:
+        - "not decided yet"
+        - "nothing — live at merge"
+        - "a patch, on its own"
+        - "grouped into a minor release"
+        - "grouped into a major release"
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: What would show it works
+      description: >-
+        Evidence follows what the change does, not its type — a migration owes a
+        restore, a rate limit owes a script, a document owes a reader. Three
+        lines is a complete answer: what could go wrong, how we would see it,
+        where it is judged.
