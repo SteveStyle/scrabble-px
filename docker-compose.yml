@@ -53,6 +53,23 @@ services:
     volumes:
       - tile-lite-elite-data:/data
     restart: unless-stopped
+    # **journald, not the default json-file** (#174). Docker's default writes
+    # into the container's own filesystem, so **every deploy discards the entire
+    # history** — a new container is a new log file, and redeploying is exactly
+    # what you do when something is wrong. Measured 2026-08-17: the oldest line
+    # the server held was the moment `deploy.sh` recreated it.
+    #
+    # journald's store belongs to the **host**, so it survives that. It already
+    # runs, already persists to /var/log/journal, and already rotates; retention
+    # is set by a drop-in on the host (see docs/3.4), not here. Its rate limit —
+    # 10,000 messages per 30 seconds — is four orders of magnitude above us.
+    #
+    # `tag` is what makes the lines findable afterwards:
+    #   journalctl CONTAINER_TAG=tle-server -o cat | jq .
+    logging:
+      driver: journald
+      options:
+        tag: "tle-server"
     # Deliberately no `ports:` — only reachable from the `web` container
     # over the compose network, and via `docker compose exec server ...`
     # on the host. That keeps the admin endpoints' existing loopback-only
@@ -92,6 +109,16 @@ services:
     depends_on:
       - server
     restart: unless-stopped
+    # journald, for the reason given on `server` above (#174). The web
+    # container's output is nearly all health-check noise today; the Dockerfile
+    # change in the same delivery silences it, which is what makes the journal
+    # worth reading at all.
+    #
+    #   journalctl CONTAINER_TAG=tle-web
+    logging:
+      driver: journald
+      options:
+        tag: "tle-web"
 
 volumes:
   # Named volume rather than a bind mount, so it isn't tied to a specific

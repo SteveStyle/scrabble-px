@@ -9,7 +9,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `RUST_LOG=server_game=debug,tower_http=debug` to scope it) — defaults
     // to `info` for this crate and `warn` for everything else so a plain
     // `docker compose logs` / journal isn't dominated by dependency noise.
+    //
+    // **JSON, one object per line** (#174). The owner's requirement was that a
+    // log can be *deserialised* — counted, grouped, filtered — rather than
+    // read with `grep` and hope. The human-readable rendering is not lost, it
+    // moves: `journalctl -o cat | jq -r '...'` renders it at reading time,
+    // which is the right moment, because a stored line has to serve every
+    // future question and a rendered one serves the question being asked now.
+    //
+    // Every field a line carries is declared in `docs/4.7-log-events.md`, and a
+    // test compares the two — see `tests/log_schema.rs`. Adding a field to an
+    // event without adding it there fails CI, which is what keeps
+    // "identifiers only" a property rather than an intention.
     tracing_subscriber::fmt()
+        .json()
+        .flatten_event(true)
+        .with_current_span(false)
+        .with_span_list(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "server_game=info,tower_http=info,warn".into()),

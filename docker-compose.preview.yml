@@ -66,9 +66,35 @@ services:
       # instead of sending it (crates/server-game/src/email.rs).
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       RESEND_FROM_ADDRESS: ${RESEND_FROM_ADDRESS:-Tile Lite Elite <noreply@mail.tileliteelite.com>}
+      # Print the whole email — address, subject and body — when there is no
+      # provider to deliver it (#174). It is how an invitation or reset link is
+      # read out of the log while testing a flow here.
+      #
+      # **Preview only.** Production sets nothing, so it takes the other branch
+      # and logs the message kind alone. The event is marked `debugOnly` in
+      # `docs/4.7-log-events.md`, and `check-log-hygiene.py --source production`
+      # fails if it ever appears on a production journal.
+      TILE_LITE_ELITE_LOG_EMAIL_BODIES: "1"
     volumes:
       - tile-lite-elite-preview-data:/data
     restart: unless-stopped
+    # **journald, not the default json-file** (#174). Docker's default writes
+    # into the container's own filesystem, so **every deploy discards the entire
+    # history** — a new container is a new log file, and redeploying is exactly
+    # what you do when something is wrong. Measured 2026-08-17: the oldest line
+    # the server held was the moment `deploy.sh` recreated it.
+    #
+    # journald's store belongs to the **host**, so it survives that. It already
+    # runs, already persists to /var/log/journal, and already rotates; retention
+    # is set by a drop-in on the host (see docs/3.4), not here. Its rate limit —
+    # 10,000 messages per 30 seconds — is four orders of magnitude above us.
+    #
+    # `tag` is what makes the lines findable afterwards:
+    #   journalctl CONTAINER_TAG=tle-server -o cat | jq .
+    logging:
+      driver: journald
+      options:
+        tag: "tle-preview-server"
 
   web:
     image: tile-lite-elite-preview-web
@@ -90,6 +116,16 @@ services:
     depends_on:
       - server
     restart: unless-stopped
+    # journald, for the reason given on `server` above (#174). The web
+    # container's output is nearly all health-check noise today; the Dockerfile
+    # change in the same delivery silences it, which is what makes the journal
+    # worth reading at all.
+    #
+    #   journalctl CONTAINER_TAG=tle-preview-web
+    logging:
+      driver: journald
+      options:
+        tag: "tle-preview-web"
 
 volumes:
   # Deliberately persists across `docker compose down` / re-runs, same as

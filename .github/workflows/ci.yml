@@ -94,6 +94,8 @@ jobs:
           ./scripts/tests/read-api-version.test.sh
           ./scripts/tests/check-release-version.test.sh
           ./scripts/tests/check-commit-stamp.test.sh
+          ./scripts/tests/backup-to-oci.test.sh
+          ./scripts/tests/restore-backup.test.sh
           ./scripts/tests/ci-status.test.sh
           ./scripts/tests/deploy.test.sh
           ./scripts/tests/commit-msg-hook.test.sh
@@ -117,6 +119,22 @@ jobs:
       # too, and native checks above won't catch wasm-only breakage. This is a
       # plain cargo compile (default `web` feature); it deliberately does not
       # run the full dx / wasm-bindgen packaging pipeline the release build uses.
+      - name: Log hygiene (the suite's own output, against docs/4.7)
+        run: |
+          # The regression suite is the stream. It drives registration, login,
+          # invitations and the whole password-reset family — including the rare
+          # branches (unknown token, expired token, token already used) that a
+          # week of production would not show — so running the check here covers
+          # what a script driving flows by hand would have, without driving
+          # anything (#174).
+          #
+          # The tests ran in the step above; this run is cheap because
+          # everything is compiled and cached, and it is a separate step so a
+          # hygiene failure reads as one rather than as a test failure.
+          TILE_LITE_ELITE_LOG_CAPTURE="$RUNNER_TEMP/log-events.jsonl" \
+            cargo test -p server-game --quiet
+          python3 scripts/check-log-hygiene.py "$RUNNER_TEMP/log-events.jsonl"
+
       - name: Wasm build (web client)
         run: cargo build -p tile-lite-elite-ui --target wasm32-unknown-unknown
 

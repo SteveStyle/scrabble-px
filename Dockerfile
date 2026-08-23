@@ -105,7 +105,20 @@ RUN BUNDLE_DIR=target/dx/tile-lite-elite-ui/release/web/public \
 FROM debian:bookworm-slim AS runtime-server
 # curl is otherwise unused here — pulled in solely so HEALTHCHECK below has
 # something to hit /health with, without reaching for a heavier base image.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+#
+# sqlite3 is here for two jobs the image could not do without it (#174).
+#
+# **The nightly backup needs a *consistent* copy while the server is running.**
+# `VACUUM INTO` gives one; a tar of the volume gives a crash-consistent set that
+# depends on the WAL being caught with the file it completes. The alternative
+# was `docker compose stop server` every night — which is what `deploy.sh` does,
+# and is fine as a deliberate act at a chosen moment, less so unattended at
+# 03:00 while somebody is mid-move.
+#
+# **And it retires a wart `docs/3.4` already complains about**: reading the
+# database on production installed the sqlite package into a throwaway Alpine
+# container on every single invocation, needing the network each time.
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl sqlite3 \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /data
 
@@ -131,17 +144,22 @@ FROM caddy:2-alpine AS runtime-web
 COPY --from=builder /workspace/target/dx/tile-lite-elite-ui/release/web/public /srv
 COPY Caddyfile /etc/caddy/Caddyfile
 EXPOSE 80
-# NOT going through the public :80/:443 site — verified live against
-# production that a bare loopback probe there fails: Caddy's global
-# HTTP->HTTPS auto-redirect fires for any Host on :80, including one that
-# matches none of the configured hostnames, and the TLS handshake on :443
-# then fails (no cert for that SNI). Preview's Caddyfile.preview has no
-# TLS/redirect at all, so this bug only showed up once actually deployed
-# to production — a real lesson in why "verified" means checked against
-# the environment that actually differs, not just checked anywhere.
-# Caddy's admin API is the reliable signal instead: alive + config loaded.
-# Must be 127.0.0.1, not localhost — the admin listener is IPv4-only, and
-# busybox wget resolves "localhost" to the IPv6 loopback first, which
-# gets a misleading "connection refused" instead of actually probing it.
+# Probes the site's own files, through a loopback-only listener the Caddyfile
+# adds for exactly this (`http://127.0.0.1:2020`). It proves routing, the file
+# server and the static build — a broken static root fails it.
+#
+# NOT the public :80/:443 site, and not because nobody tried: a bare loopback
+# probe there fails in production, because Caddy's global HTTP->HTTPS redirect
+# fires for any Host on :80 and the TLS handshake on :443 then fails with no
+# cert for that SNI. Preview has no TLS, so that only showed up once deployed —
+# a real lesson in why "verified" means checked against the environment that
+# actually differs.
+#
+# It was Caddy's admin API until 2026-08-21 (#174), which answered "the process
+# is alive and a config is loaded" and nothing about whether the site serves —
+# and logged every probe, at 2,858 lines a day against 19 real ones.
+#
+# Must be 127.0.0.1, not localhost: busybox wget resolves "localhost" to the
+# IPv6 loopback first, which gets a misleading "connection refused".
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
-    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:2019/config/ || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:2020/version.txt || exit 1
