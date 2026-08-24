@@ -33,7 +33,12 @@ body:
     id: type
     attributes:
       label: Type — what this change is
-      description: One only. If two apply, it is two changes.
+      description: >-
+        One only — they are meant to be disjoint, so usually one of two
+        candidates is simply wrong. A defect in a script is tooling, not a bug.
+        Anything that changes behaviour is not appearance. Documentation means
+        the whole change is documentation, since every change updates its own.
+        Split it only when a change genuinely does two things.
       options:
         - "bug — the app does the wrong thing"
         - "minor-function — behaviour a user could notice"
@@ -48,8 +53,12 @@ body:
   - type: dropdown
     id: release
     attributes:
-      label: Release — what carries it to users
-      description: "\"Not decided yet\" is the honest answer for most of the backlog."
+      label: Release — does this need an application version, and how big?
+      description: >-
+        A release is an application version. A delivery is anything reaching its
+        users — a document or a script is delivered without a release, so
+        "nothing" here does not mean nothing happens. "Not decided yet" is the
+        honest answer for most of the backlog.
       options:
         - "not decided yet"
         - "nothing — no release needed"
