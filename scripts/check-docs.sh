@@ -32,7 +32,7 @@ FAILED=0
 # otherwise "whatever is in one machine's npx cache", which is not a dependency
 # anybody declared.
 bold "1. markdownlint"
-npx --yes markdownlint-cli2@0.23.2 "**/*.md" "#target" "#e2e/node_modules" "#old-crates" 2>&1 | tail -4 || FAILED=1
+npx --yes markdownlint-cli2@0.23.2 "**/*.md" "#target" "#e2e/node_modules" "#old-crates" "#pipeline.md" 2>&1 | tail -4 || FAILED=1
 
 bold "2. links"
 python3 scripts/check-doc-links.py || FAILED=1

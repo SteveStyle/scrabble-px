@@ -59,6 +59,17 @@ def gh(*args: str) -> str:
     return subprocess.run(["gh", *args], capture_output=True, text=True).stdout
 
 
+def cell(text: str) -> str:
+    """A title, safe inside a markdown table cell.
+
+    Titles are data. `#193` contains `<ref>`, which renders as inline HTML and
+    fails the documentation lint; a title containing a pipe would break the
+    table outright. Escaped here rather than in each caller, because forgetting
+    it once produces a report that is wrong in a way nobody reads carefully.
+    """
+    return text.replace("|", "\\|").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def labels_of(n: dict) -> set[str]:
     return {l["name"] for l in n["labels"]["nodes"]}
 
@@ -123,7 +134,7 @@ def main() -> int:
         "| | |",
         "| --- | --- |",
         f"| **Backlog** — untriaged | {len(backlog['untriaged'])} |",
-        f"| **Backlog** — triaged | {len(backlog['triaged'])} |",
+        f"| **Backlog** — in triage | {len(backlog['triaged'])} |",
         f"| **Live projects** | {len(live_projects)} |",
         f"| **Delivered projects** | {len(closed_projects)} |",
         "",
@@ -144,15 +155,17 @@ def main() -> int:
         for n in sorted(rows, key=lambda x: x["number"]):
             types = ", ".join(sorted(labels_of(n) & TYPES)) or "—"
             ms = n["milestone"]["title"] if n["milestone"] else "—"
-            t = n["title"].replace("|", "\\|")
+            t = cell(n["title"])
             out.append(f"| [#{n['number']}]({n['url']}) | {t} | {types} | `{ms}` | {workstream_of(n)} |")
         return out + [""]
 
     o += ["### Untriaged", "",
           "No type decided, or still labelled `needs-triage`. **This is the queue.**", ""]
     o += table(backlog["untriaged"])
-    o += ["### Triaged", "",
-          "Classified, and waiting to be planned into a project.", ""]
+    o += ["### In triage", "",
+          "**Being worked on.** Its future is still undecided, and it may be edited",
+          "many times before it is. There are no sub-states: which categorisation gets",
+          "made when is not something you can prescribe up front (D35).", ""]
     o += table(backlog["triaged"])
 
     for heading, projects, closed in (("Live projects", live_projects, False),
@@ -176,13 +189,13 @@ def main() -> int:
                 title = "No workstream decided"
             o += [f"### {title}", ""]
             for p in sorted(grouped[ws], key=lambda x: x["number"]):
-                t = p["title"].replace("|", "\\|")
+                t = cell(p["title"])
                 o += [f"**[#{p['number']}]({p['url']}) — {t}**", ""]
                 kids = [k for k in p.get("subIssues", {}).get("nodes", [])] if not closed else []
                 if kids:
                     o += ["| # | title | state |", "| --- | --- | --- |"]
                     for k in sorted(kids, key=lambda x: x["number"]):
-                        kt = k["title"].replace("|", "\\|")
+                        kt = cell(k["title"])
                         o.append(f"| [#{k['number']}]({k['url']}) | {kt} | {k['state'].lower()} |")
                     o.append("")
 
@@ -203,7 +216,7 @@ def main() -> int:
     path.write_text("\n".join(o) + "\n")
     print(f"wrote {path}")
     print(f"  {len(backlog['untriaged']):3}  backlog — untriaged")
-    print(f"  {len(backlog['triaged']):3}  backlog — triaged")
+    print(f"  {len(backlog['triaged']):3}  backlog — in triage")
     print(f"  {len(live_projects):3}  live projects")
     print(f"  {len(closed_projects):3}  delivered projects")
     if in_project:
