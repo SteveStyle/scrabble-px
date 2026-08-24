@@ -65,7 +65,7 @@ while IFS= read -r file; do
   for old in "${GRANDFATHERED[@]}"; do [[ "$file" == "$old" ]] && keep=1 && break; done
   (( keep )) && continue
   echo "  STRAY   $file"
-  echo "          → docs/changes/issues/<issue>-<name>/ for a design document,"
+  echo "          → docs/changes/workstreams/<workstream>/<issue>-<name>/ for a design"
   echo "            docs/changes/releases/<version>/ for a testing document (#156)"
   STRAY=1
 done < <(find docs/changes -maxdepth 1 -name '*.md' | sort)
