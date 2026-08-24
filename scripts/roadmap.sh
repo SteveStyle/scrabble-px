@@ -14,7 +14,7 @@ set -uo pipefail
 # the same reason `status.sh` stores nothing.
 #
 # Order: version milestones oldest first (the next release is at the top), then
-# the lanes that feed them, then unmilestoned last — because unmilestoned means
+# the queues that feed them, then unmilestoned last — because unmilestoned means
 # nobody has decided, and that is worth seeing rather than buried.
 #
 # Uses `gh`'s embedded `--jq` rather than a standalone `jq`, which is not
@@ -60,10 +60,10 @@ for v in $VERSIONS; do
 done
 (( FOUND )) || printf '  %s\n' "$(dim 'no version milestone has open issues')"
 
-# --- the lanes ---------------------------------------------------------------
+# --- the release attribute, where the release itself is not decided ----------
 
-printf '\n%s\n' "$(bold 'QUEUED — the lane is decided, the release is not')"
-print_group "fasttrack" "can ship on its own"            --milestone fasttrack
+printf '\n%s\n' "$(bold 'QUEUED — the release attribute is decided, the release is not')"
+print_group "patch"     "can ship on its own"            --milestone patch
 print_group "minor"     "batched into a minor release"   --milestone minor
 print_group "major"     "needs a design note first"      --milestone major
 print_group "no-release" "no release needed — live when it lands" --milestone no-release

@@ -125,7 +125,7 @@ echo
 # One rule, used by both the release preview and the "done, not yet released"
 # list below. They used to answer differently: this section knew that
 # documentation and tooling are live at merge, and that section did not, so
-# every merge-lane change ever closed accumulated there for good — nine of them
+# every no-release change ever closed accumulated there for good — nine of them
 # by the time anyone counted, all of them already live.
 reach_of() {
   case "$1" in
@@ -467,8 +467,9 @@ FOUND=0
 if [[ -n "$AWAITING" && -n "$OPEN_MILESTONES" ]]; then
   while IFS=$'\t' read -r num title milestone labels; do
     [[ -z "$num" ]] && continue
-    # An open milestone alone is not enough. The lane milestones — fasttrack,
-    # minor, major, merge — never close, that being what makes them lanes, so
+    # An open milestone alone is not enough. The release-attribute milestones —
+    # patch, minor, major, no-release — never close, that being what makes them
+    # queues rather than releases, so
     # this test was permanently true for anything closed against one.
     grep -qxF "$milestone" <<< "$OPEN_MILESTONES" 2>/dev/null || continue
     # And a change that never reaches users has nothing to wait for. It went
