@@ -95,7 +95,15 @@ def main() -> int:
     structural = {n["number"] for n in workstreams + live_projects + index}
 
     def workstream_of(n: dict) -> str:
-        """Walk up to the workstream, however many levels away it is."""
+        """Walk up to the workstream, however many levels away it is.
+
+        **By name, not by number.** Owner, 2026-08-24: *"in the report the
+        workstream column should give the name not the number"* — the same
+        complaint that produced the index, #203: navigating by remembering
+        numbers is what the structure is supposed to remove.
+
+        The trailing "workstream" is dropped: it is the column heading.
+        """
         seen, cur = set(), n
         while cur and cur["number"] not in seen:
             seen.add(cur["number"])
@@ -106,7 +114,8 @@ def main() -> int:
             if p is None:
                 return f"#{parent['number']}"
             if "workstream" in labels_of(p):
-                return f"#{p['number']}"
+                name = p["title"].removesuffix(" workstream")
+                return f"[{name}]({p['url']})"
             cur = p
         return "—"
 
