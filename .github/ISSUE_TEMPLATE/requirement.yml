@@ -52,7 +52,7 @@ body:
       description: "\"Not decided yet\" is the honest answer for most of the backlog."
       options:
         - "not decided yet"
-        - "nothing — live at merge"
+        - "nothing — no release needed"
         - "a patch, on its own"
         - "grouped into a minor release"
         - "grouped into a major release"

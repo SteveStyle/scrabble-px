@@ -66,7 +66,7 @@ printf '\n%s\n' "$(bold 'QUEUED — the lane is decided, the release is not')"
 print_group "fasttrack" "can ship on its own"            --milestone fasttrack
 print_group "minor"     "batched into a minor release"   --milestone minor
 print_group "major"     "needs a design note first"      --milestone major
-print_group "merge"     "live when merged — no release"  --milestone merge
+print_group "no-release" "no release needed — live when it lands" --milestone no-release
 
 print_group "NO MILESTONE" "nobody has decided — decide, or it will not happen" \
   --search 'no:milestone'
