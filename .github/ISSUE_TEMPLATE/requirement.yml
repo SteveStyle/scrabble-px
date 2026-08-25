@@ -15,7 +15,7 @@ body:
 
         Neither answer is final. Triage revisits both, and *release* leads with
         an honest "not decided yet" — see
-        [docs/3.6 §2.18](https://github.com/SteveStyle/tile-lite-elite/blob/main/docs/3.6-change-lifecycle.md).
+        [docs/3.6 §2.18](https://github.com/delphside/tile-lite-elite/blob/main/docs/3.6-change-lifecycle.md).
 
         **Raising an issue is meant to be a five-second act.** Nothing
         downstream assumes it is well formed, so write what you noticed and
