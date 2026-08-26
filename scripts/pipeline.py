@@ -43,7 +43,14 @@ TYPES = {"bug", "minor-function", "major-function", "appearance",
 
 
 def field(n: dict, name: str) -> str:
-    """A single-select issue field's value, or an em dash.
+    """One issue field's value, or an em dash.
+
+    **Single-select only.** `SINGLE_SELECT` is GitHub's own name for the data
+    type — `Type of change`, `Effort` and `Priority` all have it, and the API
+    returns their values as `IssueFieldSingleSelectValue`. The other data types
+    an issue field can have are `TEXT`, `NUMBER`, `DATE` and `MULTI_SELECT`,
+    each with its own value type; `Start date` and `Target date` are `DATE`.
+    This reads none of them, and would need a branch per type to.
 
     **Issue fields replaced labels on 2026-08-26** — organisation-level, one
     value enforced, settable when the issue is raised, and visible on the issue
