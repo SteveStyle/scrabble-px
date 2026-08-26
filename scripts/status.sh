@@ -127,12 +127,33 @@ echo
 # documentation and tooling are live at merge, and that section did not, so
 # every no-release change ever closed accumulated there for good — nine of them
 # by the time anyone counted, all of them already live.
+# `{owner}` and `{repo}` expand in a REST path and **not** in a GraphQL
+# document, so the repository is resolved once here and interpolated.
+REPO_NWO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
+REPO_OWNER="${REPO_NWO%%/*}"
+REPO_NAME="${REPO_NWO##*/}"
+
+# An exact value since 2026-08-26, for the same reason as `type_of`: these were
+# substring matches against a comma-joined label string.
 reach_of() {
   case "$1" in
-    *documentation*|*non-prod-tooling*) echo "live at merge" ;;
-    *prod-tooling*)                     echo "live at merge, unless it is admin-cli" ;;
-    *)                                  echo "reaches users" ;;
+    documentation|non-prod-tooling) echo "live at merge" ;;
+    prod-tooling)                   echo "live at merge, unless it is admin-cli" ;;
+    *)                              echo "reaches users" ;;
   esac
+}
+
+# One issue's title and Type of change, tab separated.
+type_of_issue() {
+  gh api graphql -f query="{ repository(owner: \"$REPO_OWNER\", name: \"$REPO_NAME\") {
+      issue(number: $1) { title
+        issueFieldValues(first: 10) {
+          nodes { ... on IssueFieldSingleSelectValue {
+                    value field { ... on IssueFieldCommon { name } } } } } } } }" \
+    --jq '.data.repository.issue
+          | [ .title,
+              ([.issueFieldValues.nodes[]? | select(.field.name == "Type of change") | .value] | first // "") ]
+          | @tsv' 2>/dev/null || true
 }
 
 # Non-empty if this issue was delivered by a release that has already happened
@@ -205,12 +226,11 @@ else
     FUNCTIONAL=""
     while read -r num; do
       [[ -z "$num" ]] && continue
-      meta="$(gh issue view "$num" --json title,labels \
-        --jq '"\(.title)\t\([.labels[].name] | join(","))"' 2>/dev/null || true)"
+      meta="$(type_of_issue "$num")"
       title="${meta%%$'\t'*}"
-      labels="${meta#*$'\t'}"
-      [[ -z "$meta" ]] && { title="(could not read issue)"; labels=""; }
-      reach="$(reach_of "$labels")"
+      toc="${meta#*$'\t'}"
+      [[ -z "$meta" ]] && { title="(could not read issue)"; toc=""; }
+      reach="$(reach_of "$toc")"
       # A change already delivered by an earlier release can still be
       # referenced by later commits — its design note being retired, say. It is
       # not part of what this release delivers, and counting it produced a
@@ -218,9 +238,9 @@ else
       # no functionality at all.
       already="$(shipped_already "$num")"
       printf '    %-12s #%-4s %-40s %-16s %s\n' \
-        "ships" "$num" "$(printf '%.40s' "$title")" "$labels" "${already:-$reach}"
+        "ships" "$num" "$(printf '%.40s' "$title")" "$toc" "${already:-$reach}"
       if [[ -z "$already" && "$reach" == "reaches users" ]]; then
-        case "$labels" in *major-function*|*minor-function*) FUNCTIONAL="yes" ;; esac
+        case "$toc" in major-function|minor-function) FUNCTIONAL="yes" ;; esac
       fi
     done <<< "$SHIPPING"
 
@@ -324,19 +344,34 @@ state_of_issue() {
 # One type label per issue — see docs/3.3, "The six types of change". An
 # issue with none reads "unclassified", which is the point: the gap is a
 # prompt to classify it, not something to paper over with a default.
+# number, title, type-of-change, milestone — one row per issue, tab separated.
+#
+# GraphQL rather than `gh issue list --json`, which exposes neither the issue
+# type nor an issue field. `$1` is `open` or `closed`.
+issues_with_type() {
+  gh api graphql -f query="{ repository(owner: \"$REPO_OWNER\", name: \"$REPO_NAME\") {
+      issues(states: ${1^^}, first: 100, orderBy:{field:CREATED_AT, direction:ASC}) {
+        nodes { number title milestone { title }
+                issueFieldValues(first: 10) {
+                  nodes { ... on IssueFieldSingleSelectValue {
+                            value field { ... on IssueFieldCommon { name } } } } } } } } }" \
+    --jq '.data.repository.issues.nodes[]
+          | [ .number,
+              .title,
+              ([.issueFieldValues.nodes[]? | select(.field.name == "Type of change") | .value] | first // ""),
+              (.milestone.title // "") ]
+          | @tsv' 2>/dev/null || true
+}
+
+# **An exact value, not a substring.** This used to match a comma-joined label
+# string, and carried a warning that `non-prod-tooling` had to be tested before
+# `prod-tooling` because one contains the other. A single-select field removes
+# the hazard rather than ordering around it.
 type_of() {
   case "$1" in
-    *documentation*)    echo "documentation" ;;
-    # `non-prod-tooling` must be tested before `prod-tooling`: the second
-    # pattern is a substring of the first, so the wrong order would report
-    # every non-production change as production tooling.
-    *non-prod-tooling*) echo "non-prod-tooling" ;;
-    *prod-tooling*)     echo "prod-tooling" ;;
-    *major-function*)   echo "major-function" ;;
-    *minor-function*)   echo "minor-function" ;;
-    *bug*)              echo "defect fix" ;;
-    *appearance*)       echo "appearance" ;;
-    *)                  echo "unclassified" ;;
+    bug) echo "defect fix" ;;
+    "")  echo "unclassified" ;;
+    *)   echo "$1" ;;
   esac
 }
 
@@ -432,17 +467,18 @@ echo "==> Open changes"
 printf "    %-4s %-${TITLE_WIDTH}s %-16s %s\n" "#" "TITLE" "TYPE" "STATE"
 printf '    '; printf '%*s' $((TITLE_WIDTH + 44)) '' | tr ' ' '-'; echo
 
-ISSUES="$(gh issue list --state open --limit 100 \
-  --json number,title,labels,milestone \
-  -q '.[] | [.number, .title, (.labels | map(.name) | join(",")), (.milestone.title // "")] | @tsv' \
-  2>/dev/null || true)"
+# `gh issue list --json` has no `issueType` and cannot read an issue field, so
+# this goes through GraphQL. The third column is the **Type of change** field,
+# which replaced the seven labels on 2026-08-26 — one value enforced, and no
+# longer a substring match (see `type_of`).
+ISSUES="$(issues_with_type open)"
 
 if [[ -z "$ISSUES" ]]; then
   echo "    (none open)"
 else
-  while IFS=$'\t' read -r num title labels milestone; do
+  while IFS=$'\t' read -r num title toc milestone; do
     [[ -z "$num" ]] && continue
-    TYPE="$(type_of "$labels")"
+    TYPE="$(type_of "$toc")"
     state="$(state_of_issue "$num" "$TYPE")"
     [[ -n "$milestone" ]] && state="$state · $milestone"
     printf "    %-4s %s %-16s %s\n" "$num" "$(fit_title "$title")" "$TYPE" "$state"
@@ -454,18 +490,23 @@ echo
 # This is the section that answers "what is waiting to go out", which is the
 # question the issue list alone cannot answer.
 echo "==> Done, not yet released"
-AWAITING="$(gh issue list --state closed --limit 100 \
-  --json number,title,milestone,labels \
-  -q '.[] | select(.milestone != null)
-      | [.number, .title, .milestone.title, ([.labels[].name] | join(","))] | @tsv' \
-  2>/dev/null || true)"
+AWAITING="$(gh api graphql -f query='{ repository(owner: "'"$REPO_OWNER"'", name: "'"$REPO_NAME"'") {
+    issues(states: CLOSED, first: 100, orderBy:{field:CREATED_AT, direction:DESC}) {
+      nodes { number title milestone { title }
+              issueFieldValues(first: 10) {
+                nodes { ... on IssueFieldSingleSelectValue {
+                          value field { ... on IssueFieldCommon { name } } } } } } } } }' \
+  --jq '.data.repository.issues.nodes[] | select(.milestone != null)
+        | [ .number, .title, .milestone.title,
+            ([.issueFieldValues.nodes[]? | select(.field.name == "Type of change") | .value] | first // "") ]
+        | @tsv' 2>/dev/null || true)"
 
 OPEN_MILESTONES="$(gh api "repos/{owner}/{repo}/milestones?state=open" \
   -q '.[].title' 2>/dev/null || true)"
 
 FOUND=0
 if [[ -n "$AWAITING" && -n "$OPEN_MILESTONES" ]]; then
-  while IFS=$'\t' read -r num title milestone labels; do
+  while IFS=$'\t' read -r num title milestone toc; do
     [[ -z "$num" ]] && continue
     # An open milestone alone is not enough. The release-attribute milestones —
     # patch, minor, major, no-release — never close, that being what makes them
@@ -475,7 +516,7 @@ if [[ -n "$AWAITING" && -n "$OPEN_MILESTONES" ]]; then
     # And a change that never reaches users has nothing to wait for. It went
     # live when it merged, so listing it as "not yet released" is wrong rather
     # than merely noisy — it invents a queue that does not exist.
-    [[ "$(reach_of "$labels")" == "reaches users" ]] || continue
+    [[ "$(reach_of "$toc")" == "reaches users" ]] || continue
     printf "    %-4s %s %s\n" "$num" "$(fit_title "$title")" "$milestone"
     FOUND=1
   done <<< "$AWAITING"
