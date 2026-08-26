@@ -43,7 +43,7 @@ BOLD, DIM, OFF = "\033[1m", "\033[2m", "\033[0m"
 # not a reader for it, and every line that is not his is a line in the way.
 #
 #   (no flag)   waiting on Steve: his actions, and pull requests labelled
-#               awaiting-review
+#               a review request
 #   --claude    the same for Claude's side
 #   --all       everything, including what is finished and what is nobody's
 MODE = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -62,6 +62,9 @@ QUERY = """
               subIssues(first: 50) { nodes { number title state } } } }
     pullRequests(states: OPEN, first: 50) {
       nodes { number title headRefName isDraft
+              reviewDecision
+              reviewRequests(first: 10) {
+                nodes { requestedReviewer { ... on User { login } } } }
               labels(first: 20) { nodes { name } }
               files(first: 30) { nodes { path additions deletions } } } } } }
 """
@@ -187,15 +190,42 @@ def main() -> int:
     def level(num: int) -> str:
         return "project" if num in children else "workstream"
 
+    def reviewers(pr: dict) -> set[str]:
+        return {r["requestedReviewer"]["login"]
+                for r in pr["reviewRequests"]["nodes"]
+                if r.get("requestedReviewer", {}).get("login")}
+
     def turn(pr: dict) -> str:
-        names = [l["name"] for l in pr["labels"]["nodes"]]
-        if "provisionally-approved" in names:
-            return "approved with changes — mine to make, then merge"
-        if "approved" in names:
+        """Whose turn it is, read from GitHub rather than from a label.
+
+        **The label was a second store for what GitHub already knew.** It
+        existed because `gh` ran under the owner's token, so every pull request
+        was authored by him and GitHub refused self-approval — the native state
+        was unreachable, not unwanted. A second account (#171) made it
+        reachable, and #219 proved it: `reviewDecision: APPROVED`, on a pull
+        request authored by `SteveStyle-typed-by-Claude`.
+
+        So `approved`, `provisionally-approved` and `awaiting-review` are gone,
+        along with the comment parser that set them. What replaces
+        `awaiting-review` is a **review request**, which GitHub surfaces in the
+        reviewer's own queue — something the label never did.
+
+        `provisionally-approved` has no native equivalent and is not replaced.
+        Owner, 2026-08-23: *"in the absence of provisional approval, I can use
+        [request] changes and approve when you say they are done."* That costs
+        a lap and buys a look at the change before it merges, which `/prov` did
+        not give.
+        """
+        if pr["isDraft"]:
+            return "draft"
+        decision = pr.get("reviewDecision")
+        if decision == "APPROVED":
             return "approved — mine to merge"
-        if "awaiting-review" in names:
+        if decision == "CHANGES_REQUESTED":
+            return "changes requested — mine to make"
+        if reviewers(pr):
             return "your turn"
-        return "draft" if pr["isDraft"] else "in hand"
+        return "in hand"
 
     def mine(num: int) -> tuple[list[str], list[dict]]:
         """The actions and pull requests this run is about — the filter, in one place."""
@@ -203,11 +233,16 @@ def main() -> int:
                  if ALL or a.startswith(f"({WHO})")]
         wanted = pr_for.get(num, [])
         if not ALL:
-            mine_labels = (["awaiting-review"] if WHO == "Steve"
-                           else ["approved", "provisionally-approved"])
-            wanted = [pr for pr in wanted
-                      if any(l["name"] in mine_labels for l in pr["labels"]["nodes"])
-                      or (WHO == "Claude" and not pr["isDraft"] and turn(pr) == "in hand")]
+            # Whose turn, from GitHub's own answer. Steve's if a review is
+            # requested from him and he has not given one; Claude's once it is
+            # approved, changes are requested, or nobody is waiting on anybody.
+            if WHO == "Steve":
+                wanted = [pr for pr in wanted if turn(pr) == "your turn"]
+            else:
+                wanted = [pr for pr in wanted
+                          if turn(pr) in ("approved — mine to merge",
+                                          "changes requested — mine to make",
+                                          "in hand")]
         return items, wanted
 
     def show_prs_and_actions(num: int, indent: str = "  ") -> None:
