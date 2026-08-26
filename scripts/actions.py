@@ -57,6 +57,7 @@ QUERY = """
 { repository(owner: "%s", name: "%s") {
     issues(states: OPEN, first: 100) {
       nodes { number title body
+              issueType { name }
               labels(first: 20) { nodes { name } }
               parent { number }
               subIssues(first: 50) { nodes { number title state } } } }
@@ -188,7 +189,25 @@ def main() -> int:
     # issue that becomes a project by acquiring sub-issues starts being drawn
     # as one on the next run (docs/3.6 §2.11).
     def level(num: int) -> str:
-        return "project" if num in children else "workstream"
+        """Requirement, Project, Workstream or Index — GitHub's own issue type.
+
+        **Read rather than derived, since 2026-08-26.** It used to be inferred
+        from the sub-issue graph: *a parent that is itself somebody's sub-issue
+        is a project; a parent with nobody above it is a workstream*. That was
+        true and it failed for a workstream created before its first project —
+        #204 registered as an untriaged requirement on the day it was made.
+
+        An issue type says what a thing **is**, rather than leaving it to be
+        worked out from what happens to point at it.
+
+        **No fallback to the old inference.** An issue with no type reads as
+        plain `issue`, which looks wrong in the output and is meant to — every
+        one of the 194 was backfilled, so a blank means somebody raised one
+        without choosing. Guessing would hide that, and guessing *by the old
+        rule* would reproduce the bug it replaced.
+        """
+        return ((issues.get(num, {}).get("issueType") or {}).get("name")
+                or "issue").lower()
 
     def reviewers(pr: dict) -> set[str]:
         return {r["requestedReviewer"]["login"]

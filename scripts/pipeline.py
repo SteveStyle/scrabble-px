@@ -36,22 +36,68 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Kept only to read the handful of closed issues predating the move to issue
+# fields on 2026-08-26. Everything open carries the field.
 TYPES = {"bug", "minor-function", "major-function", "appearance",
          "documentation", "non-prod-tooling", "prod-tooling"}
+
+
+def field(n: dict, name: str) -> str:
+    """One issue field's value, or an em dash.
+
+    **Single-select only.** `SINGLE_SELECT` is GitHub's own name for the data
+    type — `Type of change`, `Effort` and `Priority` all have it, and the API
+    returns their values as `IssueFieldSingleSelectValue`. The other data types
+    an issue field can have are `TEXT`, `NUMBER`, `DATE` and `MULTI_SELECT`,
+    each with its own value type; `Start date` and `Target date` are `DATE`.
+    This reads none of them, and would need a branch per type to.
+
+    **Issue fields replaced labels on 2026-08-26** — organisation-level, one
+    value enforced, settable when the issue is raised, and visible on the issue
+    itself rather than only inside a board. Labels could not do the first three:
+    a label per value, nothing stopping two, and the requirement form could only
+    put the answer in the body for somebody to apply by hand afterwards.
+
+    `status.sh` used to match these as substrings and carried a comment saying
+    `non-prod-tooling` had to be tested before `prod-tooling`, because one
+    contains the other. An exact value removes the hazard rather than ordering
+    around it.
+    """
+    for v in n.get("issueFieldValues", {}).get("nodes", []):
+        if v and v.get("field", {}).get("name") == name:
+            return v.get("value") or "—"
+    return "—"
+
+
+def level(n: dict) -> str:
+    """The issue type — Requirement, Project, Workstream or Index.
+
+    Read from GitHub's own issue type rather than from a label. The four are
+    the levels docs/3.6 1 defines, minus the ones that are not issues.
+    """
+    t = n.get("issueType")
+    return (t or {}).get("name") or "Requirement"
 
 QUERY = """
 { repository(owner: "%s", name: "%s") {
     open: issues(states: OPEN, first: 100) {
       nodes { number title url state
               milestone { title }
+              issueType { name }
+              issueFieldValues(first: 10) {
+                nodes { ... on IssueFieldSingleSelectValue {
+                          value field { ... on IssueFieldCommon { name } } } } }
               labels(first: 20) { nodes { name } }
               parent { number }
               subIssues(first: 50) { nodes { number title url state
                                              labels(first: 20) { nodes { name } } } } } }
-    closed: issues(states: CLOSED, first: 100, labels: ["project"]) {
-      nodes { number title url state closedAt
-              labels(first: 20) { nodes { name } }
-              parent { number } } } } }
+    closed: issues(states: CLOSED, first: 1) { nodes { number } } } }
+"""
+
+
+CLOSED_PROJECTS = """
+{ search(query: "repo:%s/%s is:issue is:closed type:Project", type: ISSUE, first: 50) {
+    nodes { ... on Issue { number title url state closedAt parent { number } } } } }
 """
 
 
@@ -86,12 +132,21 @@ def main() -> int:
         return 1
     data = json.loads(raw)["data"]["repository"]
     opens = data["open"]["nodes"]
-    closed_projects = data["closed"]["nodes"]
+
+    # Delivered projects come from **search**, not from the issues connection.
+    # There are 190-odd closed issues and the connection returns them newest
+    # first in pages of 100, so a project closed a while ago falls off the end —
+    # which is exactly what happened on 2026-08-26, and the report showed zero
+    # delivered projects while two existed. Search filters server-side on the
+    # issue type, so the page holds only what is wanted.
+    closed_raw = gh("api", "graphql", "-f", "query=" + CLOSED_PROJECTS % (repo[0], repo[1]))
+    closed_projects = (json.loads(closed_raw)["data"]["search"]["nodes"]
+                       if closed_raw else [])
 
     by_num = {n["number"]: n for n in opens}
-    workstreams = [n for n in opens if "workstream" in labels_of(n)]
-    live_projects = [n for n in opens if "project" in labels_of(n)]
-    index = [n for n in opens if "index" in labels_of(n)]
+    workstreams = [n for n in opens if level(n) == "Workstream"]
+    live_projects = [n for n in opens if level(n) == "Project"]
+    index = [n for n in opens if level(n) == "Index"]
     structural = {n["number"] for n in workstreams + live_projects + index}
 
     def workstream_of(n: dict) -> str:
@@ -113,7 +168,7 @@ def main() -> int:
             p = by_num.get(parent["number"])
             if p is None:
                 return f"#{parent['number']}"
-            if "workstream" in labels_of(p):
+            if level(p) == "Workstream":
                 name = p["title"].removesuffix(" workstream")
                 return f"[{name}]({p['url']})"
             cur = p
@@ -129,9 +184,11 @@ def main() -> int:
         if parent and parent["number"] in project_nums:
             in_project.append(n)
             continue
-        labels = labels_of(n)
-        backlog["untriaged" if ("needs-triage" in labels or not (labels & TYPES))
-                else "triaged"].append(n)
+        # Untriaged is now: nobody has said what kind of change it is. The
+        # `needs-triage` label still counts, for an issue somebody has looked
+        # at and deliberately left in the queue.
+        untriaged = "needs-triage" in labels_of(n) or field(n, "Type of change") == "—"
+        backlog["untriaged" if untriaged else "triaged"].append(n)
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     o = [
@@ -162,7 +219,7 @@ def main() -> int:
         out = ["| # | title | type | milestone | workstream |",
                "| --- | --- | --- | --- | --- |"]
         for n in sorted(rows, key=lambda x: x["number"]):
-            types = ", ".join(sorted(labels_of(n) & TYPES)) or "—"
+            types = field(n, "Type of change")
             ms = n["milestone"]["title"] if n["milestone"] else "—"
             t = cell(n["title"])
             out.append(f"| [#{n['number']}]({n['url']}) | {t} | {types} | `{ms}` | {workstream_of(n)} |")
