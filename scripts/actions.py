@@ -199,11 +199,15 @@ def main() -> int:
 
         An issue type says what a thing **is**, rather than leaving it to be
         worked out from what happens to point at it.
+
+        **No fallback to the old inference.** An issue with no type reads as
+        plain `issue`, which looks wrong in the output and is meant to — every
+        one of the 194 was backfilled, so a blank means somebody raised one
+        without choosing. Guessing would hide that, and guessing *by the old
+        rule* would reproduce the bug it replaced.
         """
-        t = (issues.get(num, {}).get("issueType") or {}).get("name")
-        if t:
-            return t.lower()
-        return "project" if num in children else "workstream"
+        return ((issues.get(num, {}).get("issueType") or {}).get("name")
+                or "issue").lower()
 
     def reviewers(pr: dict) -> set[str]:
         return {r["requestedReviewer"]["login"]
