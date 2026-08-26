@@ -44,6 +44,55 @@ run_isolated() {
   return $status
 }
 
+# The same, but with a stubbed `gh` so the API path is actually driven.
+#
+# **Every case above runs with no `gh` at all**, which means the query that
+# decides whether a milestone carries functional change had never been
+# exercised by a test — it was rewritten from REST to GraphQL on 2026-08-26,
+# when the type of change moved from a label to an issue field, and the suite
+# stayed green throughout because it could not see the path.
+#
+#   $1 version   $2 previous   $3 what `gh api graphql` should print
+run_with_gh() {
+  local version="$1" previous="$2" answer="$3"
+  local dir bin
+  dir="$(mktemp -d)"; bin="$dir/bin"; mkdir -p "$bin"
+  for tool in env bash cat git sed sort tail jq; do
+    ln -s "$(command -v "$tool")" "$bin/$tool" 2>/dev/null || true
+  done
+  printf '%s' "$answer" > "$dir/answer.json"
+  # **The stub runs the real `--jq` filter.** Returning pre-filtered output
+  # would exercise the script's branching and not its query — and the query is
+  # what changed. A filter selecting nothing looks exactly like a milestone
+  # with nothing functional in it, which is the failure this has to be able to
+  # see. It could not: `any(. == "a", "b")` is jq's one-argument form with a
+  # generator whose second value is a truthy string, so it matched everything.
+  cat > "$bin/gh" <<'STUB'
+#!/usr/bin/env bash
+filter=""; prev=""
+for a in "$@"; do
+  [[ "$prev" == "--jq" ]] && filter="$a"
+  prev="$a"
+done
+case "$*" in
+  *"repo view"*) printf '%s\n' "delphside/tile-lite-elite" ;;
+  *graphql*)
+    if [[ -n "$filter" ]]; then jq -r "$filter" < "$ANSWER_FILE"
+    else cat "$ANSWER_FILE"; fi ;;
+  *) : ;;
+esac
+STUB
+  chmod +x "$bin/gh"
+  (
+    cd "$dir"
+    PATH="$bin" git init -q .
+    ANSWER_FILE="$dir/answer.json" PATH="$bin" "$CHECK" "$version" "$previous" 2>&1
+  )
+  local status=$?
+  rm -rf "$dir"
+  return $status
+}
+
 check_exit() {
   local name="$1" want="$2"
   shift 2
@@ -102,6 +151,35 @@ check_exit "a non-version is a usage error" 2 "$CHECK" "banana"
 check_exit "a two-part version is a usage error" 2 "$CHECK" "0.4"
 
 echo
+# --- the API path, which nothing exercised until 2026-08-26 -------------------
+#
+# A patch release whose milestone carries a `minor-function` issue must be
+# refused. This is the whole point of the check, and it was the one behaviour no
+# test drove.
+
+FUNCTIONAL_ANSWER='{"data":{"search":{"nodes":[
+  {"number":123,"title":"a change a user could notice",
+   "issueFieldValues":{"nodes":[
+     {"value":"minor-function","field":{"name":"Type of change"}}]}}]}}}'
+
+EMPTY_ANSWER='{"data":{"search":{"nodes":[]}}}'
+
+TOOLING_ANSWER='{"data":{"search":{"nodes":[
+  {"number":124,"title":"a script change",
+   "issueFieldValues":{"nodes":[
+     {"value":"prod-tooling","field":{"name":"Type of change"}}]}}]}}}'
+
+check_exit "a patch carrying functional change is refused" 1 \
+  run_with_gh "0.4.26" "0.4.25" "$FUNCTIONAL_ANSWER"
+check_says "and names the issue" "#123" \
+  run_with_gh "0.4.26" "0.4.25" "$FUNCTIONAL_ANSWER"
+check_exit "a patch carrying nothing functional passes" 0 \
+  run_with_gh "0.4.26" "0.4.25" "$EMPTY_ANSWER"
+check_exit "a patch carrying only tooling passes" 0 \
+  run_with_gh "0.4.26" "0.4.25" "$TOOLING_ANSWER"
+check_says "and says a patch is right" "a patch release is right" \
+  run_with_gh "0.4.26" "0.4.25" "$TOOLING_ANSWER"
+
 if (( failures > 0 )); then
   echo "$failures test(s) failed" >&2
   exit 1
