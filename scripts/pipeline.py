@@ -36,12 +36,6 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Kept only to read the handful of closed issues predating the move to issue
-# fields on 2026-08-26. Everything open carries the field.
-TYPES = {"bug", "minor-function", "major-function", "appearance",
-         "documentation", "non-prod-tooling", "prod-tooling"}
-
-
 def field(n: dict, name: str) -> str:
     """One issue field's value, or an em dash.
 
