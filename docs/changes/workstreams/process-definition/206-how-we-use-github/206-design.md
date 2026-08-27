@@ -335,7 +335,7 @@ Choosing the account structure does not choose the rest:
 | **2.4** | whether native review fully replaces the parser, and what happens to `/prov` |
 | **2.5** | where release notes live |
 | **2.6** | **what applies an answer once decided** — still the choice with no good option, and an organisation does not solve it |
-| — | what happens to `pipeline.py`, and whether issue fields replace any existing label |
+| — | ~~what happens to `pipeline.py`~~ — decided 2026-08-27: deleted, Delivery 5 |
 
 **And one thing the decision does not license**: moving `release` off the
 milestone. `deploy.sh` reads it.
@@ -666,6 +666,53 @@ applied without needing a delivery at all. Revised 2026-08-26.
 **None of it is forced.** If the organisation turns out to be uncomfortable,
 Deliveries 1 to 3 stand and nothing further is committed to.
 
+### Delivery 5 — the board replaces the report — **2026-08-27**
+
+**`pipeline.py` is decommissioned.** Owner, 2026-08-27, after a day of trialling
+the board: *"agreed, we have answered the question — we will use GH project views
+and decommission `pipeline.py`."*
+
+The trial board is org-owned, linked to the repository, and carries four views
+that between them do what `pipeline.md` did:
+
+| view | filter |
+| --- | --- |
+| **Needs triage** | `is:open type:Requirement no:type-of-change` |
+| **Backlog** | `is:open type:Requirement`, grouped by parent |
+| **Projects** | `is:open type:Project` — board layout, `Column by: Phase`, swimlanes by parent |
+| **Delivered** | `is:closed type:Project` |
+
+**What decided it was not feature count.** The report derives, so it cannot
+drift, and that was its whole claim. The board turned out to derive too — every
+column reads an issue field or an issue type through
+`ProjectV2ItemIssueFieldValue`, so it is a view rather than a second store. Once
+that was measured, the report's advantage was gone and the board's remained: you
+can triage from it, and a row clicks through to the issue it describes.
+
+**The views are pre-approved work with no record.** Owner, same message: *"we can
+continue to tweak the project views as pre-approved work which doesn't need any
+record."* A view is a saved filter over data that lives elsewhere; getting one
+wrong loses nothing and is visible immediately. This is the clearest case yet of
+[3.6](../../../../3.6-change-lifecycle.md) §2.2's *blast radius, not size*.
+
+**The licence stops at the view.** Owner, same day: *"anything recorded against
+issues which is used by the tooling needs to be documented and can't be changed
+without a record."* A field, an option value, an issue type, a label or a
+milestone lane is read by scripts that match it literally —
+[4.8](../../../../4.8-artefacts.md) now lists which, and what each one breaks.
+
+**One trap found and worth keeping.** An invalid view filter renders an **empty
+view**, not an error — so a broken *Needs triage* filter is indistinguishable
+from a clean backlog. The filter was proved by clearing one issue's
+`Type of change`, watching it appear, and restoring it. Any view whose job is to
+show a problem should be proved the same way.
+
+**And issue fields are not searchable.** `type:Requirement` works in GitHub's
+issue search; `Type of change` does not, in any syntax tried — one form returns
+plausible-looking results that are simply wrong. Fields are readable through
+GraphQL and project views only, which is why the board is now the only place
+some questions can be asked.
+
 ## Part 5 — Impacted artefacts
 
 *Provisional until the design is agreed.*
@@ -674,7 +721,7 @@ Deliveries 1 to 3 stand and nothing further is committed to.
 | --- | --- | --- |
 | `.github/workflows/docs.yml` — the `commands` job | modified, or **deleted** | repository |
 | `scripts/actions.py` — reads the `approved` label | modified | repository |
-| `scripts/pipeline.py` | modified, or deleted | repository |
+| `scripts/pipeline.py` | **deleted** — Delivery 5 | repository |
 | `docs/3.6` §2.18 and §3.8 | modified | repository |
 | `docs/4.8-artefacts.md` | modified — a configured Project, an organisation and a second account are all artefacts under change control | repository |
 | `docs/4.9-delivery-log.md` | modified, if 2.5C | repository |
