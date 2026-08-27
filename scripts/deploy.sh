@@ -871,6 +871,46 @@ if (( IS_RELEASE )); then
     -m "Deployed to production $(date -u +%Y-%m-%dT%H:%MZ) from $TARGET_SHA"
   git -C "$REPO_DIR" push --quiet origin "$DEPLOY_TAG"
   echo "==> Tagged $DEPLOY_TAG"
+
+  # The GitHub Release hangs off the tag just pushed: the public, per-tag
+  # changelog, written by GitHub from the pull requests merged since the
+  # previous release. `docs/4.9` stays the delivery log and is not replaced —
+  # it holds the deliveries that ship no code, which have no tag for a release
+  # to hang on. Different questions: "what shipped to players in 0.7.1" and
+  # "what did we put in front of anyone, and when".
+  #
+  # Only for a first-time tag. A redeploy carries a timestamp suffix, and a
+  # second release for the same version would claim a changelog that already
+  # exists.
+  if [[ "$DEPLOY_TAG" == "prod-$DEPLOYED_VERSION" ]]; then
+    # `|| true` on the whole pipeline: with no previous tag, `grep` matches
+    # nothing and exits 1, which under `set -o pipefail` would abort a deploy
+    # that has already succeeded. That failure has happened twice here.
+    # `grep -E` rather than the glob: a redeploy tag carries a timestamp
+    # suffix (`prod-0.7.0-20260101T000000Z`) which the glob matches and which
+    # would then compete to be the predecessor.
+    PREVIOUS_TAG="$(git -C "$REPO_DIR" tag --list 'prod-*' 2>/dev/null \
+      | grep -E '^prod-[0-9]+\.[0-9]+\.[0-9]+$' \
+      | grep -vxF "$DEPLOY_TAG" \
+      | sed 's/^prod-//' \
+      | sort -t. -k1,1n -k2,2n -k3,3n \
+      | tail -1 || true)"
+
+    RELEASE_ARGS=(--generate-notes --verify-tag --title "$DEPLOYED_VERSION")
+    # Without a start tag GitHub walks back to the first commit, so the first
+    # release ever created would carry the entire history as its changelog.
+    [[ -n "$PREVIOUS_TAG" ]] && RELEASE_ARGS+=(--notes-start-tag "prod-$PREVIOUS_TAG")
+
+    # Never fatal. Production is already serving the new version; a changelog
+    # that failed to post is something to run again by hand, not a reason to
+    # make a green deploy look red.
+    if gh release create "$DEPLOY_TAG" "${RELEASE_ARGS[@]}" > /dev/null 2>&1; then
+      echo "==> Published release $DEPLOYED_VERSION${PREVIOUS_TAG:+ (notes since $PREVIOUS_TAG)}"
+    else
+      echo "    warning: could not publish the GitHub release for $DEPLOY_TAG" >&2
+      echo "    run: gh release create $DEPLOY_TAG --generate-notes --title $DEPLOYED_VERSION" >&2
+    fi
+  fi
 fi
 
 # The working tree moves one patch ahead of what was just shipped, so no

@@ -333,7 +333,7 @@ Choosing the account structure does not choose the rest:
 | | |
 | --- | --- |
 | **2.4** | whether native review fully replaces the parser, and what happens to `/prov` |
-| **2.5** | where release notes live |
+| **2.5** | ~~where release notes live~~ — decided 2026-08-27: **both**, and they answer different questions. `deploy.sh` publishes a GitHub Release per `prod-` tag with generated notes; `docs/4.9` stays the delivery log, because a delivery that ships no code has no tag |
 | **2.6** | **what applies an answer once decided** — still the choice with no good option, and an organisation does not solve it |
 | — | ~~what happens to `pipeline.py`~~ — decided 2026-08-27: deleted, Delivery 5 |
 
