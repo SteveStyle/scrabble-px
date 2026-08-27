@@ -653,11 +653,12 @@ applied without needing a delivery at all. Revised 2026-08-26.
 | 2.4 — native review replaces the parser | **done** | Delivery 2, and the parser deleted in #220 |
 | 2.6 — what applies an answer once decided | **answered** as D36, applied in `docs/3.6` §2.18 | no delivery needed |
 
-**What remains:**
+| deleting the ten labels | **done** | 2026-08-26, once #221 and #222 landed |
+
+**What remains — three things:**
 
 | | |
 | --- | --- |
-| **delete the seven type labels**, and `index` / `workstream` / `project` | nothing reads them once Delivery 3 lands. A tidy-up, not a decision |
 | **2.5 — where release notes live** | `docs/4.9` alone, or a GitHub Release generated from it. Untouched, and the only original question still open |
 | **the requirement form** | it still asks type and release as **body text**, which the issue field now supersedes. That is D32's gap closing itself, and it changes `.github/ISSUE_TEMPLATE/requirement.yml` |
 | **whether `pipeline.py` survives** | issue types are searchable natively — `type:Requirement` in the issues list — so some of what the report does is now available without it. Worth deciding by using both rather than by arguing |
