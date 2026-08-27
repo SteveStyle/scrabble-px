@@ -640,31 +640,51 @@ existed.
 already held the answers, so search and the report agree about history as well
 as the present.
 
-### Delivery 4 onwards — what is left
+### Delivery 4 — the forms, and the field set — **2026-08-27**
 
-**Most of what this section used to list has been done.** It named issue fields
-for size, native review replacing the parser, release notes and 2.6 — three of
-the four landed in Deliveries 2 and 3, and 2.6 was answered as **D36** and
-applied without needing a delivery at all. Revised 2026-08-26.
+**What this section used to be.** It was called *Delivery 4 onwards — what is
+left*, and it listed three remaining things: 2.5, the requirement form, and
+`pipeline.py`. All three are now decided, so it is a delivery rather than a
+backlog. The earlier scorecard, kept because it says what landed where:
 
 | | | |
 | --- | --- | --- |
 | 2.1 — where attributes are stored | **done** | Delivery 3 |
 | 2.4 — native review replaces the parser | **done** | Delivery 2, and the parser deleted in #220 |
 | 2.6 — what applies an answer once decided | **answered** as D36, applied in `docs/3.6` §2.18 | no delivery needed |
-
 | deleting the ten labels | **done** | 2026-08-26, once #221 and #222 landed |
 
-**What remains — three things:**
+**The forms now set the issue type**, and the requirement form's `type` and
+`release` dropdowns are gone. They collected answers into the issue **body**,
+for somebody to apply as a label afterwards — D32's gap, and what #215 records
+the cost of. The sidebar fields are set at creation and *are* the stored value,
+so the dropdowns were collecting the same answers a second time into a place
+nothing reads.
 
-| | |
+**And the whole field set was reviewed.** Measured first: on the 53 open issues
+the issue type and parent were on all of them, `Type of change` on 44, and
+`Priority`, `Effort`, `Start date` and `Target date` on none — all four created
+within one second of the organisation, so GitHub's built-in starter set rather
+than ours.
+
+| | decision |
 | --- | --- |
-| **2.5 — where release notes live** | `docs/4.9` alone, or a GitHub Release generated from it. Untouched, and the only original question still open |
-| **the requirement form** | it still asks type and release as **body text**, which the issue field now supersedes. That is D32's gap closing itself, and it changes `.github/ISSUE_TEMPLATE/requirement.yml` |
-| **whether `pipeline.py` survives** | issue types are searchable natively — `type:Requirement` in the issues list — so some of what the report does is now available without it. Worth deciding by using both rather than by arguing |
+| **Phase** | a new issue field replaces the five `phase:` labels, and draws the projects board |
+| **Effort** | the home for *how big, roughly*, with its native `high · medium · low`; **unset** means triage could not say |
+| **workstream row** | leaves the triage table — the parent link is the home, and it draws the swimlanes |
+| **Priority, Start date, Target date** | kept. Empty is not an argument against a field created two days earlier |
+| **Release** | **no field, deliberately** — we will see whether we miss it |
+| **labels** | `good first issue`, `help wanted` and `question` go with the five. Two remain: `needs-triage` and `folded` |
 
-**None of it is forced.** If the organisation turns out to be uncomfortable,
-Deliveries 1 to 3 stand and nothing further is committed to.
+**A field cannot be restricted to an issue type**, but it can be **pinned** to
+one — and an unpinned field is invisible on the issue, reachable only through
+*Add field*. That is why `Effort` sat empty on 53 issues: nobody was ever asked
+for it. `Type of change` and `Effort` are pinned to Requirement and Project,
+`Phase` and `Priority` to Project alone, and the two dates to nothing, which is
+how *kept but out of the way* is expressed.
+
+**2.5 was answered on the same day** — see Delivery 6. Nothing from the original
+six questions is now open.
 
 ### Delivery 5 — the board replaces the report — **2026-08-27**
 
@@ -712,6 +732,36 @@ issue search; `Type of change` does not, in any syntax tried — one form return
 plausible-looking results that are simply wrong. Fields are readable through
 GraphQL and project views only, which is why the board is now the only place
 some questions can be asked.
+
+### Delivery 6 — release notes have a home — **2026-08-27**
+
+**2.5, the last of the six original questions: both, because they answer
+different questions.** Owner, 2026-08-27: *"add `gh release create` to
+`deploy.sh` and continue to maintain 4.9 as now."*
+
+A **GitHub Release** hangs off a git tag and says *what shipped to players in
+this version*. It is published by `deploy.sh` on the `prod-X.Y.Z` tag it already
+pushes, with `--generate-notes`, so GitHub writes the changelog from the pull
+requests merged since the previous release and nobody types it — a changelog
+somebody has to remember to write is one that stops being written.
+
+**`docs/4.9` stays the delivery log**, and is not replaceable by it: five of the
+last six deliveries — `0.7.0a` to `0.7.0e` — shipped no code, so they have no tag
+a release could hang on. The log answers *what did we put in front of anyone, and
+when*.
+
+| decision | why |
+| --- | --- |
+| `--notes-start-tag` when a predecessor exists | otherwise GitHub walks back to the first commit and the first release carries the whole history |
+| the predecessor matched by **regex**, not the glob | a redeploy tag carries a timestamp suffix and would otherwise compete |
+| **never fatal** | production is already serving by then; a failed changelog prints the command and the deploy exits 0 |
+| **first-time tags only** | a redeploy would claim a changelog that already exists |
+
+**It also answers #38** — *a download site for desktop builds, or a decision that
+there isn't one* — because a Release takes file attachments, which is a download
+site with no hosting to run.
+
+The full account is in [3.3](../../../../3.3-testing-ci-and-release.md) §3.3.1.
 
 ## Part 5 — Impacted artefacts
 
