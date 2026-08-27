@@ -58,7 +58,9 @@ QUERY = """
     issues(states: OPEN, first: 100) {
       nodes { number title body
               issueType { name }
-              labels(first: 20) { nodes { name } }
+              issueFieldValues(first: 10) { nodes {
+                ... on IssueFieldSingleSelectValue {
+                  field { ... on IssueFieldSingleSelect { name } } value } } }
               parent { number }
               subIssues(first: 50) { nodes { number title state } } } }
     pullRequests(states: OPEN, first: 50) {
@@ -66,9 +68,20 @@ QUERY = """
               reviewDecision
               reviewRequests(first: 10) {
                 nodes { requestedReviewer { ... on User { login } } } }
-              labels(first: 20) { nodes { name } }
               files(first: 30) { nodes { path additions deletions } } } } } }
 """
+
+
+def field(node: dict, name: str) -> str:
+    """One issue field's value on an issue, or "" when it is unset.
+
+    **Single-select only.** `SINGLE_SELECT` is GitHub's own name for the data
+    type, and the value comes back as a plain string.
+    """
+    for v in node.get("issueFieldValues", {}).get("nodes", []):
+        if (v.get("field") or {}).get("name") == name:
+            return v.get("value") or ""
+    return ""
 
 
 def branches() -> set[int]:
@@ -163,20 +176,25 @@ def main() -> int:
     def status(num: int, state: str) -> tuple[str, str]:
         """Where a project is: its phase if it has one, else derived progress.
 
-        A **phase** is hand-set with a `phase:` label, because the interesting
-        boundaries are judgements — "user testing is finished" is not visible to
-        a script. It is a rare, deliberate act, which is when hand-set state is
-        honest. Owner, 2026-08-19: *"the point is to identify a project phase as
-        much as to identify decision gates."*
+        A **phase** is hand-set in the `Phase` issue field, because the
+        interesting boundaries are judgements — "user testing is finished" is
+        not visible to a script. It is a rare, deliberate act, which is when
+        hand-set state is honest. Owner, 2026-08-19: *"the point is to identify
+        a project phase as much as to identify decision gates."*
+
+        **It was a `phase:` label until 2026-08-27.** The field carries the same
+        five values from a fixed list, and is what the projects board columns
+        read.
 
         Everything without a phase falls back to the three derived states, so an
-        issue that is not a project still says whether anybody has started.
+        issue that is not a project still says whether anybody has started — and
+        so does a project nobody has picked up, which is what an unset field
+        means.
         """
         if state != "OPEN":
             return "completed", DIM
-        for label in [l["name"] for l in issues.get(num, {}).get("labels", {}).get("nodes", [])]:
-            if label.startswith("phase:"):
-                return label.split(":", 1)[1].replace("-", " "), ""
+        if phase := field(issues.get(num, {}), "Phase"):
+            return phase.lower(), ""
         if num in pr_for or num in started:
             return "in progress", ""
         return "not started", DIM

@@ -1,7 +1,6 @@
 name: Project
 description: A bounded piece of work that owns requirements, a design, and one or more deliveries
 type: Project
-labels: ["phase:scope-and-design"]
 body:
   - type: markdown
     attributes:
