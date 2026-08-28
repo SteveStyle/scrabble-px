@@ -52,12 +52,13 @@ if MODE not in ("", "--claude", "--all"):
     print("usage: actions.py [--claude|--all]", file=sys.stderr)
     sys.exit(2)
 WHO = "Claude" if MODE == "--claude" else "" if MODE == "--all" else "Steve"
+NO_WORKSTREAM = "no workstream — needs triage"
 ALL = MODE == "--all"
 
 QUERY = """
 { repository(owner: "%s", name: "%s") {
     issues(states: OPEN, first: 100) {
-      nodes { number title body
+      nodes { number title body state
               issueType { name }
               issueFieldValues(first: 10) { nodes {
                 ... on IssueFieldSingleSelectValue {
@@ -83,6 +84,28 @@ def field(node: dict, name: str) -> str:
         if (v.get("field") or {}).get("name") == name:
             return v.get("value") or ""
     return ""
+
+
+def workstream_order(owner: str) -> list[str]:
+    """The `Workstream` field's values, in the order the field defines them.
+
+    Alphabetical would be an accident: the order is deliberate — the centre
+    first, then the subsystems carved out of it, then the workstreams that
+    support the work rather than doing it. Reading it costs one query and keeps
+    this file from holding a second copy of the list.
+    """
+    raw = gh("api", "graphql", "-f", "query=" + """
+      { organization(login: "%s") { issueFields(first: 20) { nodes {
+          ... on IssueFieldSingleSelect { name options { name } } } } } }
+      """ % owner)
+    try:
+        nodes = json.loads(raw)["data"]["organization"]["issueFields"]["nodes"]
+    except Exception:
+        return []
+    for f in nodes:
+        if f.get("name") == "Workstream":
+            return [o["name"] for o in f.get("options", [])]
+    return []
 
 
 def branches() -> set[int]:
@@ -157,6 +180,7 @@ def main() -> int:
     if len(repo) != 2:
         print("actions.py: could not identify the repository", file=sys.stderr)
         return 1
+    repo_owner = repo[0]
     raw = gh("api", "graphql", "-f", "query=" + QUERY % (repo[0], repo[1]))
     if not raw:
         print("actions.py: no answer from GitHub", file=sys.stderr)
@@ -200,13 +224,19 @@ def main() -> int:
             return "in progress", ""
         return "not started", DIM
 
-    parents = [i for i in issues.values() if i["subIssues"]["nodes"]]
+    # **A workstream is a field, not a parent** — since #232. It used to be an
+    # issue that other issues were sub-issues of, which made the workstream list
+    # a set of container issues existing only to be parents. What survives is
+    # the *parent link*, which now means one thing: this requirement belongs to
+    # that project.
+    # Only a **project's** sub-issues are "drawn under their parent". The
+    # workstream issues still exist until #232's step 5 and still have
+    # sub-issues, and counting those would hide every issue in the listing —
+    # which is exactly what happened the first time this was run.
+    parents = [i for i in issues.values()
+               if i["subIssues"]["nodes"]
+               and (i.get("issueType") or {}).get("name") not in ("Workstream", "Index")]
     children = {c["number"] for p in parents for c in p["subIssues"]["nodes"]}
-    # A parent that is itself somebody's sub-issue is a **project**; a parent
-    # with nobody above it is a **workstream**. The levels are read off the
-    # graph rather than declared, so nothing has to be kept in step — and an
-    # issue that becomes a project by acquiring sub-issues starts being drawn
-    # as one on the next run (docs/3.6 §2.11).
     def level(num: int) -> str:
         """Requirement, Project, Workstream or Index — GitHub's own issue type.
 
@@ -337,48 +367,49 @@ def main() -> int:
     whose = "everything" if ALL else f"waiting on {WHO}"
     print(f"{BOLD}ACTIONS{OFF}  {DIM}{whose} — open it in GitHub to act on it{OFF}")
 
+    # Grouped by the **Workstream field**, in the order the field defines. An
+    # issue with no workstream is the triage queue, and is drawn last under its
+    # own heading rather than being left out — an untriaged issue that nothing
+    # shows is the failure this whole listing exists to prevent.
+    order = workstream_order(repo_owner)
+    grouped: dict[str, list[dict]] = {}
+    for i in issues.values():
+        if (i.get("issueType") or {}).get("name") in ("Workstream", "Index"):
+            continue  # a container, until #232's step 5 removes them
+        if i["number"] in children:
+            continue  # drawn under its project, below
+        grouped.setdefault(field(i, "Workstream") or NO_WORKSTREAM, []).append(i)
+
     shown = False
-    for p in sorted(parents, key=lambda i: i["number"]):
-        if p["number"] in children:
-            continue  # drawn under its own workstream, below
-        kids = [c for c in p["subIssues"]["nodes"]
-                if has_something(c["number"], c["state"])
-                or any(has_something(g["number"], g["state"])
-                       for g in issues.get(c["number"], {}).get("subIssues", {}).get("nodes", []))]
-        parent_items, parent_prs = mine(p["number"])
-        if not (kids or parent_items or parent_prs):
+    for ws in [w for w in order if w in grouped] + \
+              [w for w in sorted(grouped) if w not in order]:
+        members = sorted(grouped[ws], key=lambda i: i["number"])
+        drawn = [i for i in members
+                 if ALL or has_something(i["number"], i["state"])
+                 or any(has_something(g["number"], g["state"])
+                        for g in i["subIssues"]["nodes"])]
+        if not drawn:
             continue
         shown = True
-        print(f"\n{BOLD}{level(p['number'])} #{p['number']}  {p['title']}{OFF}")
-        # The parent has its own pull requests and its own actions: a change to
-        # the workstream's design lands against the parent, not against a chunk.
-        show_prs_and_actions(p["number"], indent="")
-        for c in (p["subIssues"]["nodes"] if ALL else kids):
-            # A sub-issue that has sub-issues of its own is a project under this
-            # workstream, so it gets its heading and its children are indented
-            # beneath it — three levels, which is what the model has.
-            grand = issues.get(c["number"], {}).get("subIssues", {}).get("nodes", [])
+        print(f"\n{BOLD}{ws}{OFF}")
+        for c in drawn:
+            # A project with sub-issues gets a heading and its requirements are
+            # indented beneath it. That is the parent link's only remaining
+            # meaning since #232: this requirement belongs to that project.
+            grand = c["subIssues"]["nodes"]
             if grand:
                 print(f"  {BOLD}{kind_of(c)} #{c['number']}  {c['title']}{OFF}")
                 show_prs_and_actions(c["number"], indent="  ")
                 for g in grand:
                     if ALL or has_something(g["number"], g["state"]):
-                        show_issue(g["number"], g["title"], g["state"], indent="    ")
+                        # Its type too: a requirement folded into a project is
+                        # still a requirement, and `issue` says less than it did
+                        # before the levels existed.
+                        show_issue(g["number"], g["title"], g["state"],
+                                   indent="    ", kind=kind_of(g))
             else:
-                # The issue type, not a guess from position. This said `project`
-                # unconditionally, from when a workstream's direct children were
-                # all projects — which stopped being true once triage began
-                # parenting requirements to workstreams. #160 and #215 are
-                # requirements, and were being drawn as projects.
                 show_issue(c["number"], c["title"], c["state"], kind=kind_of(c))
-
-    loose = [i for i in issues.values()
-             if i["number"] not in children and not i["subIssues"]["nodes"]
-             and has_something(i["number"], "OPEN")]
-    if loose:
-        print(f"\n{BOLD}on their own{OFF}")
-        for i in sorted(loose, key=lambda i: i["number"]):
-            show_issue(i["number"], i["title"])
+    loose = []
 
     if not (shown or loose or homeless):
         print(f"\n  {DIM}nothing waiting{OFF}")

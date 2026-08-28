@@ -22,22 +22,23 @@ BIN="$DIR/bin"; mkdir -p "$BIN"
 cat > "$DIR/response.json" <<'JSON'
 {"data":{"repository":{
   "issues":{"nodes":[
-    {"number":100,"title":"A workstream","body":"","issueType":{"name":"Workstream"},
-     "issueFieldValues":{"nodes":[]},"parent":null,
-     "subIssues":{"nodes":[{"number":101,"title":"A project mid-flight","state":"OPEN","issueType":{"name":"Project"}},
-                           {"number":102,"title":"A project nobody started","state":"OPEN","issueType":{"name":"Project"}},
-                           {"number":103,"title":"A requirement awaiting a project","state":"OPEN","issueType":{"name":"Requirement"}},
-                           {"number":104,"title":"A project already delivered","state":"CLOSED","issueType":{"name":"Project"}}]}},
-    {"number":101,"title":"A project mid-flight","body":"","issueType":{"name":"Project"},
+    {"number":101,"title":"A project mid-flight","body":"","state":"OPEN","issueType":{"name":"Project"},
+     "issueFieldValues":{"nodes":[
+        {"field":{"name":"Workstream"},"value":"Delivery Tooling"},
+        {"field":{"name":"Type of change"},"value":"minor-function"}]},
+     "parent":null,
+     "subIssues":{"nodes":[{"number":104,"title":"A folded requirement","state":"CLOSED","issueType":{"name":"Requirement"}}]}},
+    {"number":102,"title":"A project nobody started","body":"","state":"OPEN","issueType":{"name":"Project"},
      "issueFieldValues":{"nodes":[
         {"field":{"name":"Phase"},"value":"User testing"},
-        {"field":{"name":"Type of change"},"value":"minor-function"}]},
-     "parent":{"number":100},"subIssues":{"nodes":[]}},
-    {"number":102,"title":"A project nobody started","body":"","issueType":{"name":"Project"},
-     "issueFieldValues":{"nodes":[{"field":{"name":"Type of change"},"value":"bug"}]},
-     "parent":{"number":100},"subIssues":{"nodes":[]}},
-    {"number":103,"title":"A requirement awaiting a project","body":"","issueType":{"name":"Requirement"},
-     "issueFieldValues":{"nodes":[]},"parent":{"number":100},"subIssues":{"nodes":[]}}
+        {"field":{"name":"Workstream"},"value":"Delivery Tooling"},
+        {"field":{"name":"Type of change"},"value":"bug"}]},
+     "parent":null,"subIssues":{"nodes":[]}},
+    {"number":103,"title":"A requirement awaiting a project","body":"","state":"OPEN","issueType":{"name":"Requirement"},
+     "issueFieldValues":{"nodes":[{"field":{"name":"Workstream"},"value":"Client UI"}]},
+     "parent":null,"subIssues":{"nodes":[]}},
+    {"number":105,"title":"A requirement nobody has triaged","body":"","state":"OPEN","issueType":{"name":"Requirement"},
+     "issueFieldValues":{"nodes":[]},"parent":null,"subIssues":{"nodes":[]}}
   ]},
   "pullRequests":{"nodes":[]}}}}
 JSON
@@ -47,14 +48,24 @@ JSON
 # both with the same thing fails with "could not identify the repository".
 cat > "$BIN/gh" <<'STUB'
 #!/usr/bin/env bash
-case "$1" in
-  repo) echo "delphside tile-lite-elite" ;;
-  api)  cat "$RESPONSE" ;;
-  *)    exit 1 ;;
+case "$*" in
+  repo\ *)          echo "delphside tile-lite-elite" ;;
+  *issueFields*)   cat "$ORDER" ;;
+  api\ *)           cat "$RESPONSE" ;;
+  *)               exit 1 ;;
 esac
 STUB
 chmod +x "$BIN/gh"
 export RESPONSE="$DIR/response.json"
+
+# The field's option order, which actions.py reads so the listing is not
+# alphabetical by accident. Client UI deliberately before Delivery Tooling, so
+# the test would fail if the order were being ignored.
+cat > "$DIR/order.json" <<'ORDER'
+{"data":{"organization":{"issueFields":{"nodes":[
+  {"name":"Workstream","options":[{"name":"Client UI"},{"name":"Delivery Tooling"}]}]}}}}
+ORDER
+export ORDER="$DIR/order.json"
 
 # `git branch` is the other thing actions.py runs; an empty answer means no
 # issue has a branch, so "in progress" can only come from a phase.
@@ -81,11 +92,21 @@ check "a project's phase is read from the Phase field" "user testing"
 # A workstream's direct children were labelled `project` unconditionally, from
 # when they all were. Triage parents requirements to workstreams, so the label
 # has to come from the issue type.
-check "a requirement under a workstream is not called a project" "requirement #103"
+check "a requirement is not called a project"                     "requirement #103"
 # `issues` holds open issues only, so a closed child's type must come from the
 # sub-issue node or a delivered project reads as a plain `issue`.
-check "a closed child keeps its type"                            "project #104"
+check "a folded requirement keeps its type under its project"     "requirement #104"
 check "an unset phase falls back to a derived state" "not started"
+
+# #105 has no workstream. An untriaged issue that nothing shows is the failure
+# this listing exists to prevent, so it gets its own group rather than being
+# left out.
+check "an untriaged requirement is grouped, not dropped" "no workstream — needs triage"
+
+# The stub's order puts Client UI before Delivery Tooling, which is not
+# alphabetical — so this fails if the field's declared order is ignored.
+first_ws="$(printf '%s\n' "$out" | sed -e 's/\x1b\[[0-9;]*m//g' | grep -E '^(Client UI|Delivery Tooling)$' | head -1)"
+check "the field's declared order is used, not alphabetical" "Client UI" "$first_ws"
 
 if [[ "$out" == *"phase:"* ]]; then
   echo "FAIL a phase: label leaked into the output"
