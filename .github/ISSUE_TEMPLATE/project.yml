@@ -11,8 +11,7 @@ body:
         This one is kept current; a requirement issue is never edited.
 
         **Then fold the requirement issues into it**: copy what matters here
-        first, then close each with the `folded` label, **remove `needs-triage`**
-        — folding is triage — and add a comment naming this
+        first, then close each with the `folded` label and a comment naming this
         project. Fold *before* you freeze — closing an issue whose requirement
         was never copied loses it.
 
