@@ -51,6 +51,10 @@ QUICK=0
 [[ "${1:-}" == "--quick" ]] && QUICK=1
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+
+# How many commits mention an issue. Shared with `deploy.sh`: this file carried
+# the identical defective line, untouched, because it was a copy (#194).
+source "$(dirname "${BASH_SOURCE[0]}")/issue-mentions.sh"
 cd "$HERE"
 
 declare -A RESULT DETAIL LABEL
@@ -170,18 +174,25 @@ check_milestone() {
     fail milestone "milestone $version not read — no 'gh' on PATH"; return
   fi
   if ! ms="$(gh issue list --milestone "$version" --state open \
-        --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>&1)"; then
+        --json number,title,issueType \
+        --jq '.[] | "\(.number)\t\(.issueType.name // "untyped")\t\(.title)"' 2>&1)"; then
     fail milestone "milestone $version could not be read" "$ms"; return
   fi
   if [[ -z "$ms" ]]; then
     pass milestone "milestone $version has no open issues"; return
   fi
-  while IFS=$'\t' read -r num title; do
+  while IFS=$'\t' read -r num kind title; do
     [[ -z "$num" ]] && continue
-    if git log --oneline HEAD --grep="#${num}\b" 2>/dev/null | grep -q .; then
-      lines+="#$num ${title:0:58}"$'\n'
+    # `rev-list --count`, not `git log … | grep -q .`. The pipe was the defect:
+    # `grep -q` exits on the first match, `git log` takes SIGPIPE, and under
+    # `set -o pipefail` the pipeline reports failure — so an issue that *is*
+    # mentioned reported "no commit mentions this" once the history was long
+    # enough. `deploy.sh` carried the identical line and returned 141 on #174.
+    mentions="$(commits_mentioning HEAD "$num")"
+    if (( mentions > 0 )); then
+      lines+="#$num ${kind:0:11} ${title:0:46} ($mentions commits)"$'\n'
     else
-      lines+="#$num ${title:0:58}   <-- no commit mentions this"$'\n'
+      lines+="#$num ${kind:0:11} ${title:0:46}   <-- no commit mentions this"$'\n'
       unbuilt="$unbuilt #$num"
     fi
   done <<< "$ms"

@@ -56,6 +56,14 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+# How many commits mention an issue. Shared with `verify.sh`, which carried the
+# identical defect because it carried an identical copy of the line.
+#
+# `BASH_SOURCE` rather than `$0`: when this file is *sourced* — which
+# `deploy-release.test.sh` does, to reach its functions — `$0` is still the
+# outer script, and the path would resolve into `scripts/tests/`.
+source "$(dirname "${BASH_SOURCE[0]}")/issue-mentions.sh"
+
 # The newest real release tag other than `$1`, or "" when there is none.
 #
 # `grep -E` rather than a glob, because a redeploy tag carries a timestamp
@@ -503,8 +511,13 @@ else
   # indistinguishable from "the milestone is empty", and those want opposite
   # responses.
   MILESTONE_OPEN=""
+  # The **issue type** comes back with the title, so the deploy can say what it
+  # closed rather than only that it closed something. Available since `gh` 2.94;
+  # before that it needed a GraphQL document, which is why this asked for
+  # number and title alone.
   if MILESTONE_OPEN="$(gh issue list --milestone "$DEPLOYED_VERSION" --state open \
-      --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>&1)"; then
+      --json number,title,issueType \
+      --jq '.[] | "\(.number)\t\(.issueType.name // "untyped")\t\(.title)"' 2>&1)"; then
     MILESTONE_QUERY_OK=1
   else
     MILESTONE_QUERY_OK=0
@@ -520,17 +533,38 @@ else
   else
     echo "==> Milestone $DEPLOYED_VERSION — these will be closed by this deploy:"
     UNBUILT=""
-    while IFS=$'\t' read -r NUM TITLE; do
+    NOT_PROJECT=""
+    while IFS=$'\t' read -r NUM KIND TITLE; do
       [[ -z "$NUM" ]] && continue
       # Any commit reachable from what is being shipped that names the issue.
       # `Refs #N` and `Closes #N` both count.
-      if git log --oneline "$TARGET_FULL_SHA" --grep="#${NUM}\b" 2>/dev/null | grep -q .; then
-        printf '    #%-5s %s\n' "$NUM" "${TITLE:0:66}"
+      #
+      # `rev-list --count` rather than `git log … | grep -q .`: the pipe was the
+      # defect. `grep -q` exits on the first match, `git log` takes SIGPIPE, and
+      # under `set -o pipefail` the pipeline reports failure — so an issue that
+      # *is* mentioned reported NO COMMIT MENTIONS THIS as soon as the history
+      # was long enough. Measured on #174, which fifty-eight commits mention:
+      # status 141. No pipe, no race, and a count is more use than a boolean.
+      MENTIONS="$(commits_mentioning "$TARGET_FULL_SHA" "$NUM")"
+      if (( MENTIONS > 0 )); then
+        printf '    #%-5s %-12s %s   (%s commits)\n' "$NUM" "$KIND" "${TITLE:0:52}" "$MENTIONS"
       else
-        printf '    #%-5s %s   <-- NO COMMIT MENTIONS THIS\n' "$NUM" "${TITLE:0:66}"
+        printf '    #%-5s %-12s %s   <-- NO COMMIT MENTIONS THIS\n' "$NUM" "$KIND" "${TITLE:0:52}"
         UNBUILT="$UNBUILT #$NUM"
       fi
+      # A milestone is a release, and a release is made of project deliveries —
+      # so a milestone should contain projects and nothing else (docs/3.6 §1.1).
+      # A warning rather than a refusal: the operator's intent stays
+      # authoritative, and the convention stops being one nobody checks.
+      [[ "$KIND" == "Project" ]] || NOT_PROJECT="$NOT_PROJECT #$NUM($KIND)"
     done <<< "$MILESTONE_OPEN"
+
+    if [[ -n "$NOT_PROJECT" ]]; then
+      echo
+      echo "    Not a project, and a milestone is made of project deliveries:$NOT_PROJECT" >&2
+      echo "    A requirement is closed when it folds into a project, so it" >&2
+      echo "    should not be carrying a milestone at all — docs/3.6 §1.1." >&2
+    fi
 
     if [[ -n "$UNBUILT" ]]; then
       echo
