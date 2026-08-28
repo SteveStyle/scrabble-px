@@ -216,7 +216,7 @@ comes back as a state field while the server still has `move_number`. A reader
 part-way through cannot tell what is built from what is designed, and a design
 note that cannot be trusted about the present is worse than no note.
 
-`71-one-game-model-impact.md`'s chunk list is doing that job informally today.
+`71-impact.md`'s chunk list is doing that job informally today.
 It probably deserves to be part of the scheme rather than something that
 happened to get written.
 
