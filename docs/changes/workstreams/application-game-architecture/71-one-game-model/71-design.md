@@ -1095,22 +1095,22 @@ from the in-process bot rather than sitting between the game and the engines.
 
 | Document | What changes |
 | --- | --- |
-| [4.2 Database Schema](../4.2-database-schema.md) | seat state columns; `game_invitations` reduced to the record of who was asked; `player_ratings.subject_kind` removed; `game_moves` |
-| [4.3 API Schema](../4.3-api-schema.md) | the seat and rack DTOs, `ViewerAccess`, the api major version |
-| [4.4 snapshot_json](../4.4-snapshot-json-schema.md) | the schema version field, seat shape, the event log |
-| [4.5 Data Dictionary](../4.5-data-dictionary.md) | every game field that moves between snapshot, DB and DTO |
+| [4.2 Database Schema](../../../../4.2-database-schema.md) | seat state columns; `game_invitations` reduced to the record of who was asked; `player_ratings.subject_kind` removed; `game_moves` |
+| [4.3 API Schema](../../../../4.3-api-schema.md) | the seat and rack DTOs, `ViewerAccess`, the api major version |
+| [4.4 snapshot_json](../../../../4.4-snapshot-json-schema.md) | the schema version field, seat shape, the event log |
+| [4.5 Data Dictionary](../../../../4.5-data-dictionary.md) | every game field that moves between snapshot, DB and DTO |
 
 Each carries a freshness stamp, so each needs re-verifying against the code
 rather than editing from this note — the note says what was agreed, and the
 stamp claims what was checked.
 
 Two design documents describe the current arrangement and will contradict this
-one until they are revised: [2.4 Persistence](../2.4-persistence.md) on how
+one until they are revised: [2.4 Persistence](../../../../2.4-persistence.md) on how
 game state is written, and
-[2.7 Authentication and Invitations](../2.7-authentication-and-invitations.md)
+[2.7 Authentication and Invitations](../../../../2.7-authentication-and-invitations.md)
 on invitations as their own lifecycle.
 
-And [1.0 Rules](../1.0-rules.md) gains what this settles:
+And [1.0 Rules](../../../../1.0-rules.md) gains what this settles:
 
 - user details — name, email, rating — are always a lookup, never copied into
   game data, and changing them bumps and republishes every game that player is
