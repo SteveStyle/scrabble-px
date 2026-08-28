@@ -467,8 +467,11 @@ echo "==> Open changes"
 printf "    %-4s %-${TITLE_WIDTH}s %-16s %s\n" "#" "TITLE" "TYPE" "STATE"
 printf '    '; printf '%*s' $((TITLE_WIDTH + 44)) '' | tr ' ' '-'; echo
 
-# `gh issue list --json` has no `issueType` and cannot read an issue field, so
-# this goes through GraphQL. The third column is the **Type of change** field,
+# `gh issue list --json` cannot read an **issue field**, so this goes through
+# GraphQL. It could read the issue *type* since `gh` 2.94 — before that it could
+# not do either, which is the reason recorded when this moved to GraphQL on
+# 2026-08-26 — but a second round trip to fetch what one query already returns
+# would buy nothing. The third column is the **Type of change** field,
 # which replaced the seven labels on 2026-08-26 — one value enforced, and no
 # longer a substring match (see `type_of`).
 ISSUES="$(issues_with_type open)"
