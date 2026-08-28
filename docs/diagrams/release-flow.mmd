@@ -14,9 +14,14 @@ flowchart TB
     %% which leaks literally while htmlLabels is false.
     %% .
     %% Every arrow is numbered, in the order events happen, so the whole
-    %% sequence can be followed by reading the numbers. A letter suffix
-    %% breaks one runbook step into its ordered parts — 1.a-1.e are things
-    %% you do, 7.a-7.e are what one command does on your behalf.
+    %% sequence can be followed by reading the numbers. The numbers ARE the
+    %% runbook's section numbers in docs/3.3 part 1 — arrow 1.5 is step 1.5 —
+    %% so the diagram and the text can be read together. A third level breaks
+    %% one step into its ordered parts: 1.1.1-1.1.2 are things you do,
+    %% 1.6.1-1.6.5 are what one command does on your behalf.
+    %% .
+    %% This was 1.a, 2.b, 6.e until 2026-08-21, a second numbering scheme
+    %% sitting beside the section numbers and agreeing with neither.
     %% .
     %%   {  }   a decision on an action arrow — the action stops here and
     %%          is tested before it continues. Checks feed into it.
@@ -58,25 +63,25 @@ flowchart TB
     %% descending order and the deploy flow downward through the gate.
     REH ~~~ PROD
 
-    DEV -->|"`1.a · **$ cargo build**
+    DEV -->|"`1.1.1 · **$ cargo build**
 **$ services.sh restart**
 **$ cargo test**`"| DEV
-    DEV -->|"`1.b · **$ git add**
+    DEV -->|"`1.1.2 · **$ git add**
 **$ git commit**`"| LG
-    LG -->|"`1.c · **$ git push**`"| REPO
-    REPO -->|"1.d · CI runs (automatic)"| ACT
-    ACT -.->|"`1.e · **$ ci-status.sh --wait**`"| LG
-    PROD -.->|"`2 · **$ deploy-preview.sh at prod**`"| STG
-    LG -->|"`3 · **$ deploy-preview.sh**`"| STG
-    STG -.->|"`4 · **$ curl /health**`"| STG
-    STG -.->|"`5 · **user test**`"| STG
-    LG -->|"`6 · **$ deploy-rehearsal.sh**`"| REH
-    LG -->|"`7.a · **$ deploy.sh**`"| GATE{"gate"}
-    GATE -->|"7.d · ships the image"| PROD
-    ACT -.->|"7.b · CI green for this commit?"| GATE
-    REH -.->|"7.c · rehearsal on this commit?"| GATE
-    LG -->|"7.e · tag + version bump"| REPO
-    PROD -.->|"`8 · **$ deploy-preview.sh verify**`"| STG
+    LG -->|"`1.2.1 · **$ git push**`"| REPO
+    REPO -->|"1.2.2 · CI runs (automatic)"| ACT
+    ACT -.->|"`1.2.3 · **$ ci-status.sh --wait**`"| LG
+    PROD -.->|"`1.3.1 · **$ deploy-preview.sh at prod**`"| STG
+    LG -->|"`1.3.2 · **$ deploy-preview.sh**`"| STG
+    STG -.->|"`1.3.3 · **$ curl /health**`"| STG
+    STG -.->|"`1.4 · **user test**`"| STG
+    LG -->|"`1.5 · **$ deploy-rehearsal.sh**`"| REH
+    LG -->|"`1.6.1 · **$ deploy.sh**`"| GATE{"gate"}
+    GATE -->|"1.6.4 · ships the image"| PROD
+    ACT -.->|"1.6.2 · CI green for this commit?"| GATE
+    REH -.->|"1.6.3 · rehearsal on this commit?"| GATE
+    LG -->|"1.6.5 · tag + version bump"| REPO
+    PROD -.->|"`1.7 · **$ deploy-preview.sh verify**`"| STG
 
     classDef gate fill:#fbe9dc,stroke:#b06a2c,color:#7a4318
     classDef env fill:#e4eff8,stroke:#39698c,color:#12303f

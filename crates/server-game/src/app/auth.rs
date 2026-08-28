@@ -44,9 +44,19 @@ pub(crate) async fn register_player(
     .await
     .map_err(ApiProblem::from_sqlx)?;
 
-    tracing::info!(player_id, display_name, "player registered");
+    // `display_name` is deliberately absent (#174): the id identifies the
+    // account, and `scripts/admin.sh` resolves it to a person on the rare
+    // occasion somebody needs to know who it was.
+    tracing::info!(player_id, "player registered");
 
-    crate::email::send_welcome(&state.email, email, display_name, &state.public_base_url).await;
+    crate::email::send_welcome(
+        &state.email,
+        email,
+        &player_id,
+        display_name,
+        &state.public_base_url,
+    )
+    .await;
 
     Ok(Json(PlayerSessionDto {
         player_id,
@@ -68,7 +78,10 @@ pub(crate) async fn login_player(
     // an audit trail for spotting repeated failed attempts.
     let display_name = request.display_name.trim().to_string();
     let mismatch = |reason: &'static str| {
-        tracing::warn!(display_name = %display_name, reason, "login rejected");
+        // Neither the name nor an id: a rejected login may not correspond to
+        // an account at all, so there is nothing here that identifies anybody.
+        // `reason` is what makes the line useful.
+        tracing::warn!(reason, "login rejected");
         ApiProblem::bad_request("Incorrect name or password")
     };
 
@@ -98,7 +111,7 @@ pub(crate) async fn login_player(
         return Err(mismatch("wrong password"));
     }
 
-    tracing::info!(player_id = %player.id, display_name = %display_name, "player logged in");
+    tracing::info!(player_id = %player.id, "player logged in");
 
     let session_token = Uuid::new_v4().to_string();
     let expires_at = session_expiry();
@@ -347,9 +360,13 @@ pub(crate) async fn request_password_reset(
 
         let reset_url = format!("{}/reset-password?token={}", state.public_base_url, token);
         tracing::info!(player_id = %player.id, "password reset requested");
-        crate::email::send_password_reset(&state.email, &email, &reset_url).await;
+        crate::email::send_password_reset(&state.email, &email, &player.id, &reset_url).await;
     } else {
-        tracing::info!(email = %email, "password reset requested for unknown email");
+        // The address itself is not recorded — an address typed into a reset
+        // form is personal data belonging to somebody who may not even be a
+        // player here. The event is the whole signal: a run of these means
+        // somebody is probing, and that is visible from the count.
+        tracing::info!("password reset requested for unknown email");
     }
 
     Ok(StatusCode::NO_CONTENT)

@@ -46,14 +46,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Markdown is linted here because it was not linted anywhere. The config
-      # (.markdownlint.jsonc) has existed for weeks and was only ever run by
-      # hand — so an error reached `main` on 2026-08-16 and would have stayed,
-      # and the linter itself existed only in one machine's npx cache, which is
-      # not a dependency anybody declared. Pinned, and first in the job because
-      # it takes two seconds and the Rust steps take minutes.
-      - name: Lint markdown
-        run: npx --yes markdownlint-cli2@0.23.2 "**/*.md" "#target" "#e2e/node_modules" "#old-crates"
+      # The documents are checked here because they were not checked anywhere:
+      # the config (.markdownlint.jsonc) existed for weeks and was only ever run
+      # by hand, so an error reached `main` on 2026-08-16 and would have stayed.
+      #
+      # It runs `scripts/check-docs.sh` rather than a copy of the command, so
+      # the check made before pushing and the one CI enforces are the same code
+      # — the same reason `ci-status.sh` is shared between `deploy.sh` and the
+      # terminal. The script adds two checks to the lint: every `](#anchor)`
+      # resolves, and change documents sit in the folders #156 settled.
+      #
+      # First in the job because it takes seconds and the Rust steps take
+      # minutes.
+      - name: Check documents
+        run: ./scripts/check-docs.sh
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -88,8 +94,14 @@ jobs:
           ./scripts/tests/read-api-version.test.sh
           ./scripts/tests/check-release-version.test.sh
           ./scripts/tests/check-commit-stamp.test.sh
+          ./scripts/tests/backup-to-oci.test.sh
+          ./scripts/tests/restore-backup.test.sh
           ./scripts/tests/ci-status.test.sh
           ./scripts/tests/deploy.test.sh
+          ./scripts/tests/issue-mentions.test.sh
+          ./scripts/tests/deploy-milestone.test.sh
+          ./scripts/tests/deploy-release.test.sh
+          ./scripts/tests/actions-phase.test.sh
           ./scripts/tests/commit-msg-hook.test.sh
 
       # -D warnings makes any clippy or rustc warning fail the build. Scoped to
@@ -111,6 +123,22 @@ jobs:
       # too, and native checks above won't catch wasm-only breakage. This is a
       # plain cargo compile (default `web` feature); it deliberately does not
       # run the full dx / wasm-bindgen packaging pipeline the release build uses.
+      - name: Log hygiene (the suite's own output, against docs/4.7)
+        run: |
+          # The regression suite is the stream. It drives registration, login,
+          # invitations and the whole password-reset family — including the rare
+          # branches (unknown token, expired token, token already used) that a
+          # week of production would not show — so running the check here covers
+          # what a script driving flows by hand would have, without driving
+          # anything (#174).
+          #
+          # The tests ran in the step above; this run is cheap because
+          # everything is compiled and cached, and it is a separate step so a
+          # hygiene failure reads as one rather than as a test failure.
+          TILE_LITE_ELITE_LOG_CAPTURE="$RUNNER_TEMP/log-events.jsonl" \
+            cargo test -p server-game --quiet
+          python3 scripts/check-log-hygiene.py "$RUNNER_TEMP/log-events.jsonl"
+
       - name: Wasm build (web client)
         run: cargo build -p tile-lite-elite-ui --target wasm32-unknown-unknown
 

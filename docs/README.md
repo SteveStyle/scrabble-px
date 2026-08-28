@@ -38,6 +38,8 @@ Run in this order for a typical change: Setup once, then Development → Testing
 - [3.3 Testing, CI & Release](3.3-testing-ci-and-release.md) — `cargo test`, GitHub Actions CI, the local preview environment, the end-to-end release runbook, and how `deploy.sh` ships an image
 - [3.4 Production Environment & Operations](3.4-production-environment.md) — the running system: container topology, secrets, admin CLI, inspecting the database, logging, backups, wiping production
 - [3.5 Word Lists & Dictionaries](3.5-word-lists-and-dictionaries.md) — how a published word list becomes the trie the engine searches: sourcing, normalising, generating the denylist and greylist, and the runbooks for changing either
+- [3.6 The Change Lifecycle](3.6-change-lifecycle.md) — from an issue raised to production: triage, projects, branches, releases and deliveries, and the rules that govern each. Its sibling 3.3 holds the machinery those rules run on
+- [3.7 Workstreams](3.7-workstreams.md) — the nine capabilities work is filed against, what each owns, and where the boundary between each pair was argued
 
 ## 4.x — Reference
 
@@ -61,6 +63,9 @@ can't drift the way a hand-maintained list would.
 - [4.4 snapshot_json Schema](4.4-snapshot-json-schema.md) — the authoritative game-state JSON blob's shape
 - [4.5 Data Dictionary](4.5-data-dictionary.md) — where each game field lives across snapshot/DB/DTO, and its kind
 - [4.6 Client-Local Storage](4.6-client-local-storage.md) — StoredAuth / chat watermarks kept on the device
+- [4.7 Log Events](4.7-log-events.md) — every event the server writes, the twenty-five field names the whole log uses, and the schema a test compares the code against
+- [4.8 Artefacts](4.8-artefacts.md) — the register of things under change control that leave no trace in git: host files, cloud resources, GitHub objects. Also the answer to *what else was on that box?*
+- [4.9 Delivery log](4.9-delivery-log.md) — one row per delivery: what changed in production and when. Starts at #174; earlier deliveries are recoverable from the `prod-*` tags.
 
 ## How these documents are written
 

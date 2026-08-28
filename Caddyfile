@@ -27,6 +27,28 @@
 # limit. A host with no DNS of its own uses <ip>.sslip.io, which resolves
 # back to that IP and certificates immediately (see docs/3.1's HTTPS note).
 
+# A loopback-only health listener, for the container's HEALTHCHECK.
+#
+# The public site cannot be probed from inside the container: Caddy's global
+# HTTP->HTTPS redirect fires for any Host on :80, and the TLS handshake on :443
+# then fails because no certificate matches 127.0.0.1. That is why the check
+# used to poll the admin API instead — which proved the process was alive and
+# nothing about whether the site serves.
+#
+# `http://` on the address disables the redirect for this site alone, so a
+# plain probe works. It serves the same root as the real site, so a probe of
+# /version.txt exercises the file server and the static build — the two things
+# the admin API could never speak for.
+#
+# Not published by docker-compose, so it is reachable only from inside the
+# container. Nothing else is added here: no API proxy, no SPA fallback. The
+# public path is proved from outside by the OCI health check, which is the only
+# place it can honestly be proved from.
+http://127.0.0.1:2020 {
+	root * /srv
+	file_server
+}
+
 {$SITE_ADDRESS:tileliteelite.com, www.tileliteelite.com, 129.151.69.246.sslip.io} {
 	encode zstd gzip
 

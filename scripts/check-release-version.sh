@@ -28,7 +28,9 @@ set -euo pipefail
 # blocked because GitHub is unreachable; the check exists to catch a mistake,
 # not to add a dependency to shipping.
 
-FUNCTIONAL_LABELS='major-function|minor-function'
+# The two values of the **Type of change** issue field that mean a user could
+# notice. It was a label until 2026-08-26; see docs/3.6 2.6.
+FUNCTIONAL='IN("major-function", "minor-function")' 
 
 VERSION="${1:-}"
 if [[ -z "$VERSION" ]]; then
@@ -84,10 +86,24 @@ fi
 
 # Milestones are named for the version they ship. `|| true` so an API failure,
 # an expired token or no network prints nothing and falls through to the skip
-# below rather than aborting.
-ISSUES="$(gh api "repos/:owner/:repo/issues?milestone=*&state=all&per_page=100" \
-  --jq "[.[] | select(.milestone.title == \"$VERSION\")
-          | select([.labels[].name] | any(test(\"^($FUNCTIONAL_LABELS)\$\")))
+# below rather than aborting — the check exists to catch a mistake, not to add
+# a dependency to shipping.
+#
+# **GraphQL, because REST cannot see an issue field.** The type of change moved
+# from a label to a field on 2026-08-26, and `gh api repos/.../issues` returns
+# labels and nothing else. Search filters by milestone server-side; the field
+# values come back on each result and are matched exactly, so this no longer
+# depends on a label spelling.
+NWO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
+ISSUES="$(gh api graphql -f query="{
+  search(query: \"repo:$NWO milestone:\\\"$VERSION\\\"\", type: ISSUE, first: 100) {
+    nodes { ... on Issue { number title
+      issueFieldValues(first: 10) {
+        nodes { ... on IssueFieldSingleSelectValue {
+                  value field { ... on IssueFieldCommon { name } } } } } } } } }" \
+  --jq "[.data.search.nodes[]
+          | select([.issueFieldValues.nodes[]? | select(.field.name == \"Type of change\") | .value]
+                   | any($FUNCTIONAL))
           | \"#\(.number) \(.title)\"] | .[]" 2>/dev/null || true)"
 
 if [[ -z "$ISSUES" ]]; then

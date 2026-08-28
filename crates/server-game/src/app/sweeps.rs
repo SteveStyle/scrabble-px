@@ -132,6 +132,7 @@ pub(crate) async fn send_move_time_reminders(state: &AppState) {
         crate::email::send_move_time_reminder(
             &state.email,
             &player.email,
+            &player.id,
             &reminder.display_name,
             &format_duration_days_hours(reminder.remaining_seconds),
             &state.public_base_url,

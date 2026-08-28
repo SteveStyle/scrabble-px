@@ -30,7 +30,85 @@ fn build_id_appends_as_semver_build_metadata() {
     );
 }
 
+/// Write every log event the suite produces to the file named by
+/// `TILE_LITE_ELITE_LOG_CAPTURE`, in the same JSON shape production uses.
+///
+/// **This is how the log schema gets checked** (#174). `docs/4.7-log-events.md`
+/// declares the fields each event may carry; `scripts/check-log-hygiene.sh`
+/// validates a stream of lines against it. The stream has to come from
+/// somewhere, and the regression suite is by far the best source available: it
+/// drives registration, login, invitations and the whole password-reset family
+/// — including `rejects_an_unknown_token`, `rejects_an_expired_token` and
+/// `rejects_a_token_already_used_once`, which are exactly the rare events a week
+/// of production would not show.
+///
+/// Owner, 2026-08-21: *"our normal regression tests will generate all of the log
+/// messages anyway, so running the check as part of CI should cover it."* They
+/// do, so nothing here drives flows on purpose — this only opens a tap.
+///
+/// Off unless the variable is set, so a normal `cargo test` is unchanged and
+/// nothing is written. `Once` because a subscriber is global and installing a
+/// second one panics; the suite shares one process across its tests.
+fn capture_logs_if_asked() {
+    install_test_subscriber();
+}
+
+/// Install the suite's one global subscriber, with up to two layers.
+///
+/// **There can only be one.** `set_global_default` panics on a second call, and
+/// this binary needs the same subscriber to serve two unrelated purposes:
+///
+/// | layer | format | writer | for |
+/// | --- | --- | --- | --- |
+/// | always | text | the thread-local sink | the handful of tests that read their own log back with `.text()` |
+/// | when `TILE_LITE_ELITE_LOG_CAPTURE` is set | **JSON** | that file | the schema check (#174) |
+///
+/// Two layers rather than one, because they want different formats and a
+/// subscriber formats once. Found the hard way: adding a second
+/// `fmt().json().try_init()` beside the existing text one made five tests fail
+/// with *"a global default trace dispatcher has already been set"* — whichever
+/// installed first won, and the other panicked.
+fn install_test_subscriber() {
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let text = tracing_subscriber::fmt::layer()
+            .with_writer(ThreadLocalWriter)
+            .with_ansi(false);
+
+        // A `Mutex` rather than a bare file: tests run in parallel, and two
+        // threads writing a line each without one produces a spliced line that
+        // fails to parse — which would look exactly like the defect this is
+        // meant to detect.
+        let json = std::env::var("TILE_LITE_ELITE_LOG_CAPTURE")
+            .ok()
+            .map(|path| {
+                let file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .expect("log capture file should open");
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .flatten_event(true)
+                    .with_current_span(false)
+                    .with_span_list(false)
+                    .with_writer(std::sync::Mutex::new(file))
+                    .with_filter(tracing_subscriber::EnvFilter::new("server_game=info"))
+            });
+
+        let _ = tracing_subscriber::registry()
+            .with(text)
+            .with(json)
+            .try_init();
+    });
+}
+
 pub(super) async fn create_test_state(database_url: &str) -> AppState {
+    capture_logs_if_asked();
     AppState::new(
         database_url,
         "http://127.0.0.1:8080".to_string(),
@@ -5811,15 +5889,7 @@ impl Drop for LogCapture {
 /// Starts capturing this thread's `tracing` output, readable via the
 /// returned guard's `.text()` once the request under test has completed.
 fn start_capturing_log_on_this_thread() -> LogCapture {
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| {
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(ThreadLocalWriter)
-            .with_ansi(false)
-            .finish();
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("global default should only be installed once per test binary");
-    });
+    install_test_subscriber();
     let log = CapturedLog::default();
     LOG_SINK.with(|sink| *sink.borrow_mut() = Some(log.clone()));
     LogCapture(log)
