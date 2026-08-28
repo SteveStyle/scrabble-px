@@ -1,7 +1,6 @@
 name: Requirement
 description: Something that should be true and is not — a defect, a change, a gap. Raise it in five seconds
 type: Requirement
-labels: ["needs-triage"]
 body:
   - type: markdown
     attributes:

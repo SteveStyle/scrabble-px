@@ -19,8 +19,9 @@ issue, which is what the request amounts to once the two are separated.
 
 **Structure comes from GitHub, not from a convention we maintain.** Parent and
 sub-issue links are real (`subIssues`, `parent`), so a workstream is read rather
-than inferred — unlike `roadmap.sh`'s "mentioned by", which reads prose because
-nothing better existed when it was written.
+than inferred. Dependencies are real too since 2026-08-28 — GitHub's own
+`blocked by` links, which replaced `roadmap.sh`'s "mentioned by", a column that
+read prose because nothing better existed when it was written.
 
 A pull request is attached to its issue by **branch name** (`issue-<n>-…`),
 which is the convention `status.sh` already relies on, and listed separately
