@@ -3407,7 +3407,7 @@ section does not, because a second copy of a rule is the copy that goes stale.
 | question | script |
 | --- | --- |
 | where is every open change, and what is each environment running? | `status.sh` |
-| what is in each release, in release order? | `roadmap.sh` |
+| what is in each release? | the board — projects grouped by milestone. `roadmap.sh` until 2026-08-28 |
 | what is waiting on me? | `actions.py` |
 | what has been said on GitHub since I last looked? | `inbox.sh` |
 | is everything actually in place? (asserts, exits non-zero) | `verify.sh` |

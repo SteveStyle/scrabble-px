@@ -31,7 +31,7 @@ set -uo pipefail
 # means a point not yet discussed. That was not what the footer was for, but it
 # is what makes this a filter rather than a wall of text.
 #
-# Read-only, and stateless like `roadmap.sh`: no "last read" file to go stale,
+# Read-only, and stateless like `status.sh`: no "last read" file to go stale,
 # drift between machines, or need clearing when it is wrong. You pass the window.
 #
 # Uses `gh`'s embedded `--jq`; no standalone `jq` is installed here.
