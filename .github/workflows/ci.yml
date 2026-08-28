@@ -99,6 +99,7 @@ jobs:
           ./scripts/tests/ci-status.test.sh
           ./scripts/tests/deploy.test.sh
           ./scripts/tests/issue-mentions.test.sh
+          ./scripts/tests/deploy-milestone.test.sh
           ./scripts/tests/deploy-release.test.sh
           ./scripts/tests/actions-phase.test.sh
           ./scripts/tests/commit-msg-hook.test.sh

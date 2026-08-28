@@ -111,6 +111,70 @@ publish_release() {
   fi
 }
 
+# Close the milestone this release shipped, and open the next — or explain why
+# not. Three ways through, and the middle one is why this is a function: the
+# normal-release path used to sit *inside* the emergency branch, so a normal
+# release silently did nothing while saying nothing (#150). Nothing noticed for
+# a release and a half, because nothing could reach this code without deploying.
+#
+# Reads the globals the deploy has already established: IS_RELEASE, EMERGENCY,
+# DEPLOY_ENV, DEPLOYED_VERSION, DEPLOY_TAG, TARGET_SHA, NEXT_VERSION.
+settle_milestone() {
+  if (( ! IS_RELEASE )); then
+    echo "==> No milestone change: a $DEPLOY_ENV deploy has not reached users"
+  elif [[ -n "$EMERGENCY" ]]; then
+    # The tag and the version bump still happen above: those are facts about what
+    # is running, and letting production and the repo disagree would be worse
+    # than the emergency. Closing a milestone is a different kind of statement —
+    # that a scope completed the normal process — which is precisely what did not
+    # happen. The retrospective issue below carries the record instead, and
+    # whoever reviews it closes what actually shipped.
+    echo "==> No milestone change: an emergency deploy has not been through the normal process"
+  else
+    # Everything from here is the *normal release* path. It used to sit inside
+    # the emergency branch above — so a normal release silently did nothing and
+    # said nothing, while an emergency would have closed the milestone directly
+    # after printing that it would not. Introduced by 89f249a when the emergency
+    # path was added, and first bit on 0.6.0, whose eleven issues and milestone
+    # were closed by hand afterwards.
+    MILESTONE="$(gh api "repos/{owner}/{repo}/milestones?state=open" \
+      --jq ".[] | select(.title == \"$DEPLOYED_VERSION\") | .number" 2>/dev/null || true)"
+    if [[ -n "$MILESTONE" ]]; then
+      echo "==> Closing milestone $DEPLOYED_VERSION and its issues"
+      for ISSUE in $(gh issue list --milestone "$DEPLOYED_VERSION" --state open \
+        --json number --jq '.[].number' 2>/dev/null || true); do
+        # `--reason completed` explicitly. It is the default, so nothing changes
+        # today — but `stateReason` is how a closure's *reason* is recorded now
+        # that the wontfix/invalid/duplicate labels are gone, and this is the one
+        # site that closes an issue with no human present. A field that carries
+        # meaning should not be left implicit exactly where nobody is watching.
+        if gh issue close "$ISSUE" --reason completed \
+          --comment "Released in $DEPLOY_TAG — production is running $DEPLOYED_VERSION+$TARGET_SHA." \
+          > /dev/null 2>&1; then
+          echo "    closed #$ISSUE"
+        else
+          echo "    warning: could not close #$ISSUE" >&2
+        fi
+      done
+      gh api --method PATCH "repos/{owner}/{repo}/milestones/$MILESTONE" \
+        -f state=closed > /dev/null 2>&1 \
+        && echo "    milestone $DEPLOYED_VERSION closed" \
+        || echo "    warning: could not close milestone $DEPLOYED_VERSION" >&2
+    fi
+
+    # The tree has just moved to NEXT_VERSION, so anything reported from here
+    # belongs to that release. Creating it now means an issue never has to
+    # wait for a milestone to exist before it can be filed.
+    if [[ "${DEPLOY_SKIP_BUMP:-}" != "1" ]] \
+      && ! gh api "repos/{owner}/{repo}/milestones?state=all" \
+        --jq '.[].title' 2>/dev/null | grep -qx "$NEXT_VERSION"; then
+      gh api repos/{owner}/{repo}/milestones -f title="$NEXT_VERSION" \
+        -f description="Changes on main not yet in production." > /dev/null 2>&1 \
+        && echo "    opened milestone $NEXT_VERSION for what comes next"
+    fi
+  fi
+}
+
 # Sourced by scripts/tests/deploy-release.test.sh, which exercises the two
 # functions above directly. Everything below this line is the deploy itself and
 # must not run when sourced.
@@ -1031,59 +1095,8 @@ fi
 # Best-effort throughout. A GitHub hiccup must not fail a deploy that has
 # already succeeded — production is live either way, and the worst case is a
 # milestone closed by hand.
-if (( ! IS_RELEASE )); then
-  echo "==> No milestone change: a $DEPLOY_ENV deploy has not reached users"
-elif [[ -n "$EMERGENCY" ]]; then
-  # The tag and the version bump still happen above: those are facts about what
-  # is running, and letting production and the repo disagree would be worse
-  # than the emergency. Closing a milestone is a different kind of statement —
-  # that a scope completed the normal process — which is precisely what did not
-  # happen. The retrospective issue below carries the record instead, and
-  # whoever reviews it closes what actually shipped.
-  echo "==> No milestone change: an emergency deploy has not been through the normal process"
-else
-  # Everything from here is the *normal release* path. It used to sit inside
-  # the emergency branch above — so a normal release silently did nothing and
-  # said nothing, while an emergency would have closed the milestone directly
-  # after printing that it would not. Introduced by 89f249a when the emergency
-  # path was added, and first bit on 0.6.0, whose eleven issues and milestone
-  # were closed by hand afterwards.
-  MILESTONE="$(gh api "repos/{owner}/{repo}/milestones?state=open" \
-    --jq ".[] | select(.title == \"$DEPLOYED_VERSION\") | .number" 2>/dev/null || true)"
-  if [[ -n "$MILESTONE" ]]; then
-    echo "==> Closing milestone $DEPLOYED_VERSION and its issues"
-    for ISSUE in $(gh issue list --milestone "$DEPLOYED_VERSION" --state open \
-      --json number --jq '.[].number' 2>/dev/null || true); do
-      # `--reason completed` explicitly. It is the default, so nothing changes
-      # today — but `stateReason` is how a closure's *reason* is recorded now
-      # that the wontfix/invalid/duplicate labels are gone, and this is the one
-      # site that closes an issue with no human present. A field that carries
-      # meaning should not be left implicit exactly where nobody is watching.
-      if gh issue close "$ISSUE" --reason completed \
-        --comment "Released in $DEPLOY_TAG — production is running $DEPLOYED_VERSION+$TARGET_SHA." \
-        > /dev/null 2>&1; then
-        echo "    closed #$ISSUE"
-      else
-        echo "    warning: could not close #$ISSUE" >&2
-      fi
-    done
-    gh api --method PATCH "repos/{owner}/{repo}/milestones/$MILESTONE" \
-      -f state=closed > /dev/null 2>&1 \
-      && echo "    milestone $DEPLOYED_VERSION closed" \
-      || echo "    warning: could not close milestone $DEPLOYED_VERSION" >&2
-  fi
-
-  # The tree has just moved to NEXT_VERSION, so anything reported from here
-  # belongs to that release. Creating it now means an issue never has to
-  # wait for a milestone to exist before it can be filed.
-  if [[ "${DEPLOY_SKIP_BUMP:-}" != "1" ]] \
-    && ! gh api "repos/{owner}/{repo}/milestones?state=all" \
-      --jq '.[].title' 2>/dev/null | grep -qx "$NEXT_VERSION"; then
-    gh api repos/{owner}/{repo}/milestones -f title="$NEXT_VERSION" \
-      -f description="Changes on main not yet in production." > /dev/null 2>&1 \
-      && echo "    opened milestone $NEXT_VERSION for what comes next"
-  fi
-fi
+# Close what shipped, open what is next — or say why neither happened.
+settle_milestone
 
 # An emergency change is retrospectively reviewed, not unreviewed. The issue is
 # raised here rather than printed as a command to run later, because a reminder
