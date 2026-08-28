@@ -63,7 +63,7 @@ QUERY = """
                 ... on IssueFieldSingleSelectValue {
                   field { ... on IssueFieldSingleSelect { name } } value } } }
               parent { number }
-              subIssues(first: 50) { nodes { number title state } } } }
+              subIssues(first: 50) { nodes { number title state issueType { name } } } } }
     pullRequests(states: OPEN, first: 50) {
       nodes { number title headRefName isDraft
               reviewDecision
@@ -228,6 +228,15 @@ def main() -> int:
         return ((issues.get(num, {}).get("issueType") or {}).get("name")
                 or "issue").lower()
 
+    def kind_of(node: dict) -> str:
+        """The level of a sub-issue node, which may be closed.
+
+        `issues` holds **open** issues only, so a closed child is not in it and
+        `level()` would call it a plain `issue`. The sub-issue node carries its
+        own type, so a delivered project still reads as a project.
+        """
+        return ((node.get("issueType") or {}).get("name") or "issue").lower()
+
     def reviewers(pr: dict) -> set[str]:
         return {r["requestedReviewer"]["login"]
                 for r in pr["reviewRequests"]["nodes"]
@@ -350,17 +359,18 @@ def main() -> int:
             # beneath it — three levels, which is what the model has.
             grand = issues.get(c["number"], {}).get("subIssues", {}).get("nodes", [])
             if grand:
-                print(f"  {BOLD}project #{c['number']}  {c['title']}{OFF}")
+                print(f"  {BOLD}{kind_of(c)} #{c['number']}  {c['title']}{OFF}")
                 show_prs_and_actions(c["number"], indent="  ")
                 for g in grand:
                     if ALL or has_something(g["number"], g["state"]):
                         show_issue(g["number"], g["title"], g["state"], indent="    ")
             else:
-                # A workstream's direct children are its projects, whether or
-                # not any of them has sub-issues yet — a project with one
-                # requirement is still a project (docs/3.6 §2.11), and calling
-                # it an issue here is the vocabulary the levels replaced.
-                show_issue(c["number"], c["title"], c["state"], kind="project")
+                # The issue type, not a guess from position. This said `project`
+                # unconditionally, from when a workstream's direct children were
+                # all projects — which stopped being true once triage began
+                # parenting requirements to workstreams. #160 and #215 are
+                # requirements, and were being drawn as projects.
+                show_issue(c["number"], c["title"], c["state"], kind=kind_of(c))
 
     loose = [i for i in issues.values()
              if i["number"] not in children and not i["subIssues"]["nodes"]

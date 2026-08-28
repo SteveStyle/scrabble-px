@@ -24,8 +24,10 @@ cat > "$DIR/response.json" <<'JSON'
   "issues":{"nodes":[
     {"number":100,"title":"A workstream","body":"","issueType":{"name":"Workstream"},
      "issueFieldValues":{"nodes":[]},"parent":null,
-     "subIssues":{"nodes":[{"number":101,"title":"A project mid-flight","state":"OPEN"},
-                           {"number":102,"title":"A project nobody started","state":"OPEN"}]}},
+     "subIssues":{"nodes":[{"number":101,"title":"A project mid-flight","state":"OPEN","issueType":{"name":"Project"}},
+                           {"number":102,"title":"A project nobody started","state":"OPEN","issueType":{"name":"Project"}},
+                           {"number":103,"title":"A requirement awaiting a project","state":"OPEN","issueType":{"name":"Requirement"}},
+                           {"number":104,"title":"A project already delivered","state":"CLOSED","issueType":{"name":"Project"}}]}},
     {"number":101,"title":"A project mid-flight","body":"","issueType":{"name":"Project"},
      "issueFieldValues":{"nodes":[
         {"field":{"name":"Phase"},"value":"User testing"},
@@ -33,7 +35,9 @@ cat > "$DIR/response.json" <<'JSON'
      "parent":{"number":100},"subIssues":{"nodes":[]}},
     {"number":102,"title":"A project nobody started","body":"","issueType":{"name":"Project"},
      "issueFieldValues":{"nodes":[{"field":{"name":"Type of change"},"value":"bug"}]},
-     "parent":{"number":100},"subIssues":{"nodes":[]}}
+     "parent":{"number":100},"subIssues":{"nodes":[]}},
+    {"number":103,"title":"A requirement awaiting a project","body":"","issueType":{"name":"Requirement"},
+     "issueFieldValues":{"nodes":[]},"parent":{"number":100},"subIssues":{"nodes":[]}}
   ]},
   "pullRequests":{"nodes":[]}}}}
 JSON
@@ -74,6 +78,13 @@ check() {  # name, expected substring
 }
 
 check "a project's phase is read from the Phase field" "user testing"
+# A workstream's direct children were labelled `project` unconditionally, from
+# when they all were. Triage parents requirements to workstreams, so the label
+# has to come from the issue type.
+check "a requirement under a workstream is not called a project" "requirement #103"
+# `issues` holds open issues only, so a closed child's type must come from the
+# sub-issue node or a delivered project reads as a plain `issue`.
+check "a closed child keeps its type"                            "project #104"
 check "an unset phase falls back to a derived state" "not started"
 
 if [[ "$out" == *"phase:"* ]]; then
