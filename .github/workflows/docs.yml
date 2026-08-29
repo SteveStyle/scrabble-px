@@ -45,9 +45,17 @@ jobs:
   #    be the same check twice and two places to change it. This file carries
   #    only what CI cannot: the parts of a review that are a person's.
   #
-  # 1. The review checklist as a check. Fails while any box under a `## Review`
+  # 1. The review checklist as a check. Fails while any box under a review
   #    heading in the pull request body is unticked; ticking one edits the body,
   #    which re-runs this, which goes green.
+  #
+  #    **Any heading level, and a trailing word allowed** — `## Review`,
+  #    `### Review checklist`, `#### Review notes` all count. It required
+  #    exactly `## Review` until 2026-08-29, and every pull request written
+  #    that week used `### Review checklist`: the check reported **success**
+  #    while five boxes sat unticked, because it found no section and exited 0.
+  #    A gate that silently does not apply is worse than no gate, since the
+  #    green tick is read as an answer.
   #
   #    **Advisory until a ruleset makes it required** — `main` is unprotected, so
   #    a red check here is a red X somebody can merge past. That is deliberate
@@ -64,19 +72,24 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - name: Unticked boxes under '## Review'
+      - name: Unticked boxes under a review heading
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           NUMBER: ${{ github.event.pull_request.number }}
         run: |
           gh api "repos/$REPO/pulls/$NUMBER" --jq '.body // ""' > /tmp/pr-body.md
-          if ! grep -qi '^## Review' /tmp/pr-body.md; then
-            echo "No '## Review' section — nothing to check."
+          # Any heading level, and anything after the word: `## Review`,
+          # `### Review checklist`, `#### Review notes`. The section ends at the
+          # next heading of any level, so a checklist followed by `### Not in
+          # this change` stops there rather than swallowing it.
+          if ! grep -qiE '^#{1,6} +Review' /tmp/pr-body.md; then
+            echo "No review section — nothing to check."
             exit 0
           fi
-          UNTICKED="$(sed -n '/^## [Rr]eview/,/^## /p' /tmp/pr-body.md | grep -c '^\s*- \[ \]' || true)"
-          sed -n '/^## [Rr]eview/,/^## /p' /tmp/pr-body.md
+          SECTION="$(sed -n '/^#\{1,6\} \+[Rr]eview/,/^#\{1,6\} /{ /^#\{1,6\} \+[Rr]eview/!{ /^#\{1,6\} /q }; p }' /tmp/pr-body.md)"
+          UNTICKED="$(printf '%s\n' "$SECTION" | grep -c '^\s*- \[ \]' || true)"
+          printf '%s\n' "$SECTION"
           if [ "$UNTICKED" -gt 0 ]; then
             echo "::error::$UNTICKED review item(s) still unticked."
             exit 1
