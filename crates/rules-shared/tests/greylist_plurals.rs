@@ -14,8 +14,13 @@ use rules_shared::wordlists::is_avoided_by_engines;
 
 #[test]
 fn a_plural_of_a_greylisted_word_is_itself_avoided() {
-    for word in ["JISM", "JISMS", "FANNY", "FANNIES", "SPICK", "SPICKS", "POOF", "POOVES"] {
-        assert!(is_avoided_by_engines(word), "{word} should be avoided by engines");
+    for word in [
+        "JISM", "JISMS", "FANNY", "FANNIES", "SPICK", "SPICKS", "POOF", "POOVES",
+    ] {
+        assert!(
+            is_avoided_by_engines(word),
+            "{word} should be avoided by engines"
+        );
     }
 }
 
@@ -25,7 +30,10 @@ fn the_kept_for_consistency_group_is_avoided_too() {
     // greylisted anyway. While that is true, the plural being playable would
     // be the list disagreeing with itself. See #116.
     for word in ["MOMMIES", "DADDIES", "DEBUGGERS", "ANNALS"] {
-        assert!(is_avoided_by_engines(word), "{word} should be avoided by engines");
+        assert!(
+            is_avoided_by_engines(word),
+            "{word} should be avoided by engines"
+        );
     }
 }
 
