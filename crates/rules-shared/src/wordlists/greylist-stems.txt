@@ -153,3 +153,135 @@ TWINKIE*        # 2 words
 #   An ordinary noun — world domination, domination of a market. DOMINATIONS
 #   is in the dictionary as a rank of angels rather than for any modern
 #   reading.
+
+# ---------------------------------------------------------------------------
+# PLURALS OF WORDS ALREADY HERE. Added 2026-08-29, after the bot played JISMS
+# while JISM was greylisted.
+#
+# This is this file's own rule the other way round. The header above says a
+# base word slipping through while its inflections are caught is exactly what
+# the greylist exists to prevent — rustrict flagging NEGROES but not NEGRO.
+# The reverse hole was never checked for: the base caught, the plural loose.
+#
+# Found by generating plural forms of every greylist entry and keeping those
+# that are in SOWPODS or ENABLE2K and not already greylisted. 93 of them.
+#
+# Not done for other inflections. That check returns 371 and is dominated by
+# false derivations — HO/HOIST, SPIC/SPICED, SCAT/SCATTER — because short bases
+# generate real unrelated words. It wants the hand curation the rest of this
+# file gets, not a bulk addition.
+
+BAWDIES         # plural of BAWDY
+BESTIALITIES    # plural of BESTIALITY
+BLOODIES        # plural of BLOODY
+BONDAGES        # plural of BONDAGE
+BOONGAS         # plural of BOONGA
+BOOTIES         # plural of BOOTY
+CERVIXES        # plural of CERVIX
+CROTCHES        # plural of CROTCH
+CYBERSEXES      # plural of CYBERSEX
+FANNIES         # plural of FANNY
+FATTIES         # plural of FATTY
+FETISHISTS      # plural of FETISHIST
+FINGERERS       # plural of FINGERER
+FLOOZIES        # plural of FLOOZY
+HUSSIES         # plural of HUSSY
+JISMS           # plural of JISM
+LECHES          # plural of LECH
+NAUGHTIES       # plural of NAUGHTY
+NIGGLES         # plural of NIGGLE
+NIGGLERS        # plural of NIGGLER
+NOOKIES         # plural of NOOKY
+NUDITIES        # plural of NUDITY
+PICANINNIES     # plural of PICANINNY
+PICCANINNIES    # plural of PICCANINNY
+PICKANINNIES    # plural of PICKANINNY
+PISSOIRS        # plural of PISSOIR
+POOVES          # plural of POOF
+RAPERS          # plural of RAPER
+RITARDS         # plural of RITARD
+SISSIES         # plural of SISSY
+SPICKS          # plural of SPICK
+STIFFIES        # plural of STIFFY
+SUPERPIMPS      # plural of SUPERPIMP
+TUSHIES         # plural of TUSHY
+UNITARDS        # plural of UNITARD
+WEIRDOES        # plural of WEIRDO
+WEIRDOS         # plural of WEIRDO
+WENCHES         # plural of WENCH
+
+# ---------------------------------------------------------------------------
+# THE SAME, WHERE THE BASE ITSELF MAY BE WRONG. Separated so a review of the
+# greylist can find them in one place — see #116.
+#
+# Each of these is the plural of an entry that looks like a substring catch
+# rather than a judgement: DEBUGGER for *bugger*, ANNAL for *anal*, BLACKBUTT
+# and KHILAFAT for *butt* and *fat*, PAKAPOO for *poo*. MOMMY and DADDY are
+# here too, and are the clearest case of the list being broader than anybody
+# would choose deliberately.
+#
+# **They are added anyway**, and the argument is consistency rather than
+# offence: while the base is greylisted, the plural being playable is the list
+# disagreeing with itself. Whether the base belongs at all is a separate
+# question, and it is #116's.
+#
+# The cost of being wrong here is small and one-sided. The greylist removes
+# 0.96% of SOWPODS from what an engine will choose, and 0.99% with these — a
+# bot that never plays MOMMIES loses a hundredth of its vocabulary; a bot that
+# plays a slur costs something else entirely.
+
+ANNALS          # plural of ANNAL
+ASPICKS         # plural of ASPICK
+BASTINADOES     # plural of BASTINADO
+BLACKBUTTS      # plural of BLACKBUTT
+CEMBRAS         # plural of CEMBRA
+COCKERS         # plural of COCKER
+COONTIES        # plural of COONTY
+COWGIRLS        # plural of COWGIRL
+CRAPS           # plural of CRAP
+CYBERPUNKS      # plural of CYBERPUNK
+DADDIES         # plural of DADDY
+DARLINGS        # plural of DARLING
+DEBONERS        # plural of DEBONER
+DEBUGGERS       # plural of DEBUGGER
+DIDDIES         # plural of DIDDY
+DONNICKERS      # plural of DONNICKER
+ENSLAVES        # plural of ENSLAVE
+EVANGELIARS     # plural of EVANGELIAR
+FATS            # plural of FAT
+GHETTOIZES      # plural of GHETTOIZE
+GOONS           # plural of GOON
+GOSHTS          # plural of GOSHT
+HAETS           # plural of HAET
+HOMOPHILES      # plural of HOMOPHILE
+INMARRIAGES     # plural of INMARRIAGE
+KALIPHATES      # plural of KALIPHATE
+KHILAFATS       # plural of KHILAFAT
+KINKS           # plural of KINK
+LOGOPAEDICS     # plural of LOGOPAEDIC
+MARRIAGES       # plural of MARRIAGE
+MARRIES         # plural of MARRY
+MOCHELLS        # plural of MOCHELL
+MOMMIES         # plural of MOMMY
+MUCHELLS        # plural of MUCHELL
+NICKUMPOOPS     # plural of NICKUMPOOP
+NICOMPOOPS      # plural of NICOMPOOP
+NIHONGAS        # plural of NIHONGA
+ONGAONGAS       # plural of ONGAONGA
+ORPHANS         # plural of ORPHAN
+ORPHANAGES      # plural of ORPHANAGE
+OVARIES         # plural of OVARY
+PAKAPOOS        # plural of PAKAPOO
+PEEKAPOOS       # plural of PEEKAPOO
+PEKEPOOS        # plural of PEKEPOO
+POTTIES         # plural of POTTY
+SNIGLETS        # plural of SNIGLET
+SPLATTERPUNKS   # plural of SPLATTERPUNK
+SUCKLES         # plural of SUCKLE
+TAONGAS         # plural of TAONGA
+TELLARS         # plural of TELLAR
+TRAPES          # plural of TRAPE
+TWEENIES        # plural of TWEENIE
+UGLIES          # plural of UGLY
+UNSEXES         # plural of UNSEX
+WOOLFATS        # plural of WOOLFAT
