@@ -18,6 +18,24 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PREFIX="${E2E_PREFIX:-e2e-}"
 DB="${E2E_DB_FILE:-$REPO_DIR/data/tile-lite-elite.sqlite3}"
 
+# **Clean where the tests ran, or refuse.** This defaulted to dev's file and
+# `PLAYWRIGHT_BASE_URL` never reached it, so a run against preview created
+# accounts in preview's volume, cleaned dev, and reported "removed 0 test
+# player(s)" — which reads exactly like success (#128).
+#
+# The local path below is kept because it is fast and needs no server. Anything
+# else goes through `clean-test-accounts.sh`, which knows how to reach each
+# environment and refuses the ones it cannot.
+TARGET="${E2E_TARGET:-${PLAYWRIGHT_BASE_URL:-local}}"
+case "$TARGET" in
+  local|dev|*localhost:8080*|*localhost:3000*|*127.0.0.1:8080*|*127.0.0.1:3000*)
+    : # the sqlite file below is the right target
+    ;;
+  *)
+    exec "$REPO_DIR/scripts/clean-test-accounts.sh" --prefix "$PREFIX" --target "$TARGET"
+    ;;
+esac
+
 if ! command -v sqlite3 >/dev/null 2>&1; then
     echo "e2e-clean: sqlite3 not found on PATH; skipping" >&2
     exit 0
