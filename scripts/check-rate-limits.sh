@@ -19,9 +19,12 @@ set -euo pipefail
 #      deploy.sh smoke-tests this, so a health check that fails under load
 #      would roll back a release that was merely busy.
 #   2. Registering repeatedly from one address is refused with 429.
+#      **This creates no accounts.** The body sent is `{}`, which the limiter
+#      counts and the handler never sees — see the note at that check.
 #   3. A refusal is one a client can act on: 429, Retry-After, and an
 #      ApiError body — the contract the UI reads.
-#   4. Logging in repeatedly from one address is refused.
+#   4. Logging in repeatedly from one address is refused. Also creates nothing:
+#      it signs in as an account that does not exist, which costs Argon2 anyway.
 #
 # **What it deliberately cannot check: that one caller's allowance is not
 # another's.** Caddy replaces X-Forwarded-For with the address the connection
@@ -74,17 +77,41 @@ echo "    caller $BUSY (as Caddy sees it: this machine)"
 echo
 
 # 2. Registration, from one address, repeatedly.
+#
+# **The body is deliberately `{}`, not a real registration.** The limiter is a
+# tower layer on the route (`throttle::apply`), so it counts a request before
+# the `Json` extractor ever sees the body — an unparseable body is answered 422
+# until the bucket empties and 429 after, reaching the limit at exactly the
+# attempt a valid payload would.
+#
+# Measured 2026-08-30 against a server on the defaults (2/min, burst 3):
+# `422 422 422 429 429 429 429 429`, and `select count(*) from players` still 0.
+#
+# That is the point. Eight real registrations left three or four accounts on
+# rehearsal every run and twenty-two had accumulated in four days (#128, #148,
+# #242) — in the environment whose whole purpose is to resemble production. The
+# accounts were never the subject of the test, only a side effect of reaching
+# the limit. The login check below has always worked this way, against an
+# account that does not exist.
+#
+# The status before the refusal is asserted rather than ignored. Without that, a
+# registration route answering 404 or 500 on every attempt would still pass this
+# check the moment the limiter fired.
 registered_refusal=""
+registered_wrong=""
 for attempt in $(seq 1 8); do
-  name="ratecheck-$RUN-$attempt"
-  status="$(post_status /auth/register "$BUSY" \
-    "{\"display_name\":\"$name\",\"email\":\"$name@example.com\",\"password\":\"correct horse battery staple\",\"stay_logged_in\":false}")"
-  if [[ "$status" == "429" ]]; then
-    registered_refusal="$attempt"
-    break
-  fi
+  status="$(post_status /auth/register "$BUSY" '{}')"
+  case "$status" in
+    429) registered_refusal="$attempt"; break ;;
+    422) : ;;
+    *)   registered_wrong="$status"; break ;;
+  esac
 done
-if [[ -n "$registered_refusal" ]]; then
+if [[ -n "$registered_wrong" ]]; then
+  say "FAIL registration answered $registered_wrong, expected 422 for an unparseable body"
+  say "     the route is not behaving, and a limiter firing would have hidden it"
+  FAILURES=$((FAILURES + 1))
+elif [[ -n "$registered_refusal" ]]; then
   say "ok   registration refused after $registered_refusal from one address"
 else
   say "FAIL registration never refused — eight attempts from one address all passed"
@@ -102,7 +129,7 @@ check "health still answers while a caller is being refused" "200" \
 REFUSAL="$(curl -s -D - -o /tmp/ratecheck-body.$$ --max-time 10 \
   -H 'content-type: application/json' -H "x-forwarded-for: $BUSY" \
   -X POST "$TARGET/auth/register" \
-  -d '{"display_name":"ratecheck-shape","email":"s@example.com","password":"correct horse battery staple","stay_logged_in":false}' || true)"
+  -d '{}' || true)"
 BODY="$(cat /tmp/ratecheck-body.$$ 2>/dev/null || true)"
 rm -f /tmp/ratecheck-body.$$
 if printf '%s' "$REFUSAL" | grep -qi '^HTTP/[0-9.]* 429'; then
