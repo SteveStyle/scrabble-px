@@ -126,12 +126,20 @@ check "health still answers while a caller is being refused" "200" \
 #    it can tell apart from "the server is down", a wait it can show, and a
 #    message in the shape every other error uses. tower_governor's own default
 #    body is plain text, so this is checking a deliberate override.
-REFUSAL="$(curl -s -D - -o /tmp/ratecheck-body.$$ --max-time 10 \
+#
+#    Headers and body both come back on stdout — `-D -` for the one, `-o -` for
+#    the other — and are split on the blank line between them. This used to write
+#    the body to a file under `/tmp` and remove it on the next line, which an
+#    interrupt between the two would have skipped. Same reasoning as the
+#    registration check above: not creating it beats remembering to remove it.
+RESPONSE="$(curl -s -D - -o - --max-time 10 \
   -H 'content-type: application/json' -H "x-forwarded-for: $BUSY" \
   -X POST "$TARGET/auth/register" \
   -d '{}' || true)"
-BODY="$(cat /tmp/ratecheck-body.$$ 2>/dev/null || true)"
-rm -f /tmp/ratecheck-body.$$
+# The first blank line ends the header block. The `\r` is optional so this reads
+# a raw HTTP/1.1 response and one curl has already normalised alike.
+REFUSAL="$(printf '%s\n' "$RESPONSE" | sed -n '1,/^\r\{0,1\}$/p')"
+BODY="$(printf '%s\n' "$RESPONSE" | sed '1,/^\r\{0,1\}$/d')"
 if printf '%s' "$REFUSAL" | grep -qi '^HTTP/[0-9.]* 429'; then
   say "ok   the refusal is 429"
   if printf '%s' "$REFUSAL" | grep -qi '^retry-after:'; then
