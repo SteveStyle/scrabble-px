@@ -60,6 +60,60 @@ http://127.0.0.1:2020 {
 	# directives in the order written instead, so the API check happens
 	# first and the SPA fallback only applies to what's left.
 	route {
+		# --- Rehearsal access control (#240) -------------------------------
+		#
+		# **An extra block that only ever fires on rehearsal.** The switch is
+		# the hostname, not a variable: production answers on
+		# tileliteelite.com and its own sslip.io name, so neither matcher below
+		# can match there and the whole thing is inert. One Caddyfile, one
+		# image, and the two environments stay as identical as they can be.
+		#
+		# The names are in a **matcher**, never in the site address, so
+		# production is not asked to certificate a host it does not own — the
+		# failure this file's opening comment records, and the reason a second
+		# site block was rejected.
+		#
+		# Why a cookie rather than an IP allowlist: a cookie is scoped to the
+		# **device**, an address to whatever pool it sits in. Mobile carriers
+		# put thousands of subscribers behind one CGNAT address, and rehearsal
+		# is tested from a phone. Why not basic auth: the client sends
+		# `Authorization: Bearer <session>` on every API call, which replaces
+		# the browser's credentials, so Caddy would 401 behind the first page
+		# load. Both settled on #240.
+		#
+		# `REHEARSAL_KEY` **must be set on every host**, including production
+		# where it is unused. Unset, `{$REHEARSAL_KEY}` expands to nothing and
+		# a cookie of literally `rehearsal=` satisfies the matcher — measured,
+		# not feared. docker-compose.yml makes Compose refuse to start without
+		# it, which is what turns that into a stopped container rather than an
+		# open site.
+		@rehearsal_unlock {
+			host rehearsal.tileliteelite.com 129.151.84.183.sslip.io
+			path /unlock/{$REHEARSAL_KEY}
+		}
+		# `respond` rather than `redir`: a redirect after `header` in this
+		# position does not fire — the cookie is set and the response comes
+		# back 200 with no Location. Measured 2026-08-30; do not reinstate it.
+		handle @rehearsal_unlock {
+			header Set-Cookie "rehearsal={$REHEARSAL_KEY}; Path=/; Max-Age=14400; HttpOnly; SameSite=Lax"
+			respond "Rehearsal unlocked on this device for 4 hours. Open https://rehearsal.tileliteelite.com/" 200
+		}
+
+		# /health is the whole exemption list, and it is enough: deploy.sh's
+		# schema check and smoke test, and the external OCI check from #136,
+		# ask for nothing else. Neither container HEALTHCHECK comes through
+		# here at all — the server's hits localhost:3000 and Caddy's the
+		# loopback listener above.
+		@rehearsal_locked {
+			host rehearsal.tileliteelite.com 129.151.84.183.sslip.io
+			not path /health
+			not header_regexp Cookie "(^|;[ ]*)rehearsal={$REHEARSAL_KEY}([;]|$)"
+		}
+		handle @rehearsal_locked {
+			respond "Rehearsal is locked. Run ./scripts/rehearsal-access.sh grant and scan the code." 403
+		}
+		# --- end rehearsal access control ---------------------------------
+
 		@api path /health /engines /auth/* /games /games/* /players/* /invitations/* /dictionaries/*
 		reverse_proxy @api server:3000
 

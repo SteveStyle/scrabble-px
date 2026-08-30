@@ -100,6 +100,32 @@ services:
       # image. The two defaults must stay in step; this is the one that
       # applies to every compose deployment.
       SITE_ADDRESS: ${SITE_ADDRESS:-tileliteelite.com, www.tileliteelite.com, 129.151.69.246.sslip.io}
+
+      # The rehearsal access gate's secret (#240). Read only by the gate in
+      # the Caddyfile, which fires only for rehearsal's hostnames — so this is
+      # unused on production and harmless there.
+      #
+      # **The default is a sentinel, not empty, and that is the whole point.**
+      # Unset, `{$REHEARSAL_KEY}` expands to nothing inside the matcher and a
+      # cookie of literally `rehearsal=` satisfies it — measured on #240, not
+      # feared. A non-empty default instead means the gate compares against a
+      # value nobody holds, so a rehearsal whose .env is missing the key is
+      # **locked**, not open.
+      #
+      # Why not `:?` to demand it. That fails the deploy on every host until
+      # each VM's .env carries the key, production included, where it is never
+      # read. Loud, but loud in the wrong place — a stopped production deploy
+      # for a rehearsal-only setting. Failing closed costs nothing and needs no
+      # change to production at all.
+      #
+      # `rehearsal-access.sh` recognises this sentinel and says what to do, so
+      # "no key configured" is reported where somebody is looking rather than
+      # arriving as an unexplained 403.
+      #
+      # Same trap as SITE_ADDRESS above, from the other side: Compose always
+      # *sets* the variable, so a default is what decides the behaviour, and an
+      # empty one is a valid config that behaves wrongly.
+      REHEARSAL_KEY: ${REHEARSAL_KEY:-no-rehearsal-key-configured}
     volumes:
       # Caddy's obtained TLS certificates live here — without this, a
       # container recreation (not just a restart) would silently re-request
