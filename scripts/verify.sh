@@ -166,6 +166,51 @@ check_envs() {
   else pass envs "production, rehearsal and preview all answering" "$lines"; fi
 }
 
+LABEL[rehearsal]="Rehearsal is closed"
+# Rehearsal's gate (#240) is closed by *default*: with no `REHEARSAL_KEY` in the
+# host's .env, docker-compose.yml supplies a sentinel and the Caddyfile compares
+# every cookie against a value nobody holds, so the site refuses everybody. That
+# is the safe failure, and it is also a silent one — a refusal looks the same
+# whether the key is missing or simply not held by this machine.
+#
+# So the state is asserted here rather than discovered when somebody cannot get
+# in. The probe needs no ssh and no extra configuration: the unlock path is
+# `/unlock/{$REHEARSAL_KEY}`, so asking for the *sentinel's* unlock path answers
+# 200 if and only if the host is running the sentinel, and 403 once a real key
+# is set. Measured both ways, 2026-08-30.
+#
+# It sets the sentinel's cookie on the way past, which is why this is a curl and
+# not a browser: nothing keeps it.
+check_rehearsal() {
+  local url="https://rehearsal.tileliteelite.com" body code
+  body="$(curl -s -w '\n%{http_code}' --max-time 10 \
+    "$url/unlock/no-rehearsal-key-configured" 2>/dev/null)" || body=$'\n000'
+  code="${body##*$'\n'}"
+  case "$code" in
+    403)
+      pass rehearsal "a key is configured and the gate is holding" ;;
+    200)
+      # 200 means two opposite things, and only the body tells them apart.
+      # The sentinel's unlock handler answers with its own sentence; anything
+      # else at this path is the SPA fallback, which means the gate is not in
+      # the deployment at all. Found by running this against the live host
+      # while the gate was still unmerged — it reported "locked" about a site
+      # that was wide open.
+      if [[ "$body" == *"Rehearsal unlocked"* ]]; then
+        fail rehearsal "rehearsal has no access key — it is locked to everybody" \
+          "fix with: ./scripts/rehearsal-access.sh grant"
+      else
+        fail rehearsal "rehearsal has no access gate — it is OPEN to the internet" \
+          "the gate (#240) is not in the deployed image; deploy it"
+      fi ;;
+    000)
+      fail rehearsal "rehearsal did not answer" \
+        "the host may be down; the environments check above says which" ;;
+    *)
+      fail rehearsal "unexpected answer from rehearsal's gate: HTTP $code" ;;
+  esac
+}
+
 LABEL[milestone]="Milestone carries only built work"
 check_milestone() {
   local version ms unbuilt="" lines=""
@@ -254,8 +299,8 @@ check_gates() {
 # compares against origin/main and would otherwise read a stale one. In process
 # order it comes last: tidying up after a change has shipped is the final step,
 # and it is the only line here that is housekeeping rather than readiness.
-RUN_ORDER=(tree pushed branches envs milestone ci tests gates)
-PROCESS_ORDER=(tree pushed ci tests envs milestone gates branches)
+RUN_ORDER=(tree pushed branches envs rehearsal milestone ci tests gates)
+PROCESS_ORDER=(tree pushed ci tests envs rehearsal milestone gates branches)
 
 printf '\n\033[1mChecking\033[0m  (fastest first, so a failure shows early)\n'
 for key in "${RUN_ORDER[@]}"; do "check_$key"; done
