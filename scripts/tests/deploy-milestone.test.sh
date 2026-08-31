@@ -36,7 +36,13 @@ case "$*" in
   *"--json issueType"*)        echo "${ISSUE_TYPE-Project}" ;;
   *"--json issueFieldValues"*) echo "${ISSUE_PHASE-Deployment}" ;;
   *"--json id"*)               echo "I_node_${RANDOM}" ;;
-  *"setIssueFieldValue"*)      exit "${PHASE_SET_EXIT:-0}" ;;
+  # Matched on the *shape*, not just the name. `setIssueFieldValue` takes
+  # `issueFields:[…]` — a list — where its sibling `createIssueFieldValue` takes
+  # a singular `issueField:{…}`. The first version of this stub matched the name
+  # alone and happily accepted a malformed mutation the real API rejects.
+  *"setIssueFieldValue(input:{issueId:"*"issueFields:[{fieldId:"*)
+                               exit "${PHASE_SET_EXIT:-0}" ;;
+  *"setIssueFieldValue"*)      echo "stub: malformed setIssueFieldValue: $*" >&2; exit 1 ;;
   *)                           : ;;
 esac
 STUB

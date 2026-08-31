@@ -137,6 +137,13 @@ publish_release() {
 # `setIssueFieldValue` rather than `createIssueFieldValue`: the latter refuses
 # when a value already exists, and by this point every project has a phase.
 #
+# Note `issueFields:[…]`, a **list** — it differs from `createIssueFieldValue`'s
+# singular `issueField:{…}`, and the first version of this said the latter. The
+# stub matched on the string `setIssueFieldValue` and answered success, so a
+# malformed mutation passed its test; it was caught by running the same call by
+# hand against the real API. The test below now asserts the shape, because a
+# stub that accepts anything is a test of nothing.
+#
 # **A non-project is still closed.** Milestones belong to projects (docs/3.6), so
 # anything else here is an anomaly the gate above has already called out — and
 # closing it is what used to happen, so nothing new is invented for a case that
@@ -175,7 +182,7 @@ settle_issue() {
 
   node="$(gh issue view "$issue" --json id --jq .id 2>/dev/null || true)"
   if [[ -n "$node" ]] && gh api graphql \
-      -f query='mutation($i:ID!,$f:ID!,$o:ID!){setIssueFieldValue(input:{issueId:$i,issueField:{fieldId:$f,singleSelectOptionId:$o}}){clientMutationId}}' \
+      -f query='mutation($i:ID!,$f:ID!,$o:ID!){setIssueFieldValue(input:{issueId:$i,issueFields:[{fieldId:$f,singleSelectOptionId:$o}]}){clientMutationId}}' \
       -f i="$node" -f f="$PHASE_FIELD_ID" -f o="$PHASE_POST_DEPLOYMENT_ID" > /dev/null 2>&1; then
     echo "    #$issue -> Post-deployment, left open for its review"
   else
