@@ -25,8 +25,8 @@ setup() {
 CMD="$*"
 echo "$CMD" >> "$CALLS"
 case "$CMD" in
-  *"grep -m1 '^REHEARSAL_KEY='"*) printf '%s' "${ENV_KEY:-}" ;;
-  *"printenv REHEARSAL_KEY"*)     printf '%s' "${LIVE_KEY:-}" ;;
+  *"grep -m1 '^REHEARSAL_ACCESS_KEY='"*) printf '%s' "${ENV_KEY:-}" ;;
+  *"printenv REHEARSAL_ACCESS_KEY"*)     printf '%s' "${LIVE_KEY:-}" ;;
   *"openssl rand -hex 24"*)       printf '%s' "${NEW_KEY:-deadbeef}" ;;
   *"docker compose up -d web"*)   [[ "${APPLY_EXIT:-0}" == 0 ]] || exit 1
                                   echo applied ;;
@@ -61,7 +61,7 @@ OUT="$("$ACCESS" grant 2>&1)"
 check "grant generates a key when none is set" "1" \
   "$(printf '%s' "$OUT" | grep -c 'No key configured')"
 check "and writes it to the host's .env" "1" \
-  "$(grep -c "echo 'REHEARSAL_KEY=abc123'" "$CALLS")"
+  "$(grep -c "echo 'REHEARSAL_ACCESS_KEY=abc123'" "$CALLS")"
 check "and applies it with 'up -d web', not restart" "1" \
   "$(grep -c 'docker compose up -d web' "$CALLS")"
 check "and shows the unlock URL carrying that key" "1" \
@@ -84,12 +84,12 @@ ENV_KEY="existing42"; export ENV_KEY
 OUT="$("$ACCESS" grant 2>&1)"
 check "grant reuses the existing key" "1" \
   "$(printf '%s' "$OUT" | grep -c 'unlock/existing42')"
-# Matched as the *write* — `REHEARSAL_KEY=` also appears in the read command
-# (`grep -m1 '^REHEARSAL_KEY=' .env`), so the bare string matches a call that
+# Matched as the *write* — `REHEARSAL_ACCESS_KEY=` also appears in the read command
+# (`grep -m1 '^REHEARSAL_ACCESS_KEY=' .env`), so the bare string matches a call that
 # changed nothing. The same trap as matching an account name anywhere on a
 # stubbed argument line rather than as the delete's argument.
 check "and writes nothing — the laptop stays unlocked" "0" \
-  "$(grep -c "echo 'REHEARSAL_KEY=" "$CALLS")"
+  "$(grep -c "echo 'REHEARSAL_ACCESS_KEY=" "$CALLS")"
 teardown
 
 # --- revoke always rotates ---------------------------------------------------
@@ -97,7 +97,7 @@ setup
 ENV_KEY="existing42"; NEW_KEY="rotated7"; export ENV_KEY NEW_KEY
 "$ACCESS" revoke > /dev/null 2>&1
 check "revoke writes a new key even when one is set" "1" \
-  "$(grep -c "echo 'REHEARSAL_KEY=rotated7'" "$CALLS")"
+  "$(grep -c "echo 'REHEARSAL_ACCESS_KEY=rotated7'" "$CALLS")"
 teardown
 
 # --- a write that does not apply is a failure, not a shrug -------------------

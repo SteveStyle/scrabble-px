@@ -167,7 +167,7 @@ check_envs() {
 }
 
 LABEL[rehearsal]="Rehearsal is closed"
-# Rehearsal's gate (#240) is closed by *default*: with no `REHEARSAL_KEY` in the
+# Rehearsal's gate (#240) is closed by *default*: with no `REHEARSAL_ACCESS_KEY` in the
 # host's .env, docker-compose.yml supplies a sentinel and the Caddyfile compares
 # every cookie against a value nobody holds, so the site refuses everybody. That
 # is the safe failure, and it is also a silent one — a refusal looks the same
@@ -175,7 +175,7 @@ LABEL[rehearsal]="Rehearsal is closed"
 #
 # So the state is asserted here rather than discovered when somebody cannot get
 # in. The probe needs no ssh and no extra configuration: the unlock path is
-# `/unlock/{$REHEARSAL_KEY}`, so asking for the *sentinel's* unlock path answers
+# `/unlock/{$REHEARSAL_ACCESS_KEY}`, so asking for the *sentinel's* unlock path answers
 # 200 if and only if the host is running the sentinel, and 403 once a real key
 # is set. Measured both ways, 2026-08-30.
 #

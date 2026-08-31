@@ -10,7 +10,7 @@ set -euo pipefail
 # Rehearsal is a public site that may hold a clone of production's database
 # (#240), so it is closed by default: the Caddyfile refuses every request for
 # rehearsal's hostnames unless the browser carries a cookie holding the host's
-# `REHEARSAL_KEY`. Production is untouched — the gate is matched on hostname,
+# `REHEARSAL_ACCESS_KEY`. Production is untouched — the gate is matched on hostname,
 # so it cannot fire there.
 #
 # **A cookie can only be set by the browser that will hold it**, so this script
@@ -46,12 +46,12 @@ remote() {
 # to .env but never applied is exactly the state that looks configured and
 # behaves locked.
 configured_key() {
-  remote "cd $DEPLOY_REMOTE_DIR && grep -m1 '^REHEARSAL_KEY=' .env 2>/dev/null | cut -d= -f2-" \
+  remote "cd $DEPLOY_REMOTE_DIR && grep -m1 '^REHEARSAL_ACCESS_KEY=' .env 2>/dev/null | cut -d= -f2-" \
     || true
 }
 
 live_key() {
-  remote "cd $DEPLOY_REMOTE_DIR && docker compose exec -T web printenv REHEARSAL_KEY 2>/dev/null" \
+  remote "cd $DEPLOY_REMOTE_DIR && docker compose exec -T web printenv REHEARSAL_ACCESS_KEY 2>/dev/null" \
     || true
 }
 
@@ -68,8 +68,8 @@ write_key() {
   # environment, so it would report success and change nothing.
   remote "cd $DEPLOY_REMOTE_DIR \
     && touch .env \
-    && sed -i '/^REHEARSAL_KEY=/d' .env \
-    && echo 'REHEARSAL_KEY=$key' >> .env \
+    && sed -i '/^REHEARSAL_ACCESS_KEY=/d' .env \
+    && echo 'REHEARSAL_ACCESS_KEY=$key' >> .env \
     && docker compose up -d web > /dev/null 2>&1 \
     && echo applied"
 }
@@ -122,7 +122,7 @@ case "${1:-}" in
     CONFIGURED="$(configured_key)"
     LIVE="$(live_key)"
     if [[ -z "$CONFIGURED" ]]; then
-      echo "    .env:      no REHEARSAL_KEY — rehearsal is locked to everybody"
+      echo "    .env:      no REHEARSAL_ACCESS_KEY — rehearsal is locked to everybody"
     elif [[ "$CONFIGURED" == "$SENTINEL" ]]; then
       echo "    .env:      the sentinel — rehearsal is locked to everybody"
     else
