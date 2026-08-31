@@ -47,7 +47,8 @@ mod games;
 mod invitations;
 mod ratings;
 mod roster;
-mod sweeps;
+mod sweeps_capacity;
+mod sweeps_game;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -64,7 +65,8 @@ use self::games::*;
 use self::invitations::*;
 use self::ratings::*;
 use self::roster::*;
-use self::sweeps::*;
+use self::sweeps_capacity::*;
+use self::sweeps_game::*;
 
 #[derive(Clone)]
 pub struct AppState {
