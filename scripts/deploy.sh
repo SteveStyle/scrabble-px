@@ -155,6 +155,37 @@ publish_release() {
 PHASE_FIELD_ID="${PHASE_FIELD_ID:-IFSS_kgDOAsBg2A}"
 PHASE_POST_DEPLOYMENT_ID="${PHASE_POST_DEPLOYMENT_ID:-IFSSO_kgDOBNDpVw}"
 
+# Issues that this release's commits mention while still filed under a
+# placeholder milestone. One line each on stdout, empty when there are none.
+#
+# `patch`, `minor` and `major` are placeholders — a change sits in one until the
+# version it ships in is known, and is moved before the deploy (owner,
+# 2026-08-30). Nothing checked that the move happened.
+#
+# **It fails more quietly than it looks.** `settle_milestone` reads the milestone
+# named after the version being deployed, so a milestone called `patch` is never
+# the one a deploy consults. The risk was never that its contents ship by
+# accident; it is that they ship and are then never closed, announced, or
+# deferred — they simply stop being tracked.
+#
+# A function rather than inline, so it can be tested: the gate around it is only
+# reachable by running a deploy, which is how #150 survived in the code beside
+# it. Reuses `commits_mentioning` rather than inverting it, so both halves of the
+# gate share one definition of "this release mentions it".
+placeholder_shipping() {
+  local ref="$1" milestone num title
+  for milestone in patch minor major; do
+    while IFS=$'\t' read -r num title; do
+      [[ -z "$num" ]] && continue
+      if (( $(commits_mentioning "$ref" "$num") > 0 )); then
+        printf '    #%-5s %-12s %s   <-- SHIPPING, FILED UNDER %s\n' \
+          "$num" "placeholder" "${title:0:44}" "$milestone"
+      fi
+    done < <(gh issue list --milestone "$milestone" --state open \
+               --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>/dev/null || true)
+  done
+}
+
 settle_issue() {
   local issue="$1" kind phase node
 
@@ -697,6 +728,22 @@ else
       echo "    should not be carrying a milestone at all — docs/3.6 §1.1." >&2
     fi
 
+    # The mirror image of the check above: that one finds an issue in the
+    # milestone that no commit mentions — in the release list, not in the
+    # release. This finds one the commits mention that is not in the milestone —
+    # in the release, not in the list. See placeholder_shipping().
+    PLACEHOLDER_SHIPPING="$(placeholder_shipping "$TARGET_FULL_SHA")"
+    [[ -n "$PLACEHOLDER_SHIPPING" ]] && printf '%s\n' "$PLACEHOLDER_SHIPPING"
+
+    if [[ -n "$PLACEHOLDER_SHIPPING" ]]; then
+      echo
+      echo "    Shipping in this release but filed under a placeholder:$PLACEHOLDER_SHIPPING" >&2
+      echo "    A placeholder milestone is never the one a deploy closes, so these" >&2
+      echo "    would ship and then stop being tracked — not closed, not announced," >&2
+      echo "    not deferred. Move them to $DEPLOYED_VERSION, or out of the" >&2
+      echo "    placeholder if they are not in this release." >&2
+    fi
+
     if [[ -n "$UNBUILT" ]]; then
       echo
       echo "    Nothing in this release mentions:$UNBUILT" >&2
@@ -709,12 +756,16 @@ else
     # answer would hang it — the same trap the tooling-branch guard hit.
     if [[ "${DEPLOY_GATES_ONLY:-}" == "1" ]]; then
       echo "    (gates only — not asking)"
-    elif [[ -n "$UNBUILT" ]]; then
+    elif [[ -n "$UNBUILT" || -n "$PLACEHOLDER_SHIPPING" ]]; then
+      # Asked rather than refused, for the placeholder half as much as the other:
+      # a `Refs #N` in passing is not a claim that #N shipped, so a false positive
+      # is plausible — and a gate that cries wolf on the deploy path is one people
+      # learn to bypass, with DEPLOY_EMERGENCY already there to do it with.
       if [[ ! -t 0 ]]; then
-        echo "error: refusing — unbuilt issues in the milestone and no terminal to confirm at." >&2
+        echo "error: refusing — the milestone needs attention and there is no terminal to confirm at." >&2
         exit 1
       fi
-      read -r -p "    Close these anyway? [y/N] " REPLY_MILESTONE
+      read -r -p "    Continue anyway? [y/N] " REPLY_MILESTONE
       if [[ "$REPLY_MILESTONE" != "y" && "$REPLY_MILESTONE" != "Y" ]]; then
         echo "    Stopped. Move them out of $DEPLOYED_VERSION and run again." >&2
         exit 1
