@@ -94,6 +94,38 @@ body:
       required: true
 
   - type: textarea
+    id: post-deployment-check
+    attributes:
+      label: Post-deployment check
+      description: >-
+        **What would show this worked, once it is live?** Not the tests — those
+        are above, and they run before it ships. This is what somebody looks at
+        afterwards to say the benefit arrived.
+
+        **It closes the loop back to the scope, so it should match it.** Take the
+        requirements above one at a time and say how each would be seen to be
+        true in production. Commercially this is the question of whether a
+        project met its business case; here it is the same question with the
+        money left out.
+
+        That correspondence is the point, and it works in both directions: a
+        check with no requirement behind it is measuring the wrong thing, and a
+        **requirement with no check is one that can quietly not get built** —
+        which is how R2 of #265 reached a merged delivery without existing.
+
+        Written now, while the intent is fresh, because by the time it falls due
+        the project has been closed out of everybody's head.
+
+        For a `no-release` project it is often the **next application release**
+        behaving as expected — say so, and say what would count as it not.
+      placeholder: |
+        The next production deploy settles its milestone with every project left
+        open at Post-deployment rather than closed, and its version bump reaches
+        main. If the bump is refused, the bypass is wrong.
+    validations:
+      required: true
+
+  - type: textarea
     id: deliveries
     attributes:
       label: Deliveries
