@@ -119,6 +119,84 @@ publish_release() {
 #
 # Reads the globals the deploy has already established: IS_RELEASE, EMERGENCY,
 # DEPLOY_ENV, DEPLOYED_VERSION, DEPLOY_TAG, TARGET_SHA, NEXT_VERSION.
+# What a deploy does to one issue in the milestone it is shipping.
+#
+# **It advances the phase; it does not close.** A project used to be closed here,
+# which took with it the one moment its post-deployment review was meant to
+# happen — seven projects closed, no review ever written, and the `Post-deployment`
+# column unreachable because the board filters `is:open` (#263). Leaving it open
+# at that phase makes the column mean *awaiting its review*.
+#
+# What follows it is `Project Closedown` — *lessons learnt completed* — so the
+# two halves are separable: a project at `Post-deployment` still owes its review,
+# one at `Project Closedown` owes only its closing. Nothing here sets that second
+# phase: writing the review is the act that earns it, and no script can tell that
+# it happened.
+#
+# The `Released in` comment still goes on, because that record was never the
+# problem. `--reason completed` is still explicit where a close does happen, for
+# the reason it always was: `stateReason` is how a closure's reason is recorded,
+# and this is the one site that closes with no human present.
+#
+# `setIssueFieldValue` rather than `createIssueFieldValue`: the latter refuses
+# when a value already exists, and by this point every project has a phase.
+#
+# Note `issueFields:[…]`, a **list** — it differs from `createIssueFieldValue`'s
+# singular `issueField:{…}`, and the first version of this said the latter. The
+# stub matched on the string `setIssueFieldValue` and answered success, so a
+# malformed mutation passed its test; it was caught by running the same call by
+# hand against the real API. The test below now asserts the shape, because a
+# stub that accepts anything is a test of nothing.
+#
+# **A non-project is still closed.** Milestones belong to projects (docs/3.6), so
+# anything else here is an anomaly the gate above has already called out — and
+# closing it is what used to happen, so nothing new is invented for a case that
+# should not arise.
+PHASE_FIELD_ID="${PHASE_FIELD_ID:-IFSS_kgDOAsBg2A}"
+PHASE_POST_DEPLOYMENT_ID="${PHASE_POST_DEPLOYMENT_ID:-IFSSO_kgDOBNDpVw}"
+
+settle_issue() {
+  local issue="$1" kind phase node
+
+  gh issue comment "$issue" \
+    --body "Released in $DEPLOY_TAG — production is running $DEPLOYED_VERSION+$TARGET_SHA." \
+    > /dev/null 2>&1 \
+    || echo "    warning: could not comment on #$issue" >&2
+
+  kind="$(gh issue view "$issue" --json issueType --jq '.issueType.name // ""' 2>/dev/null || true)"
+  if [[ "$kind" != "Project" ]]; then
+    if gh issue close "$issue" --reason completed > /dev/null 2>&1; then
+      echo "    closed #$issue — not a project, so no review to wait for"
+    else
+      echo "    warning: could not close #$issue" >&2
+    fi
+    return
+  fi
+
+  # Said out loud when it is not what was expected. A project reaching a release
+  # from `Development` skipped user testing, and advancing it silently would hide
+  # that — the same reasoning as the gate above calling out an issue that no
+  # commit mentions, because that too is decidable.
+  phase="$(gh issue view "$issue" --json issueFieldValues \
+    --jq '[.issueFieldValues[]? | select(.field.name == "Phase") | .name] | first // ""' \
+    2>/dev/null || true)"
+  if [[ -n "$phase" && "$phase" != "Deployment" ]]; then
+    echo "    note: #$issue was at '$phase', not 'Deployment', when it shipped" >&2
+  fi
+
+  node="$(gh issue view "$issue" --json id --jq .id 2>/dev/null || true)"
+  if [[ -n "$node" ]] && gh api graphql \
+      -f query='mutation($i:ID!,$f:ID!,$o:ID!){setIssueFieldValue(input:{issueId:$i,issueFields:[{fieldId:$f,singleSelectOptionId:$o}]}){clientMutationId}}' \
+      -f i="$node" -f f="$PHASE_FIELD_ID" -f o="$PHASE_POST_DEPLOYMENT_ID" > /dev/null 2>&1; then
+    echo "    #$issue -> Post-deployment, left open for its review"
+  else
+    # Deliberately not falling back to closing. Closing is the behaviour this
+    # change exists to remove, and doing it because a field could not be set
+    # would restore the defect at exactly the moment nobody is watching.
+    echo "    warning: could not set the phase on #$issue — it stays open at '${phase:-unset}'" >&2
+  fi
+}
+
 settle_milestone() {
   if (( ! IS_RELEASE )); then
     echo "==> No milestone change: a $DEPLOY_ENV deploy has not reached users"
@@ -140,21 +218,10 @@ settle_milestone() {
     MILESTONE="$(gh api "repos/{owner}/{repo}/milestones?state=open" \
       --jq ".[] | select(.title == \"$DEPLOYED_VERSION\") | .number" 2>/dev/null || true)"
     if [[ -n "$MILESTONE" ]]; then
-      echo "==> Closing milestone $DEPLOYED_VERSION and its issues"
+      echo "==> Settling milestone $DEPLOYED_VERSION — projects advance to Post-deployment"
       for ISSUE in $(gh issue list --milestone "$DEPLOYED_VERSION" --state open \
         --json number --jq '.[].number' 2>/dev/null || true); do
-        # `--reason completed` explicitly. It is the default, so nothing changes
-        # today — but `stateReason` is how a closure's *reason* is recorded now
-        # that the wontfix/invalid/duplicate labels are gone, and this is the one
-        # site that closes an issue with no human present. A field that carries
-        # meaning should not be left implicit exactly where nobody is watching.
-        if gh issue close "$ISSUE" --reason completed \
-          --comment "Released in $DEPLOY_TAG — production is running $DEPLOYED_VERSION+$TARGET_SHA." \
-          > /dev/null 2>&1; then
-          echo "    closed #$ISSUE"
-        else
-          echo "    warning: could not close #$ISSUE" >&2
-        fi
+        settle_issue "$ISSUE"
       done
       gh api --method PATCH "repos/{owner}/{repo}/milestones/$MILESTONE" \
         -f state=closed > /dev/null 2>&1 \
