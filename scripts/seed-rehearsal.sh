@@ -29,6 +29,9 @@ set -euo pipefail
 PROD_HOST="${PROD_DEPLOY_HOST:-129.151.69.246}"
 PROD_KEY="${PROD_DEPLOY_SSH_KEY:-$HOME/.ssh/oracle_tile_lite_elite}"
 REHEARSAL_HOST="${DEPLOY_HOST:-129.151.84.183}"
+# The ssh *key path*. Not `REHEARSAL_ACCESS_KEY`, which is the access gate's
+# shared secret in docker-compose.yml (#240) — different thing, deliberately
+# different name.
 REHEARSAL_KEY="${DEPLOY_SSH_KEY:-$HOME/.ssh/oracle_tile_lite_elite_rehearsal}"
 REMOTE_DIR="${DEPLOY_REMOTE_DIR:-tile-lite-elite}"
 REHEARSAL_URL="${REHEARSAL_URL:-https://129.151.84.183.sslip.io}"
