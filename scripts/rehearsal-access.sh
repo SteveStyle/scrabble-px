@@ -92,7 +92,8 @@ show_unlock() {
   echo
   echo "    $url"
   echo
-  echo "    Access lasts 4 hours on that device, then ends by itself."
+  echo "    It opens the site directly — access lasts 4 hours on that device,"
+  echo "    then ends by itself."
 }
 
 case "${1:-}" in

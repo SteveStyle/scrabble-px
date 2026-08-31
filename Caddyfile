@@ -91,13 +91,22 @@ http://127.0.0.1:2020 {
 			host rehearsal.tileliteelite.com 129.151.84.183.sslip.io
 			path /unlock/{$REHEARSAL_ACCESS_KEY}
 		}
-		# `respond` rather than `redir`: a redirect after `header` in this
-		# position does not fire — the cookie is set and the response comes
-		# back 200 with no Location. Measured 2026-08-30; do not reinstate it.
-		handle @rehearsal_unlock {
-			header Set-Cookie "rehearsal={$REHEARSAL_ACCESS_KEY}; Path=/; Max-Age=14400; HttpOnly; SameSite=Lax"
-			respond "Rehearsal unlocked on this device for 4 hours. Open https://rehearsal.tileliteelite.com/" 200
-		}
+		# **Not inside a `handle`.** A `redir` following a `header` in the same
+		# `handle` block never fires: the cookie is set and the response comes
+		# back 200 with no `Location` — measured 2026-08-30, and it is why this
+		# first shipped as a page saying "now open the site". Outside a handle,
+		# `header` is non-terminal, so the request carries on to `redir`, which
+		# is. Measured both ways 2026-09-01 against this exact file.
+		#
+		# It matters because the link is reached by scanning a QR code: landing
+		# in the game is the whole point, and a page telling you to navigate
+		# somewhere is a step a phone user has to do by hand.
+		#
+		# Ordering is what keeps this safe: `redir` is terminal and sits before
+		# the locked check below, so an unlock request never reaches it — while
+		# `/unlock/<anything-else>` does, and is refused.
+		header @rehearsal_unlock Set-Cookie "rehearsal={$REHEARSAL_ACCESS_KEY}; Path=/; Max-Age=14400; HttpOnly; SameSite=Lax"
+		redir @rehearsal_unlock / 302
 
 		# /health is the whole exemption list, and it is enough: deploy.sh's
 		# schema check and smoke test, and the external OCI check from #136,
