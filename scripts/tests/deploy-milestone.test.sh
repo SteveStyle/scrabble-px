@@ -27,11 +27,17 @@ setup() {
   cat > "$BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$GH_CALLS"
+# The stub answers with what the real `gh` would print *after* its own --jq,
+# because it cannot run jq itself.
 case "$*" in
-  *"milestones?state=open"*)  echo "${MILESTONE_NUMBER:-7}" ;;
-  *"milestones?state=all"*)   printf '%s\n' ${EXISTING_MILESTONES:-} ;;
-  *"issue list"*)             printf '%s\n' ${MILESTONE_ISSUES:-} ;;
-  *)                          : ;;
+  *"milestones?state=open"*)   echo "${MILESTONE_NUMBER:-7}" ;;
+  *"milestones?state=all"*)    printf '%s\n' ${EXISTING_MILESTONES:-} ;;
+  *"issue list"*)              printf '%s\n' ${MILESTONE_ISSUES:-} ;;
+  *"--json issueType"*)        echo "${ISSUE_TYPE-Project}" ;;
+  *"--json issueFieldValues"*) echo "${ISSUE_PHASE-Deployment}" ;;
+  *"--json id"*)               echo "I_node_${RANDOM}" ;;
+  *"setIssueFieldValue"*)      exit "${PHASE_SET_EXIT:-0}" ;;
+  *)                           : ;;
 esac
 STUB
   chmod +x "$BIN/gh"; PATH="$BIN:$PATH"
@@ -41,7 +47,10 @@ STUB
   DEPLOY_TAG="prod-0.7.1"; TARGET_SHA="abc1234"
   MILESTONE_ISSUES=""; EXISTING_MILESTONES=""; MILESTONE_NUMBER=7
   export MILESTONE_ISSUES EXISTING_MILESTONES MILESTONE_NUMBER
-  unset DEPLOY_SKIP_BUMP || true
+  # Reset per case, or a scenario's issue type leaks into the next one — which
+  # it did while these were being written, turning a project into a requirement
+  # and closing it.
+  unset DEPLOY_SKIP_BUMP ISSUE_TYPE ISSUE_PHASE PHASE_SET_EXIT || true
 }
 teardown() { rm -rf "$DIR"; }
 
@@ -55,18 +64,20 @@ calls_matching() { grep -c -- "$1" "$GH_CALLS" 2>/dev/null || true; }
 setup
 MILESTONE_ISSUES="201 202"; export MILESTONE_ISSUES
 out="$(settle_milestone)"
-check "a release closes each issue in its milestone" "2" "$(calls_matching 'issue close')"
-check "and closes the milestone itself"              "1" "$(calls_matching 'milestones/7')"
-check "and opens the next one"                       "1" "$(calls_matching 'title=0.7.2')"
-check "and says so"                                  "yes" \
-  "$(case "$out" in *"Closing milestone 0.7.1"*) echo yes ;; *) echo "$out" ;; esac)"
+check "a release advances each project, and closes none" "0" "$(calls_matching 'issue close')"
+check "each is moved to Post-deployment"                 "2" "$(calls_matching 'setIssueFieldValue')"
+check "and still says it was released"                   "2" "$(calls_matching 'issue comment')"
+check "and closes the milestone itself"                  "1" "$(calls_matching 'milestones/7')"
+check "and opens the next one"                           "1" "$(calls_matching 'title=0.7.2')"
+check "and says so"                                      "yes" \
+  "$(case "$out" in *"Settling milestone 0.7.1"*) echo yes ;; *) echo "$out" ;; esac)"
 teardown
 
 # --- #150: the case that fell off the end of the if --------------------------
 setup
 MILESTONE_ISSUES="201"; EMERGENCY=""; export MILESTONE_ISSUES
 out="$(settle_milestone)"
-check "#150: a normal release does not silently do nothing" "1" "$(calls_matching 'issue close')"
+check "#150: a normal release does not silently do nothing" "1" "$(calls_matching 'setIssueFieldValue')"
 teardown
 
 # --- an emergency deliberately settles nothing -------------------------------
@@ -98,8 +109,8 @@ teardown
 setup
 MILESTONE_ISSUES="201"; export MILESTONE_ISSUES
 settle_milestone > /dev/null
-check "closes exactly the milestone's issues, no more" "1" "$(calls_matching 'issue close')"
-check "and it is the one listed"                       "1" "$(calls_matching 'issue close 201')"
+check "settles exactly the milestone's issues, no more" "1" "$(calls_matching 'setIssueFieldValue')"
+check "and it is the one listed"                        "1" "$(calls_matching 'issue comment 201')"
 teardown
 
 # --- the next milestone is not opened twice ----------------------------------
@@ -114,6 +125,48 @@ setup
 MILESTONE_ISSUES=""; export MILESTONE_ISSUES
 DEPLOY_SKIP_BUMP=1 settle_milestone > /dev/null
 check "no bump, no next milestone" "0" "$(calls_matching 'title=0.7.2')"
+teardown
+
+# --- #263: a project is left open for its review ------------------------------
+# The defect this replaced: closing here took with it the one moment the
+# post-deployment review was meant to happen, and the `Post-deployment` column
+# cannot hold a closed project because the board filters `is:open`.
+setup
+MILESTONE_ISSUES="201"; export MILESTONE_ISSUES
+out="$(settle_milestone 2>&1)"
+check "a shipped project is not closed"        "0" "$(calls_matching 'issue close')"
+check "it is moved to Post-deployment instead" "1" "$(calls_matching 'setIssueFieldValue')"
+check "and says it is waiting for a review"    "yes" \
+  "$(case "$out" in *"left open for its review"*) echo yes ;; *) echo no ;; esac)"
+teardown
+
+# --- a project that skipped phases is called out, not advanced silently -------
+setup
+MILESTONE_ISSUES="201"; ISSUE_PHASE="Development"; export MILESTONE_ISSUES ISSUE_PHASE
+out="$(settle_milestone 2>&1)"
+check "shipping from the wrong phase is said out loud" "yes" \
+  "$(case "$out" in *"was at 'Development', not 'Deployment'"*) echo yes ;; *) echo no ;; esac)"
+check "and it is still advanced"                       "1" "$(calls_matching 'setIssueFieldValue')"
+teardown
+
+# --- a non-project in a milestone is still closed -----------------------------
+# Milestones belong to projects, so this should not arise — the gate calls it
+# out. Closing is what used to happen, so nothing new is invented for it.
+setup
+MILESTONE_ISSUES="201"; ISSUE_TYPE="Requirement"; export MILESTONE_ISSUES ISSUE_TYPE
+out="$(settle_milestone 2>&1)"
+check "a non-project is closed"          "1" "$(calls_matching 'issue close')"
+check "and is not given a phase"         "0" "$(calls_matching 'setIssueFieldValue')"
+teardown
+
+# --- a phase that cannot be set does NOT fall back to closing -----------------
+# Falling back would restore the defect at exactly the moment nobody is watching.
+setup
+MILESTONE_ISSUES="201"; PHASE_SET_EXIT=1; export MILESTONE_ISSUES PHASE_SET_EXIT
+out="$(settle_milestone 2>&1)"
+check "a failed phase change closes nothing" "0" "$(calls_matching 'issue close')"
+check "and says the project stays open"      "yes" \
+  "$(case "$out" in *"could not set the phase"*) echo yes ;; *) echo no ;; esac)"
 teardown
 
 if (( failures )); then echo "$failures test(s) failed" >&2; exit 1; fi

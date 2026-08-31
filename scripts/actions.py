@@ -33,6 +33,7 @@ Read-only and derived: nothing is stored, so nothing can drift.
 import json
 import re
 import subprocess
+import datetime as dt
 import sys
 
 BOLD, DIM, OFF = "\033[1m", "\033[2m", "\033[0m"
@@ -53,6 +54,12 @@ if MODE not in ("", "--claude", "--all"):
     sys.exit(2)
 WHO = "Claude" if MODE == "--claude" else "" if MODE == "--all" else "Steve"
 NO_WORKSTREAM = "no workstream — needs triage"
+POST_DEPLOYMENT = "Post-deployment"
+# D4: the review is written "once the project's last release has been live and
+# used, not on the day it ships — a week is usually enough for the interesting
+# failures to surface". So nothing is said before then; a reminder that fires on
+# day one is one you learn to ignore.
+REVIEW_DUE_DAYS = 7
 ALL = MODE == "--all"
 
 QUERY = """
@@ -106,6 +113,59 @@ def workstream_order(owner: str) -> list[str]:
         if f.get("name") == "Workstream":
             return [o["name"] for o in f.get("options", [])]
     return []
+
+
+def post_deployment_days(owner: str, repo: str, numbers: list[int]) -> dict[int, int]:
+    """Days each project has sat at `Post-deployment`, keyed by issue number.
+
+    **The clock is GitHub's, not ours.** A field *value* carries no timestamp,
+    but the *issue* records every change: `IssueFieldChangedEvent` and
+    `IssueFieldAddedEvent` are timeline items with `createdAt`, `previousValue`
+    and `newValue`. So nothing has to be stored, and a project moved by hand is
+    dated exactly like one moved by `deploy.sh` — which matters, because a
+    `no-release` project is never touched by a deploy at all.
+
+    **Matched on the value moved *to*, at the time it was set.** The events keep
+    the option name as it was, and renaming an option does not rewrite them: the
+    `Scope and design` option became `Scope` on 2026-08-31, so every earlier
+    event still says the old name. Anything matching against the *current* option
+    list would silently miss all of it.
+
+    Queried only for the projects that are already at that phase — a handful —
+    rather than widening the query that fetches every issue.
+    """
+    if not numbers:
+        return {}
+    parts = " ".join(
+        f'i{n}: issue(number: {n}) {{ number timelineItems(last: 30, '
+        f"itemTypes: [ISSUE_FIELD_CHANGED_EVENT, ISSUE_FIELD_ADDED_EVENT]) {{ nodes {{ "
+        f"... on IssueFieldChangedEvent {{ createdAt newValue "
+        f"issueField {{ ... on IssueFieldSingleSelect {{ name }} }} }} "
+        f"... on IssueFieldAddedEvent {{ createdAt value "
+        f"issueField {{ ... on IssueFieldSingleSelect {{ name }} }} }} }} }} }}"
+        for n in numbers
+    )
+    query = f'{{ repository(owner: "{owner}", name: "{repo}") {{ {parts} }} }}'
+    try:
+        data = json.loads(gh("api", "graphql", "-f", f"query={query}"))
+    except Exception:
+        # A clock we cannot read is not a reminder we should invent.
+        return {}
+    today = dt.datetime.now(dt.timezone.utc)
+    out: dict[int, int] = {}
+    for node in (data.get("data", {}).get("repository") or {}).values():
+        if not isinstance(node, dict):
+            continue
+        when = None
+        for ev in node.get("timelineItems", {}).get("nodes", []):
+            if (ev.get("issueField") or {}).get("name") != "Phase":
+                continue
+            if (ev.get("newValue") or ev.get("value")) == POST_DEPLOYMENT:
+                when = ev.get("createdAt")
+        if when:
+            moved = dt.datetime.fromisoformat(when.replace("Z", "+00:00"))
+            out[node["number"]] = (today - moved).days
+    return out
 
 
 def branches() -> set[int]:
@@ -304,10 +364,31 @@ def main() -> int:
             return "your turn"
         return "in hand"
 
+    # Projects left open at Post-deployment for their review (#263), and how
+    # long they have been waiting. Computed once, for the few that qualify.
+    #
+    # **Attributed to Claude**, because D4 says the review is written by Claude
+    # and reviewed by Steve — so until a draft exists it is not Steve's turn.
+    # The escalation past that is `verify.sh`'s, which fails once a *later*
+    # release has shipped: two levels, in two tools, rather than one nag that
+    # has to decide on its own how cross to be.
+    awaiting_review = post_deployment_days(
+        repo[0], repo[1],
+        [n for n, i in issues.items()
+         if (i.get("issueType") or {}).get("name") == "Project"
+         and field(i, "Phase") == POST_DEPLOYMENT],
+    )
+
     def mine(num: int) -> tuple[list[str], list[dict]]:
         """The actions and pull requests this run is about — the filter, in one place."""
         items = [a for a in actions_in(issues.get(num, {}).get("body", ""))
                  if ALL or a.startswith(f"({WHO})")]
+        days = awaiting_review.get(num, 0)
+        if days >= REVIEW_DUE_DAYS:
+            due = (f"(Claude) post-deployment review is due — {days} days at "
+                   f"Post-deployment. docs/templates/post-deployment-review.md")
+            if ALL or due.startswith(f"({WHO})"):
+                items.insert(0, due)
         wanted = pr_for.get(num, [])
         if not ALL:
             # Whose turn, from GitHub's own answer. Steve's if a review is

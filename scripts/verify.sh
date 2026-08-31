@@ -166,6 +166,48 @@ check_envs() {
   else pass envs "production, rehearsal and preview all answering" "$lines"; fi
 }
 
+LABEL[reviews]="Shipped projects have been reviewed"
+# A project is left open at `Post-deployment` by the deploy that ships it (#263),
+# so the column means *awaiting its review*. That is a passive reminder, which is
+# the point — but a passive reminder is also one a column can quietly accumulate.
+#
+# This is the bound. `actions.py` mentions a project a week after it ships;
+# this fails once a **later release has shipped** while the earlier one was still
+# unreviewed, which is a different and much stronger statement: we moved on
+# without looking back.
+#
+# The clock is GitHub's own — `IssueFieldChangedEvent` carries `createdAt` — so
+# nothing is stored and a project moved by hand is dated like one moved by
+# deploy.sh. Matched on the value moved *to*, because the events keep the option
+# name as it was and a rename does not rewrite them.
+check_reviews() {
+  local lines="" overdue=0 num when tag_date
+  if ! command -v gh > /dev/null; then
+    fail reviews "not checked — no 'gh' on PATH"; return
+  fi
+  # The most recent release, as the thing a project should not have outlived.
+  tag_date="$(git for-each-ref --sort=-creatordate --format='%(creatordate:unix)' \
+    'refs/tags/prod-*' 2>/dev/null | head -1)"
+  [[ -n "$tag_date" ]] || { pass reviews "no releases yet — nothing to have outlived"; return; }
+
+  for num in $(gh api graphql -f query='{repository(owner:"delphside",name:"tile-lite-elite"){issues(first:100,states:OPEN){nodes{number issueType{name} issueFieldValues(first:10){nodes{... on IssueFieldSingleSelectValue{name field{... on IssueFieldSingleSelect{name}}}}}}}}}' \
+      --jq '.data.repository.issues.nodes[] | select(.issueType.name=="Project") | select(any(.issueFieldValues.nodes[]?; .field.name=="Phase" and .name=="Post-deployment")) | .number' 2>/dev/null); do
+    when="$(gh api graphql -f query="{repository(owner:\"delphside\",name:\"tile-lite-elite\"){issue(number:$num){timelineItems(last:30,itemTypes:[ISSUE_FIELD_CHANGED_EVENT,ISSUE_FIELD_ADDED_EVENT]){nodes{... on IssueFieldChangedEvent{createdAt newValue issueField{... on IssueFieldSingleSelect{name}}} ... on IssueFieldAddedEvent{createdAt value issueField{... on IssueFieldSingleSelect{name}}}}}}}}" \
+      --jq '[.data.repository.issue.timelineItems.nodes[] | select(.issueField.name=="Phase") | select((.newValue // .value)=="Post-deployment") | .createdAt] | last // ""' 2>/dev/null)"
+    [[ -n "$when" ]] || continue
+    if (( $(date -u -d "$when" +%s) < tag_date )); then
+      lines+="$(printf '#%-6s shipped, then a later release shipped before it was reviewed' "$num")"$'\n'
+      overdue=1
+    fi
+  done
+
+  if (( overdue )); then
+    fail reviews "a project was still unreviewed when the next release went out" "$lines"
+  else
+    pass reviews "nothing shipped past an unreviewed project"
+  fi
+}
+
 LABEL[rehearsal]="Rehearsal is closed"
 # Rehearsal's gate (#240) is closed by *default*: with no `REHEARSAL_KEY` in the
 # host's .env, docker-compose.yml supplies a sentinel and the Caddyfile compares
@@ -299,8 +341,8 @@ check_gates() {
 # compares against origin/main and would otherwise read a stale one. In process
 # order it comes last: tidying up after a change has shipped is the final step,
 # and it is the only line here that is housekeeping rather than readiness.
-RUN_ORDER=(tree pushed branches envs rehearsal milestone ci tests gates)
-PROCESS_ORDER=(tree pushed ci tests envs rehearsal milestone gates branches)
+RUN_ORDER=(tree pushed branches envs rehearsal reviews milestone ci tests gates)
+PROCESS_ORDER=(tree pushed ci tests envs rehearsal reviews milestone gates branches)
 
 printf '\n\033[1mChecking\033[0m  (fastest first, so a failure shows early)\n'
 for key in "${RUN_ORDER[@]}"; do "check_$key"; done
