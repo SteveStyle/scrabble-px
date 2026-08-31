@@ -125,9 +125,13 @@ publish_release() {
 # which took with it the one moment its post-deployment review was meant to
 # happen — seven projects closed, no review ever written, and the `Post-deployment`
 # column unreachable because the board filters `is:open` (#263). Leaving it open
-# at that phase makes the column mean *awaiting its review*, and makes closing
-# mean *the review is done*, which is a better thing for "closed" to mean than
-# "we deployed it".
+# at that phase makes the column mean *awaiting its review*.
+#
+# What follows it is `Project Closedown` — *lessons learnt completed* — so the
+# two halves are separable: a project at `Post-deployment` still owes its review,
+# one at `Project Closedown` owes only its closing. Nothing here sets that second
+# phase: writing the review is the act that earns it, and no script can tell that
+# it happened.
 #
 # The `Released in` comment still goes on, because that record was never the
 # problem. `--reason completed` is still explicit where a close does happen, for

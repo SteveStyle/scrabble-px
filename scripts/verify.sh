@@ -166,7 +166,7 @@ check_envs() {
   else pass envs "production, rehearsal and preview all answering" "$lines"; fi
 }
 
-LABEL[reviews]="Shipped projects have been reviewed"
+LABEL[reviews]="Shipped projects have been closed out"
 # A project is left open at `Post-deployment` by the deploy that ships it (#263),
 # so the column means *awaiting its review*. That is a passive reminder, which is
 # the point — but a passive reminder is also one a column can quietly accumulate.
@@ -190,21 +190,28 @@ check_reviews() {
     'refs/tags/prod-*' 2>/dev/null | head -1)"
   [[ -n "$tag_date" ]] || { pass reviews "no releases yet — nothing to have outlived"; return; }
 
+  # Both phases a *shipped* project can sit in and rot: it still owes its review
+  # (`Post-deployment`), or it owes only its closing (`Project Closedown`).
+  #
+  # **Dated from entering `Post-deployment`**, not from the phase it is in now.
+  # That is when it shipped, and it is the clock that matters — a project that
+  # wrote its review promptly and then sat unclosed for a month has still been
+  # open for a month.
   for num in $(gh api graphql -f query='{repository(owner:"delphside",name:"tile-lite-elite"){issues(first:100,states:OPEN){nodes{number issueType{name} issueFieldValues(first:10){nodes{... on IssueFieldSingleSelectValue{name field{... on IssueFieldSingleSelect{name}}}}}}}}}' \
-      --jq '.data.repository.issues.nodes[] | select(.issueType.name=="Project") | select(any(.issueFieldValues.nodes[]?; .field.name=="Phase" and .name=="Post-deployment")) | .number' 2>/dev/null); do
+      --jq '.data.repository.issues.nodes[] | select(.issueType.name=="Project") | select(any(.issueFieldValues.nodes[]?; .field.name=="Phase" and (.name=="Post-deployment" or .name=="Project Closedown"))) | .number' 2>/dev/null); do
     when="$(gh api graphql -f query="{repository(owner:\"delphside\",name:\"tile-lite-elite\"){issue(number:$num){timelineItems(last:30,itemTypes:[ISSUE_FIELD_CHANGED_EVENT,ISSUE_FIELD_ADDED_EVENT]){nodes{... on IssueFieldChangedEvent{createdAt newValue issueField{... on IssueFieldSingleSelect{name}}} ... on IssueFieldAddedEvent{createdAt value issueField{... on IssueFieldSingleSelect{name}}}}}}}}" \
       --jq '[.data.repository.issue.timelineItems.nodes[] | select(.issueField.name=="Phase") | select((.newValue // .value)=="Post-deployment") | .createdAt] | last // ""' 2>/dev/null)"
     [[ -n "$when" ]] || continue
     if (( $(date -u -d "$when" +%s) < tag_date )); then
-      lines+="$(printf '#%-6s shipped, then a later release shipped before it was reviewed' "$num")"$'\n'
+      lines+="$(printf '#%-6s shipped, and a later release shipped while it was still open' "$num")"$'\n'
       overdue=1
     fi
   done
 
   if (( overdue )); then
-    fail reviews "a project was still unreviewed when the next release went out" "$lines"
+    fail reviews "a shipped project was still open when the next release went out" "$lines"
   else
-    pass reviews "nothing shipped past an unreviewed project"
+    pass reviews "nothing shipped past a project still open from an earlier release"
   fi
 }
 
