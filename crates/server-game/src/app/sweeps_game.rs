@@ -1,3 +1,15 @@
+//! Sweeps that apply a **game rule** on a schedule: a seat running out of
+//! time, and the reminder that precedes it. Owned by Application & Game
+//! Architecture, because what they do is a game's life rather than the
+//! service's housekeeping — turn expiry decides whose turn it is and
+//! broadcasts the result (docs/3.7, #256).
+//!
+//! Retention and the daily size measurement live in `sweeps_capacity.rs`.
+//!
+//! **The mechanism is also this workstream's**, including the scheduler when
+//! it is built (#166). Until then every sweep runs lazily from the game-list
+//! handler, which is the defect #166 records, not a design.
+
 use super::*;
 
 /// There's no background scheduler in this server, so overdue-turn
@@ -158,77 +170,6 @@ pub(crate) fn format_duration_days_hours(total_seconds: u64) -> String {
     }
 }
 
-/// Records what the database holds, once a day.
-///
-/// Hung off the same lazy path as the other sweeps rather than given a
-/// scheduler: `list_games` runs whenever anybody uses the service, and the
-/// day's primary key in `database_size_history` makes the once-a-day part
-/// self-enforcing — the insert is `or ignore`, so a second caller on the same
-/// day writes nothing rather than racing.
-///
-/// **A service nobody uses records nothing.** That is the accepted cost of
-/// having no scheduler, and it is fine — a day with no requests has no growth
-/// to explain — but it means a gap in the series reads "quiet", never "broken".
-/// Anything that later compares days (#89) has to know that.
-///
-/// Failure is logged and swallowed. This is measurement; it must never be the
-/// reason somebody cannot list their games.
-pub(crate) async fn record_database_size(state: &AppState) {
-    let games_in_memory = state.games.read().await.len() as i64;
-    match persistence::record_database_size(&state.db, games_in_memory).await {
-        Ok(true) => tracing::info!(games_in_memory, "recorded the day's database size"),
-        Ok(false) => {}
-        Err(error) => tracing::error!(%error, "failed to record the database size"),
-    }
-}
-
-/// Permanently deletes any game that has been terminal — `Finished` *or*
-/// `Aborted` — for more than 7 days: chat, moves, participants, invitations,
-/// and rating history all go with it (`persistence::delete_game` is the same
-/// cascading delete admin's "delete game" uses). No background scheduler:
-/// called lazily from `list_games`, same as `expire_overdue_turns`.
-///
-/// Aborted games are included because they're just as dead as finished ones
-/// and nothing else ever collects them — see
-/// `persistence::list_terminal_game_ids_older_than`.
-///
-/// Concurrency: two callers racing into this (e.g. two participants both
-/// hitting `GET /games` at once) can't corrupt anything or double-fire a
-/// broadcast — (1) the write lock is held across the *entire* sweep,
-/// including the awaited deletes, exactly like `expire_overdue_turns`
-/// already does, so a second concurrent caller simply waits for the first
-/// sweep to finish rather than running alongside it; (2) every step is
-/// independently idempotent as a second line of defense regardless of
-/// locking — a SQL `delete ... where id = ?` on an already-gone row affects
-/// zero rows, and removing an already-removed key from the map is a no-op.
-pub(crate) async fn expire_old_terminal_games(state: &AppState) {
-    let now = now_unix_seconds();
-    let cutoff = now - 7 * 24 * 60 * 60;
-    let stale_ids = match persistence::list_terminal_game_ids_older_than(&state.db, cutoff).await {
-        Ok(ids) => ids,
-        Err(error) => {
-            tracing::error!(%error, "failed to query terminal games for expiry");
-            return;
-        }
-    };
-    if stale_ids.is_empty() {
-        return;
-    }
-
-    let mut games = state.games.write().await;
-    for game_id in stale_ids {
-        match persistence::delete_game(&state.db, &game_id).await {
-            Ok(_) => {
-                games.remove(&game_id);
-                tracing::info!(game_id, "terminal game auto-deleted after 7 days");
-            }
-            Err(error) => {
-                tracing::error!(game_id, %error, "failed to auto-delete expired game");
-            }
-        }
-    }
-}
-
 /// Same as `expire_overdue_turns` but scoped to one game — cheaper for
 /// handlers that already know which game they care about.
 pub(crate) async fn expire_overdue_turn(state: &AppState, game_id: &str) {
@@ -266,3 +207,44 @@ pub(crate) async fn expire_overdue_turn(state: &AppState, game_id: &str) {
 
 // ========== Admin Handlers ==========
 //
+
+#[cfg(test)]
+mod tests {
+    /// The four sweeps run from one place, in one order, because this server
+    /// has no scheduler (#166). Splitting them across two modules by owner
+    /// (#256) must not change **when** any of them runs.
+    ///
+    /// This reads the handler's source rather than its behaviour, which is
+    /// unusual and deliberate: every one of these is invisible when it does
+    /// not happen. A turn that should have expired simply does not, and a
+    /// missing day in the size series is — by that table's own schema comment
+    /// — "quiet, not broken". There is nothing to observe, so the thing worth
+    /// guarding is the call site itself.
+    #[test]
+    fn the_four_sweeps_still_run_in_order_from_one_place() {
+        let games = include_str!("games.rs");
+        let order: Vec<&str> = [
+            "expire_overdue_turns(&state)",
+            "send_move_time_reminders(&state)",
+            "expire_old_terminal_games(&state)",
+            "record_database_size(&state)",
+        ]
+        .into_iter()
+        .collect();
+
+        let mut positions = Vec::new();
+        for name in &order {
+            let at = games
+                .find(name)
+                .unwrap_or_else(|| panic!("{name} is no longer called from games.rs"));
+            positions.push(at);
+        }
+
+        let mut sorted = positions.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            positions, sorted,
+            "the sweeps are called in a different order from the one they were split in"
+        );
+    }
+}
