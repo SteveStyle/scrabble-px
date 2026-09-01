@@ -15,7 +15,7 @@ body:
         project. Fold *before* you freeze — closing an issue whose requirement
         was never copied loses it.
 
-        **Short is right.** A small project holds all six headings as text; a
+        **Short is right.** A small project holds all seven headings as text; a
         larger one links to documents in `docs/changes/…` and keeps the body
         brief so the two do not drift. See
         [docs/3.6 §2.11](https://github.com/delphside/tile-lite-elite/blob/main/docs/3.6-change-lifecycle.md).

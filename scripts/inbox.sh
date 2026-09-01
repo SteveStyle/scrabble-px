@@ -59,14 +59,14 @@ printf '%s  %s\n' "$(bold 'INBOX')" "$(dim "since $SINCE — $DAYS day(s)")"
 # too — which is right: an edit is a change you have not seen.
 COMMENTS="$(gh api "repos/{owner}/{repo}/issues/comments?since=$SINCE&sort=updated&direction=asc&per_page=100" \
   --paginate \
-  --jq '.[] | [(.issue_url | split("/") | last), .updated_at[0:16], (if (.body | test("Typed by Claude")) then "claude" elif (.body | test("^Released in prod-")) then "deploy" else "you" end), (.body | gsub("\n"; " ") | .[0:150])] | @tsv' 2>/dev/null)"
+  --jq '.[] | [(.issue_url | split("/") | last), .updated_at[0:16], (if (.user.login == "SteveStyle-typed-by-Claude") or (.body | test("Typed by Claude")) then "claude" elif (.body | test("^Released in prod-")) then "deploy" else "you" end), (.body | gsub("\n"; " ") | .[0:150])] | @tsv' 2>/dev/null)"
 
 # PR review comments live on a different endpoint entirely — inline code
 # comments are not issue comments, and a review left on a diff would otherwise
 # be invisible here.
 REVIEWS="$(gh api "repos/{owner}/{repo}/pulls/comments?since=$SINCE&sort=updated&direction=asc&per_page=100" \
   --paginate \
-  --jq '.[] | [(.pull_request_url | split("/") | last), .updated_at[0:16], (if (.body | test("Typed by Claude")) then "claude" else "you" end), ("(review) " + (.body | gsub("\n"; " ") | .[0:140]))] | @tsv' 2>/dev/null)"
+  --jq '.[] | [(.pull_request_url | split("/") | last), .updated_at[0:16], (if (.user.login == "SteveStyle-typed-by-Claude") or (.body | test("Typed by Claude")) then "claude" else "you" end), ("(review) " + (.body | gsub("\n"; " ") | .[0:140]))] | @tsv' 2>/dev/null)"
 
 ALL="$(printf '%s\n%s\n' "$COMMENTS" "$REVIEWS" | grep -v '^$' | sort -t$'\t' -k1,1n -k2,2)"
 
