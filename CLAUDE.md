@@ -14,8 +14,10 @@ one of them has a defect: fix it, don't work around it.
   dependencies, effort), then project planning. Outcomes: solo project,
   grouped project, straight to main, on hold, cancelled.
 - A project owns its requirements: sources are folded and closed. Its issue
-  carries six headings: requirements, design, impacted artefacts, test
-  approach, dependencies and related work, deliveries.
+  carries seven headings: requirements, design, impacted artefacts, test
+  approach, dependencies and related work, deliveries, post-deployment
+  checks against requirements. Under each heading is the content or a link
+  to the design document that holds it, never both.
 - A project moves through the Phase field. The wording is the field's own
   stage descriptions:
 
@@ -38,19 +40,25 @@ one of them has a defect: fix it, don't work around it.
   needed while the work is in progress; otherwise commit straight to main,
   which is what pre-approved means. One branch per project, and everything
   the project touches goes on it, documentation included.
-- The pull request body is the review surface. Add the owner as reviewer at
-  creation. He ticks, labels the PR approved, Claude merges by rebase and
-  fast-forward.
+- The pull request body is the review surface. It defines the scope of this
+  delivery given the project context, and does not duplicate the project
+  body or documents. Add the owner as reviewer at creation. He ticks and
+  approves, Claude merges by rebase and fast-forward.
 - Commits say `Refs #N`, or `Closes #N` only when the change never leaves the
   repository. Every subject starts `app X.Y.Z api M.N: `.
 - Push immediately after committing. Until pushed, a change does not exist.
   Run an unpushed script to test it, never to use it.
-- Every issue and PR comment ends `Typed by Claude` or `Typed by Steve`.
 
-## Releases
+## Deliveries and releases
 
-- A milestone is a release and a shipping list. The deploy settles everything
-  in it, so move out what is not shipping before deploying.
+- A delivery is any update to a programme asset delivered to its users,
+  including document updates. A release is a new version of the application,
+  delivered to production with a new semver. Projects define their
+  deliveries with the updated assets and the route.
+- A milestone is a label for a project delivery: the semver of a release, or
+  the semver of the previous release with a letter appended.
+- A release milestone is a shipping list. The deploy settles everything in
+  it, so move out what is not shipping before deploying.
 - Deploys build a fresh worktree at the target commit, never the working
   tree. The image goes Preview, then Rehearsal, then Production.
 - After deploying, run verify.sh and trust exit status, not read output.
@@ -71,6 +79,9 @@ one of them has a defect: fix it, don't work around it.
 
 - One fact, one home. The rule lives in its owning document, the argument in
   the issue, and every other mention is a link.
+- At a process step, consult the owning document. A decision about process
+  goes in the decision log (the process-definition glossary), then in the
+  one place where that part of the process is documented.
 - docs/N.N numbering: 1.x product, 2.x design, 3.x lifecycle, 4.x reference.
   A change document lives in its issue's folder under docs/changes/.
 
