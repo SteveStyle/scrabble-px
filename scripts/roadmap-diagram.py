@@ -35,6 +35,27 @@ PHASE_ORDER = [
 ]
 
 
+
+START = "<!-- roadmap-diagram:start -->"
+END = "<!-- roadmap-diagram:end -->"
+
+
+def write_between_markers(path: str, block: str) -> None:
+    """Replace what is between the markers, leaving the rest of the file alone.
+
+    The markers are the contract: everything between them is generated and will
+    be overwritten, everything outside is written by a person. Refusing when
+    they are absent is deliberate — a diagram appended to the wrong file, or
+    silently replacing a document, is worse than not drawing one.
+    """
+    text = open(path).read()
+    if START not in text or END not in text:
+        sys.exit(f"roadmap-diagram: {path} has no {START} / {END} markers")
+    head, rest = text.split(START, 1)
+    _, tail = rest.split(END, 1)
+    open(path, "w").write(f"{head}{START}\n\n{block}\n\n{END}{tail}")
+
+
 def gh_json(*args: str):
     out = subprocess.run(["gh", *args], capture_output=True, text=True)
     if out.returncode != 0:
@@ -72,6 +93,9 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--parent", type=int, help="only this issue's sub-issues")
     ap.add_argument("--all", action="store_true", help="include requirements")
+    ap.add_argument("--write", metavar="FILE",
+                    help="replace the block between the roadmap-diagram markers "
+                         "in FILE, instead of printing")
     args = ap.parse_args()
 
     issues = gh_json("issue", "list", "--state", "open", "--limit", "100",
@@ -89,8 +113,11 @@ def main() -> None:
                   or i["number"] == args.parent]
     nums = {i["number"] for i in wanted}
 
-    print("```mermaid")
-    print("flowchart LR")
+    out: list[str] = ["```mermaid", "flowchart LR"]
+
+    def print(*a, **k):  # noqa: A001 — collect instead of emitting
+        out.append(" ".join(str(x) for x in a))
+
     for i in sorted(wanted, key=lambda x: PHASE_ORDER.index(ph.get(x["number"], "Scope"))
                     if ph.get(x["number"]) in PHASE_ORDER else 0):
         text = '"' + label(i, ph.get(i["number"])) + '"'
@@ -108,7 +135,13 @@ def main() -> None:
         p = (i.get("parent") or {}).get("number")
         if p in nums:
             print(f'  n{p} -.- n{i["number"]}')
-    print("```")
+    out.append("```")
+
+    if args.write:
+        write_between_markers(args.write, "\n".join(out))
+        sys.stderr.write(f"roadmap-diagram: updated {args.write}\n")
+    else:
+        sys.stdout.write("\n".join(out) + "\n")
 
     if not edges:
         print("", file=sys.stderr)
