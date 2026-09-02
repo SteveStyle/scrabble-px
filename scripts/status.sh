@@ -137,8 +137,10 @@ REPO_NAME="${REPO_NWO##*/}"
 # substring matches against a comma-joined label string.
 reach_of() {
   case "$1" in
-    documentation|non-prod-tooling) echo "live at merge" ;;
-    prod-tooling)                   echo "live at merge, unless it is admin-cli" ;;
+    # Answered from Type of change until Route is read here instead: a
+    # repository change is live at merge, a production release is not, and that
+    # is what the Route field now says. Tracked on #303.
+    documentation|tooling)          echo "live at merge, unless it ships in the image" ;;
     *)                              echo "reaches users" ;;
   esac
 }
@@ -240,7 +242,7 @@ else
       printf '    %-12s #%-4s %-40s %-16s %s\n' \
         "ships" "$num" "$(printf '%.40s' "$title")" "$toc" "${already:-$reach}"
       if [[ -z "$already" && "$reach" == "reaches users" ]]; then
-        case "$toc" in major-function|minor-function) FUNCTIONAL="yes" ;; esac
+        case "$toc" in functional) FUNCTIONAL="yes" ;; esac
       fi
     done <<< "$SHIPPING"
 
@@ -311,13 +313,15 @@ state_of_issue() {
   # guard stops #1 matching "Refs #19".
   if git log origin/main -E --grep="Refs #${num}([^0-9]|\$)" \
        --format=%h 2>/dev/null | grep -q .; then
-    # Only the types that change the app wait for a release. Documentation
-    # and non-production tooling are finished at merge, so say so as an
-    # action rather than leaving them looking blocked on something.
+    # Only what ships in a release waits for one. Documentation and tooling
+    # are usually finished at merge, so say so as an action rather than
+    # leaving them looking blocked on something. Route answers this properly
+    # — a Repository Change is live at merge whatever its type — and this
+    # reads the type until it reads the route. #303.
     case "$type" in
-      documentation)    echo "merged — close it" ;;
-      non-prod-tooling) echo "merged — smoke-test, then close" ;;
-      *)                echo "merged, awaiting release" ;;
+      documentation) echo "merged — close it" ;;
+      tooling)       echo "merged — smoke-test, then close" ;;
+      *)             echo "merged, awaiting release" ;;
     esac
     return
   fi
@@ -364,8 +368,8 @@ issues_with_type() {
 }
 
 # **An exact value, not a substring.** This used to match a comma-joined label
-# string, and carried a warning that `non-prod-tooling` had to be tested before
-# `prod-tooling` because one contains the other. A single-select field removes
+# string, and carried a warning that the two tooling values had to be tested in
+# order because one contained the other. A single-select field removes
 # the hazard rather than ordering around it.
 type_of() {
   case "$1" in

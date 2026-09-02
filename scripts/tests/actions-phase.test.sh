@@ -25,7 +25,7 @@ cat > "$DIR/response.json" <<'JSON'
     {"number":101,"title":"A project mid-flight","body":"","state":"OPEN","issueType":{"name":"Project"},
      "issueFieldValues":{"nodes":[
         {"field":{"name":"Workstream"},"value":"Delivery Tooling"},
-        {"field":{"name":"Type of change"},"value":"minor-function"}]},
+        {"field":{"name":"Type of change"},"value":"functional"}]},
      "parent":null,
      "subIssues":{"nodes":[{"number":104,"title":"A folded requirement","state":"CLOSED","issueType":{"name":"Requirement"}}]}},
     {"number":102,"title":"A project nobody started","body":"","state":"OPEN","issueType":{"name":"Project"},

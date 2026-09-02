@@ -153,21 +153,21 @@ check_exit "a two-part version is a usage error" 2 "$CHECK" "0.4"
 echo
 # --- the API path, which nothing exercised until 2026-08-26 -------------------
 #
-# A patch release whose milestone carries a `minor-function` issue must be
+# A patch release whose milestone carries a `functional` issue must be
 # refused. This is the whole point of the check, and it was the one behaviour no
 # test drove.
 
 FUNCTIONAL_ANSWER='{"data":{"search":{"nodes":[
   {"number":123,"title":"a change a user could notice",
    "issueFieldValues":{"nodes":[
-     {"value":"minor-function","field":{"name":"Type of change"}}]}}]}}}'
+     {"value":"functional","field":{"name":"Type of change"}}]}}]}}}'
 
 EMPTY_ANSWER='{"data":{"search":{"nodes":[]}}}'
 
 TOOLING_ANSWER='{"data":{"search":{"nodes":[
   {"number":124,"title":"a script change",
    "issueFieldValues":{"nodes":[
-     {"value":"prod-tooling","field":{"name":"Type of change"}}]}}]}}}'
+     {"value":"tooling","field":{"name":"Type of change"}}]}}]}}}'
 
 check_exit "a patch carrying functional change is refused" 1 \
   run_with_gh "0.4.26" "0.4.25" "$FUNCTIONAL_ANSWER"

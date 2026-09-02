@@ -6,7 +6,7 @@ set -euo pipefail
 #
 # A patch release may not carry functional change. The rule lives in
 # docs/3.3-testing-ci-and-release.md ("Releases are branches"): any
-# `major-function` or `minor-function` issue in the scope makes it a minor,
+# a `functional` issue in the scope makes it a minor,
 # and a minor is branched to rather than bumped into.
 #
 # This checks rather than decides, deliberately. The version is chosen when the
@@ -28,9 +28,9 @@ set -euo pipefail
 # blocked because GitHub is unreachable; the check exists to catch a mistake,
 # not to add a dependency to shipping.
 
-# The two values of the **Type of change** issue field that mean a user could
+# The value of the **Type of change** issue field that means a user could
 # notice. It was a label until 2026-08-26; see docs/3.6 2.6.
-FUNCTIONAL='IN("major-function", "minor-function")' 
+FUNCTIONAL='IN("functional")' 
 
 VERSION="${1:-}"
 if [[ -z "$VERSION" ]]; then
