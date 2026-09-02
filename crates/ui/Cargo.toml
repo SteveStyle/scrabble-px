@@ -11,9 +11,9 @@ repository.workspace=true
 [dependencies]
 api = { path = "../api" }
 rules-shared = { path = "../rules-shared" }
-dioxus = { version = "0.6", features = ["web"] }
-dioxus-web = "0.6.3"
-dioxus-desktop = { version = "0.6", optional = true }
+dioxus = { version = "0.7", features = ["web"] }
+dioxus-web = "0.7"
+dioxus-desktop = { version = "0.7", optional = true }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

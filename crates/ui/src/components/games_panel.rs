@@ -475,9 +475,14 @@ pub fn GamesPanel(
                     }
                 }
             };
+            // Seat rows key on their index, so this one needs a key that cannot
+            // collide with one. It is a binding rather than a literal because
+            // dioxus 0.7 rejects a static key: a key that cannot vary cannot
+            // identify a row, so the framework treats writing one as a mistake.
+            let you_row_key = "you";
             match row {
                 DraftRow::You => rsx! {
-                    tr { key: "you",
+                    tr { key: "{you_row_key}",
                         td { {reorder} "{my_display_name.clone().unwrap_or_default()} (you)" }
                         td { "Human" }
                         td {

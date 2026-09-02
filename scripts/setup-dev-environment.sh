@@ -58,7 +58,7 @@ fi
 rustup target add wasm32-unknown-unknown
 
 echo "==> dioxus-cli (must match crates/ui's dioxus/dioxus-web version)"
-DIOXUS_VERSION="0.6.3"
+DIOXUS_VERSION="0.7.10"
 if ! command -v dx >/dev/null 2>&1 || [[ "$(dx --version 2>&1)" != *"$DIOXUS_VERSION"* ]]; then
     cargo install dioxus-cli --version "$DIOXUS_VERSION" --locked
 else

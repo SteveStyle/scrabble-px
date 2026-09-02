@@ -9,14 +9,14 @@ FROM rust:1-bookworm AS builder
 WORKDIR /workspace
 
 # dioxus-cli version pinned to match crates/ui's `dioxus`/`dioxus-web` deps
-# (0.6.3) — a mismatched dx/wasm-bindgen version is a known source of wasm
+# (0.7.10) — a mismatched dx/wasm-bindgen version is a known source of wasm
 # build failures in this project (see docs/operations.md). wasm-bindgen-cli
 # itself must match the `wasm-bindgen` crate version pinned in Cargo.lock —
 # `dx build` doesn't provision this automatically, so it's installed
 # explicitly rather than left implicit.
 RUN rustup target add wasm32-unknown-unknown \
-    && cargo install dioxus-cli --version 0.6.3 --locked \
-    && cargo install wasm-bindgen-cli --version 0.2.103 --locked
+    && cargo install dioxus-cli --version 0.7.10 --locked \
+    && cargo install wasm-bindgen-cli --version 0.2.127 --locked
 
 # .cargo/config.toml sets required wasm32 rustflags
 # (target-feature=+reference-types,+multivalue) that wasm-bindgen needs to
