@@ -165,6 +165,24 @@ check "a non-project is closed"          "1" "$(calls_matching 'issue close')"
 check "and is not given a phase"         "0" "$(calls_matching 'setIssueFieldValue')"
 teardown
 
+# --- a Project Delivery is closed, not advanced -------------------------------
+# A delivery is one unit of work: when the release that carries it ships, it is
+# done, and there is no review to wait for. Only a Project has a phase to be
+# advanced into.
+#
+# The behaviour already existed — `settle_issue` closes anything whose type is
+# not exactly `Project` — but it was written before the Project Delivery type
+# existed, so it was right by accident. docs/4.8 records that these type names
+# are matched literally, which is the reason to pin it: renaming the type would
+# silently change what a deploy does to a delivery. #283 R2.
+setup
+MILESTONE_ISSUES="202"; ISSUE_TYPE="Project Delivery"
+export MILESTONE_ISSUES ISSUE_TYPE
+out="$(settle_milestone 2>&1)"
+check "a Project Delivery is closed"       "1" "$(calls_matching 'issue close')"
+check "and is not advanced to a phase"     "0" "$(calls_matching 'setIssueFieldValue')"
+teardown
+
 # --- a phase that cannot be set does NOT fall back to closing -----------------
 # Falling back would restore the defect at exactly the moment nobody is watching.
 setup
