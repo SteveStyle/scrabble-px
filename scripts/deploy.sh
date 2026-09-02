@@ -162,6 +162,14 @@ PHASE_POST_DEPLOYMENT_ID="${PHASE_POST_DEPLOYMENT_ID:-IFSSO_kgDOBNDpVw}"
 # version it ships in is known, and is moved before the deploy (owner,
 # 2026-08-30). Nothing checked that the move happened.
 #
+# **`no-release` is the fourth, and the one it actually happens in.** It held 5
+# open and 60 closed issues on 2026-09-01, against none in the other three, and
+# both projects shipping in 0.7.1 were filed under it — the gate said nothing,
+# and the milestone was corrected by hand on the morning of the deploy. It reads
+# as safe because it is true when a change is triaged: this needs no release of
+# its own. It stops being true the moment the change is also inside an image,
+# and nothing re-asks. #281.
+#
 # **It fails more quietly than it looks.** `settle_milestone` reads the milestone
 # named after the version being deployed, so a milestone called `patch` is never
 # the one a deploy consults. The risk was never that its contents ship by
@@ -174,7 +182,7 @@ PHASE_POST_DEPLOYMENT_ID="${PHASE_POST_DEPLOYMENT_ID:-IFSSO_kgDOBNDpVw}"
 # gate share one definition of "this release mentions it".
 placeholder_shipping() {
   local ref="$1" milestone num title
-  for milestone in patch minor major; do
+  for milestone in patch minor major no-release; do
     while IFS=$'\t' read -r num title; do
       [[ -z "$num" ]] && continue
       if (( $(commits_mentioning "$ref" "$num") > 0 )); then

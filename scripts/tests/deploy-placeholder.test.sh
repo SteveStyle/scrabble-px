@@ -29,6 +29,7 @@ case "$*" in
   *"--milestone patch"*) printf '%s\n' "${PATCH_ISSUES:-}" ;;
   *"--milestone minor"*) printf '%s\n' "${MINOR_ISSUES:-}" ;;
   *"--milestone major"*) printf '%s\n' "${MAJOR_ISSUES:-}" ;;
+  *"--milestone no-release"*) printf '%s\n' "${NO_RELEASE_ISSUES:-}" ;;
   *)                     : ;;
 esac
 STUB
@@ -103,6 +104,27 @@ export PATCH_ISSUES MENTIONED
 out="$(placeholder_shipping abc123)"
 check "only the mentioned one is named" "1" "$(printf '%s' "$out" | grep -c '#')"
 check "and it is the right one"         "yes" "$(says "$out" "#260")"
+teardown
+
+# --- no-release, the placeholder everything is actually in -------------------
+# 5 open and 60 closed on 2026-09-01, against none in the other three. Both
+# projects shipping in 0.7.1 were filed under it, the gate said nothing, and the
+# milestone was corrected by hand on the morning of the deploy. #281.
+setup
+NO_RELEASE_ISSUES="$(printf '303\tA project shipping while filed under no-release')"
+MENTIONED="303"
+export NO_RELEASE_ISSUES MENTIONED
+out="$(placeholder_shipping abc123)"
+check "an issue shipping from no-release is named" "yes" "$(says "$out" "#303")"
+check "and says which placeholder it is in"        "yes" "$(says "$out" "FILED UNDER no-release")"
+teardown
+
+# The quiet half: filed under no-release and not shipping, which is most of them.
+setup
+NO_RELEASE_ISSUES="$(printf '303\tA project nobody is shipping')"
+MENTIONED=""
+export NO_RELEASE_ISSUES MENTIONED
+check "an untouched issue in no-release is silent" "" "$(placeholder_shipping abc123)"
 teardown
 
 if (( failures )); then echo; echo "$failures test(s) failed" >&2; exit 1; fi
