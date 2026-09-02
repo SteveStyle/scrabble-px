@@ -104,8 +104,11 @@ start_web() {
     sleep 1
 
     echo "Starting web dev server..."
-    cd "$REPO_DIR/crates/ui"
-    nohup env RUSTC_WRAPPER="" CARGO_INCREMENTAL=0 ~/.cargo/bin/dx serve --platform web --port 8080 >"$LOGDIR/web.log" 2>&1 &
+    # From the workspace root, naming the package. dx 0.7 canonicalises the
+    # workspace's `default-members` against the working directory, so running
+    # from crates/ui makes `crates/*` unresolvable and dx panics.
+    cd "$REPO_DIR"
+    nohup env RUSTC_WRAPPER="" CARGO_INCREMENTAL=0 ~/.cargo/bin/dx serve --package tile-lite-elite-ui --platform web --port 8080 >"$LOGDIR/web.log" 2>&1 &
     echo $! > "$PIDFILE_WEB"
     echo "✓ Web dev server started (PID $!)"
     sleep 3
@@ -217,8 +220,8 @@ dev() {
     sleep 2
     
     # Start web in background
-    cd "$REPO_DIR/crates/ui"
-    env RUSTC_WRAPPER="" CARGO_INCREMENTAL=0 ~/.cargo/bin/dx serve --platform web --port 8080 &
+    cd "$REPO_DIR"
+    env RUSTC_WRAPPER="" CARGO_INCREMENTAL=0 ~/.cargo/bin/dx serve --package tile-lite-elite-ui --platform web --port 8080 &
     WEB_PID=$!
     sleep 3
     
@@ -293,7 +296,7 @@ Commands:
 Environment:
   Services run with:
     - Backend: cargo run -p server-game
-    - Web: RUSTC_WRAPPER="" dx serve --platform web --port 8080
+    - Web: RUSTC_WRAPPER="" dx serve --package tile-lite-elite-ui --platform web --port 8080
   
   Logs saved to: $LOGDIR/
   PIDs saved to: $REPO_DIR/.pid.*

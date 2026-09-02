@@ -60,7 +60,11 @@ RUN cargo build --release -p server-game -p admin-cli
 # `RootApp`'s `server_url` in crates/ui/src/app.rs), which is what lets one
 # wasm build work behind the Caddy reverse proxy regardless of the host's
 # actual IP or domain, with no rebuild needed if that changes.
-RUN cd crates/ui && CARGO_INCREMENTAL=0 TILE_LITE_ELITE_API_BASE_URL="" dx build --platform web --release
+# Run from the workspace root, not from `crates/ui`. dx 0.7 canonicalises the
+# workspace's `default-members` against the working directory, so `cd crates/ui`
+# makes `crates/*` unresolvable and dx panics on the failed lookup rather than
+# reporting it. `--package` names what to build instead of the directory doing it.
+RUN CARGO_INCREMENTAL=0 TILE_LITE_ELITE_API_BASE_URL="" dx build --package tile-lite-elite-ui --platform web --release
 
 # Identifies the bundle in /srv by its *contents* — a hash of every file dx
 # produced. An already-running tab fetches this to decide whether reloading
