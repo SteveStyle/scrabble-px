@@ -42,18 +42,25 @@ DOCKER_WASM_BINDGEN="$(grep -oP 'wasm-bindgen-cli --version \K[0-9.]+' Dockerfil
 check "wasm-bindgen-cli matches the wasm-bindgen crate" \
   "$LOCK_WASM_BINDGEN" "$DOCKER_WASM_BINDGEN" "Dockerfile"
 
-# dioxus-cli only has to agree to minor: the CLI patches independently of the
-# library, and pinning it exactly would mean a Dockerfile edit for every dx
-# patch release. 0.7.10 against a `dioxus = "0.7"` dependency is correct.
-UI_DIOXUS="$(grep -oP '^dioxus = \{ version = "\K[0-9]+\.[0-9]+' crates/ui/Cargo.toml || true)"
-DOCKER_DX="$(grep -oP 'dioxus-cli --version \K[0-9]+\.[0-9]+' Dockerfile || true)"
-check "dioxus-cli matches crates/ui's dioxus, to minor" \
-  "$UI_DIOXUS" "$DOCKER_DX" "Dockerfile"
+# **Exactly**, not to minor. `dx` compares its own version against the resolved
+# `dioxus` crate and refuses outright:
+#
+#     ERROR dx and dioxus versions are incompatible!
+#           • dx version: 0.7.10
+#           • dioxus versions: [0.7.5]
+#
+# This check said "to minor" until 2026-09-02, passed, and `dx build` failed
+# anyway — the looser rule was written from what seemed reasonable rather than
+# from what dx does. So it reads the *lock*, which is what dx reads, not the
+# dependency range in Cargo.toml.
+LOCK_DIOXUS="$(awk '/^name = "dioxus"$/{getline; gsub(/version = |"/, ""); print; exit}' Cargo.lock)"
+DOCKER_DX_FULL="$(grep -oP 'dioxus-cli --version \K[0-9.]+' Dockerfile || true)"
+check "dioxus-cli matches the resolved dioxus exactly" \
+  "$LOCK_DIOXUS" "$DOCKER_DX_FULL" "Dockerfile"
 
 # The dev machine and the image must install the same dx, or a bundle that
 # builds in one fails in the other — which is the confusing half of the failure.
 SETUP_DX="$(grep -oP 'DIOXUS_VERSION="\K[0-9.]+' scripts/setup-dev-environment.sh || true)"
-DOCKER_DX_FULL="$(grep -oP 'dioxus-cli --version \K[0-9.]+' Dockerfile || true)"
 check "the dev machine installs the same dx as the image" \
   "$DOCKER_DX_FULL" "$SETUP_DX" "setup-dev-environment.sh"
 
