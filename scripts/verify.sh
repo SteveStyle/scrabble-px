@@ -297,6 +297,79 @@ check_milestone() {
   fi
 }
 
+# The lines of one "### <heading>" section of an issue body, up to the next
+# heading of any level. Sectioning matters: a box under Post-deployment checks
+# is an unanswered check, not an unrun test, and counting both would make the
+# report say something it does not mean.
+section_boxes() {
+  local body="$1" heading="$2"
+  awk -v h="$heading" '
+    /^#+ / { inside = index($0, h) > 0 ? 1 : 0; next }
+    inside { print }
+  ' <<< "$body"
+}
+
+LABEL[approach]="Test approaches are complete"
+# Counts what a project said it would test and has not ticked off.
+#
+# #240 shipped with `revoke` untested: its test approach named the test, the
+# rehearsal deploy, the production deploy and the project's closedown all went
+# past it, and nothing asked. The approach was prose, so nothing could ask.
+#
+# **The two headings are matched literally**, like every other string tooling
+# reads (docs/4.8). They say *where* a test runs, which is what was lost when
+# #240's item sat in prose owned by no environment:
+#
+#   ### Functional user tests — Preview
+#   ### Technical tests — Rehearsal
+#
+# **It reports; it does not refuse.** #240's outstanding item could not leave
+# rehearsal open and did not touch production, so a gate would have refused a
+# correct release. What was missing was being told. (#289 R4.)
+check_approach() {
+  local version ms lines="" outstanding="" body num title
+  version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+  if ! command -v gh > /dev/null; then
+    fail approach "test approaches not read — no 'gh' on PATH"; return
+  fi
+  if ! ms="$(gh issue list --milestone "$version" --state open \
+        --json number,title,issueType \
+        --jq '.[] | select(.issueType.name == "Project") | "\(.number)\t\(.title)"' 2>&1)"; then
+    fail approach "milestone $version could not be read" "$ms"; return
+  fi
+  if [[ -z "$ms" ]]; then
+    pass approach "no open projects in milestone $version"; return
+  fi
+  while IFS=$'\t' read -r num title; do
+    [[ -z "$num" ]] && continue
+    body="$(gh issue view "$num" --json body --jq .body 2>/dev/null || true)"
+    local functional technical
+    # Sectioned deliberately: an unticked box under Post-deployment checks is a
+    # check nobody has answered yet, not a test nobody has run.
+    functional="$(section_boxes "$body" "Functional user tests")"
+    technical="$(section_boxes "$body" "Technical tests")"
+    if [[ -z "$functional$technical" ]]; then
+      lines+="#$num ${title:0:46}   <-- no test approach headings"$'\n'
+      outstanding="$outstanding #$num"
+      continue
+    fi
+    local f t
+    f="$(grep -c '^\s*- \[ \]' <<< "$functional" || true)"
+    t="$(grep -c '^\s*- \[ \]' <<< "$technical" || true)"
+    if (( f > 0 || t > 0 )); then
+      lines+="#$num ${title:0:46}   <-- $f on Preview, $t on Rehearsal"$'\n'
+      outstanding="$outstanding #$num"
+    else
+      lines+="#$num ${title:0:46} (nothing outstanding)"$'\n'
+    fi
+  done <<< "$ms"
+  if [[ -n "$outstanding" ]]; then
+    fail approach "tests a project said it would run, outstanding:$outstanding" "$lines"
+  else
+    pass approach "every project in milestone $version has run what it said it would" "$lines"
+  fi
+}
+
 LABEL[tests]="Tooling tests pass"
 check_tests() {
   if (( QUICK )); then skip tests "tooling tests skipped (--quick)"; return; fi
@@ -348,8 +421,8 @@ check_gates() {
 # compares against origin/main and would otherwise read a stale one. In process
 # order it comes last: tidying up after a change has shipped is the final step,
 # and it is the only line here that is housekeeping rather than readiness.
-RUN_ORDER=(tree pushed branches envs rehearsal reviews milestone ci tests gates)
-PROCESS_ORDER=(tree pushed ci tests envs rehearsal reviews milestone gates branches)
+RUN_ORDER=(tree pushed branches envs rehearsal reviews milestone approach ci tests gates)
+PROCESS_ORDER=(tree pushed ci tests envs rehearsal reviews milestone approach gates branches)
 
 printf '\n\033[1mChecking\033[0m  (fastest first, so a failure shows early)\n'
 for key in "${RUN_ORDER[@]}"; do "check_$key"; done

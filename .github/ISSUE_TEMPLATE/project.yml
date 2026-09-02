@@ -86,10 +86,29 @@ body:
     attributes:
       label: Test approach
       description: >-
-        Environment, tools, and what is measured against what criteria. Plus the
-        two questions every delivery answers: does this involve functional
-        changes needing user testing, and technical changes needing technical
-        testing?
+        Environment, tools, and what is measured against what criteria.
+
+        **Two headings, and the tests under them are task lists**, because
+        `verify.sh` counts what is still unticked and names the project before
+        the release. Keep the headings exactly as written — they are matched
+        literally.
+
+        The split says **where** each test runs: Preview answers *does it do
+        what was wanted*, Rehearsal answers *does it behave correctly on
+        production-like hardware*. #240's `revoke` test sat in prose owned by
+        neither, and went past a rehearsal deploy, a production deploy and the
+        project's closedown without anybody asking.
+
+        Write "None." under a heading that does not apply. Declining a heading
+        honestly is better than inventing a test to fill it.
+      value: |
+        ### Functional user tests — Preview
+
+        - [ ]
+
+        ### Technical tests — Rehearsal
+
+        - [ ]
     validations:
       required: true
 
