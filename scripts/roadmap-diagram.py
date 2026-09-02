@@ -93,9 +93,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--parent", type=int, help="only this issue's sub-issues")
     ap.add_argument("--all", action="store_true", help="include requirements")
-    ap.add_argument("--write", metavar="FILE",
+    ap.add_argument("--write", metavar="FILE", nargs="?",
+                    const="docs/1.5-work-in-progress.md",
                     help="replace the block between the roadmap-diagram markers "
-                         "in FILE, instead of printing")
+                         "in FILE, instead of printing. Defaults to "
+                         "docs/1.5-work-in-progress.md, which is the document "
+                         "that exists to be left open while working")
     args = ap.parse_args()
 
     issues = gh_json("issue", "list", "--state", "open", "--limit", "100",
