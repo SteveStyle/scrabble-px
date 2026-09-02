@@ -46,6 +46,35 @@ set -euo pipefail
 TARGET="${1:-${REHEARSAL_URL:-https://129.151.84.183.sslip.io}}"
 FAILURES=0
 
+# Rehearsal is behind the access gate (#240), which answers 403 to anything
+# without the cookie — before the request reaches the application at all. That
+# made every check here fail, and the third one lie: "login never refused,
+# twenty attempts all passed" is what a broken rate limiter looks like, and it
+# was twenty requests stopped at the door. A closed gate and a broken limiter
+# refuse identically, and this script could not tell them apart. #286.
+#
+# So it lets itself in, rather than being waved through by an exemption: the
+# key is the one `rehearsal-access.sh` wrote, and getting past the gate with it
+# is part of what the run proves.
+# The key lives on the rehearsal host, not here, so it is read the way
+# `rehearsal-access.sh status` reads it. Set REHEARSAL_ACCESS_KEY to skip the
+# ssh, or to point this at some other environment.
+GATE_COOKIE=()
+if [[ -z "${REHEARSAL_ACCESS_KEY:-}" ]]; then
+  REHEARSAL_ACCESS_KEY="$(ssh -n -o BatchMode=yes -o ConnectTimeout=10 \
+    "${REHEARSAL_SSH_HOST:-tile-lite-elite-rehearsal}" \
+    "grep -m1 '^REHEARSAL_ACCESS_KEY=' ~/tile-lite-elite/.env | cut -d= -f2-" \
+    2>/dev/null | tr -d '\r' || true)"
+fi
+if [[ -n "${REHEARSAL_ACCESS_KEY:-}" ]]; then
+  GATE_COOKIE=(-H "Cookie: rehearsal=$REHEARSAL_ACCESS_KEY")
+else
+  say() { printf '  %s\n' "$*"; }
+  say "warning: no rehearsal access key — every request will be refused by the"
+  say "         gate, and a refusal at the door looks exactly like a broken"
+  say "         limiter. Run ./scripts/rehearsal-access.sh grant first."
+fi
+
 say() { printf '  %s\n' "$*"; }
 
 check() {
@@ -69,6 +98,7 @@ post_status() {
   curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
     -H 'content-type: application/json' \
     -H "x-forwarded-for: $address" \
+    "${GATE_COOKIE[@]+"${GATE_COOKIE[@]}"}" \
     -X POST "$TARGET$path" -d "$body" || echo "000"
 }
 
@@ -118,7 +148,9 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
-# 1. Health, while that address is being refused.
+# 1. Health, while that address is being refused. Deliberately **without** the
+#    gate cookie: /health is the gate's one exemption, so an unauthenticated
+#    200 here is part of what this proves.
 check "health still answers while a caller is being refused" "200" \
   "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$TARGET/health" || echo 000)"
 
@@ -134,6 +166,7 @@ check "health still answers while a caller is being refused" "200" \
 #    registration check above: not creating it beats remembering to remove it.
 RESPONSE="$(curl -s -D - -o - --max-time 10 \
   -H 'content-type: application/json' -H "x-forwarded-for: $BUSY" \
+  "${GATE_COOKIE[@]+"${GATE_COOKIE[@]}"}" \
   -X POST "$TARGET/auth/register" \
   -d '{}' || true)"
 # The first blank line ends the header block. The `\r` is optional so this reads
