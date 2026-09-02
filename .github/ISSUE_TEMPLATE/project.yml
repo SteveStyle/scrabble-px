@@ -113,6 +113,17 @@ body:
         **requirement with no check is one that can quietly not get built** —
         which is how R2 of #265 reached a merged delivery without existing.
 
+        **Say how the check is done, not what is being checked.** "Run
+        `verify.sh` and look for this line", not "the gate holds". A check that
+        names a fact and leaves the method to the reader is one nobody can run —
+        and sometimes one nobody *can* run: #282's "the bot does not play JISMS"
+        needed a constructed rack, which production cannot offer.
+
+        **Each row is answered passed, cannot be tested, or failed**, with a note
+        on what happened. *Cannot be tested* is a legitimate answer and has to be
+        visible as one; where it applies, say what evidence stands instead and
+        where it was taken.
+
         Written now, while the intent is fresh, because by the time it falls due
         the project has been closed out of everybody's head.
 
