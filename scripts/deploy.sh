@@ -194,6 +194,97 @@ placeholder_shipping() {
   done
 }
 
+# --- The build artefact -------------------------------------------------------
+#
+# **One build per commit, shared by every environment it is deployed to.**
+# Rehearsal used to prove *a* build of commit X and production shipped *a
+# different* build of it: `deploy-rehearsal.sh` is this script with another
+# host, and each run built its own images. Docker builds are not
+# bit-reproducible — base tags move, apt mirrors move, the toolchain resolves at
+# build time — so "the same commit" was never the same bytes. #214 R1.
+#
+# The artefact is `artifacts/<full sha>.tar.gz`, git-ignored, and a build runs
+# only when that file is absent. Keyed by the full SHA rather than the short
+# one, so it is the commit that identifies it and not an abbreviation that can
+# collide, and so preview can key on the same thing when R2 arrives: any branch
+# or commit builds, and the artefact exists per commit however the ref was
+# named.
+#
+# **Sameness is proved by digest, not by version.** A rebuild of one commit
+# stamps the same version, so `/health` cannot tell two builds apart, which is
+# exactly what made the old check blind to the thing this fixes.
+ARTIFACT_DIR="${ARTIFACT_DIR:-$REPO_DIR/artifacts}"
+ARTIFACT_KEEP="${ARTIFACT_KEEP:-5}"
+
+artifact_path() { printf '%s/%s.tar.gz' "$ARTIFACT_DIR" "$1"; }
+
+# The digest of a built artefact, recorded beside it at build time so a later
+# deploy can prove it is loading what was built rather than trusting the name.
+artifact_digest() { sha256sum "$1" | cut -d' ' -f1; }
+
+# Refuses rather than deploying something that is not what was built. A cache
+# that has been truncated by a full disk, or half-written by an interrupted
+# build, is the case this catches: the name still matches the commit.
+verify_artifact() {
+  local tar="$1" recorded actual
+  [[ -f "$tar.sha256" ]] || { echo "error: $tar has no recorded digest." >&2; return 1; }
+  recorded="$(cat "$tar.sha256")"
+  actual="$(artifact_digest "$tar")"
+  if [[ "$recorded" != "$actual" ]]; then
+    echo "error: $(basename "$tar") does not match its recorded digest." >&2
+    echo "       recorded $recorded" >&2
+    echo "       actual   $actual" >&2
+    echo "       Delete it and deploy again to rebuild." >&2
+    return 1
+  fi
+  printf '%s' "$actual"
+}
+
+# Builds the images from the worktree and saves them, or reuses the artefact
+# that is already there. Writes through a temporary name so an interrupted
+# build cannot leave a short file that looks complete.
+build_artifact() {
+  local sha="$1" worktree="$2" tar tmp
+  tar="$(artifact_path "$sha")"
+  mkdir -p "$ARTIFACT_DIR"
+
+  if [[ -f "$tar" ]]; then
+    echo "==> Reusing the artefact already built for $sha"
+    return 0
+  fi
+
+  echo "==> Building images from a clean checkout of $sha (the slow step, ~2-3 min)"
+  if ! docker compose -f "$worktree/docker-compose.yml" build; then
+    echo "error: the image build failed. Nothing has been cached." >&2
+    return 1
+  fi
+
+  # Checked rather than left to `set -e`, because errexit does not apply inside
+  # a function whose caller has disabled it — and the failure that gets through
+  # renames a truncated `.partial` into place, which is an artefact that looks
+  # built and is not. Found by the test for exactly this, 2026-09-01.
+  echo "==> Exporting images"
+  tmp="$tar.partial"
+  if ! docker save tile-lite-elite-server:latest tile-lite-elite-web:latest | gzip > "$tmp"; then
+    rm -f "$tmp"
+    echo "error: saving the images failed. Nothing has been cached." >&2
+    return 1
+  fi
+  mv "$tmp" "$tar"
+  artifact_digest "$tar" > "$tar.sha256"
+}
+
+# Keeps the last few and removes the rest. It is a cache: losing one costs a
+# rebuild of a known commit, not a release, which is why this can be blunt.
+prune_artifacts() {
+  local keep="${1:-$ARTIFACT_KEEP}" old
+  [[ -d "$ARTIFACT_DIR" ]] || return 0
+  while IFS= read -r old; do
+    [[ -n "$old" ]] || continue
+    rm -f "$old" "$old.sha256"
+  done < <(ls -1t "$ARTIFACT_DIR"/*.tar.gz 2>/dev/null | tail -n "+$((keep + 1))")
+}
+
 settle_issue() {
   local issue="$1" kind phase node
 
@@ -942,13 +1033,12 @@ require_ssh_access "$DEPLOY_SSH_KEY" "$REMOTE" || exit 1
 # configuration shipped to the VM is the one that belongs to the code
 # being shipped — on a rollback, that matters as much as the images do.
 WORKTREE_DIR="$(mktemp -d /tmp/tile-lite-elite-deploy-worktree-XXXXXX)"
-TMP_TAR=""
 cleanup() {
-  # `if` rather than `[[ ... ]] &&`: an empty TMP_TAR would make the last
-  # command in an EXIT trap return non-zero under `set -e`.
-  if [[ -n "$TMP_TAR" ]]; then
-    rm -f "$TMP_TAR"
-  fi
+  # The artefact is deliberately **not** removed here: it is a cache keyed by
+  # commit, and the next environment deploying that commit is meant to find it.
+  # A half-written one cannot survive, because build_artifact writes through
+  # `.partial` and only renames when the save completed.
+  rm -f "$(artifact_path "$TARGET_FULL_SHA").partial"
   git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
 }
 trap cleanup EXIT
@@ -965,19 +1055,21 @@ export TILE_LITE_ELITE_BUILD_ID="$TARGET_SHA"
 # worktree, so each service's `context: .` resolves to the checkout rather
 # than to this repo. The image tags are unaffected: they derive from the
 # `name:` pinned inside the compose file, not from the directory.
-echo "==> Building images from a clean checkout of $TARGET_SHA (the slow step, ~2-3 min)"
-docker compose -f "$WORKTREE_DIR/docker-compose.yml" build
+build_artifact "$TARGET_FULL_SHA" "$WORKTREE_DIR"
+ARTIFACT_TAR="$(artifact_path "$TARGET_FULL_SHA")"
 
-echo "==> Exporting images"
-TMP_TAR="$(mktemp /tmp/tile-lite-elite-images-XXXXXX.tar.gz)"
-docker save tile-lite-elite-server:latest tile-lite-elite-web:latest | gzip > "$TMP_TAR"
-echo "    $(du -h "$TMP_TAR" | cut -f1) compressed"
+# Read before every deploy, not only after a build, so the digest printed here
+# is the one being shipped. Rehearsal and production print the same line for
+# one commit, which is the evidence R1 is about — and it goes in the delivery
+# log, where two rows can be compared afterwards.
+ARTIFACT_DIGEST="$(verify_artifact "$ARTIFACT_TAR")"
+echo "    $(du -h "$ARTIFACT_TAR" | cut -f1) compressed, sha256:${ARTIFACT_DIGEST:0:12}"
 
 echo "==> Transferring to $DEPLOY_HOST"
 ssh "${SSH_OPTS[@]}" "$REMOTE" "mkdir -p $DEPLOY_REMOTE_DIR"
-scp "${SCP_OPTS[@]}" "$TMP_TAR" "$WORKTREE_DIR/docker-compose.yml" "$REMOTE:$DEPLOY_REMOTE_DIR/"
+scp "${SCP_OPTS[@]}" "$ARTIFACT_TAR" "$WORKTREE_DIR/docker-compose.yml" "$REMOTE:$DEPLOY_REMOTE_DIR/"
 
-REMOTE_TAR_NAME="$(basename "$TMP_TAR")"
+REMOTE_TAR_NAME="$(basename "$ARTIFACT_TAR")"
 SNAPSHOT_NAME="pre-$DEPLOYED_VERSION-$TARGET_SHA-$(date -u +%Y%m%dT%H%M%SZ).tgz"
 
 # Rolls production back to the images and database it had a moment ago.
@@ -1277,5 +1369,9 @@ BODY
   fi
   echo
 fi
+
+# Only after a deploy has succeeded: a failed one may be about to be retried,
+# and the artefact it would reuse is the point.
+prune_artifacts
 
 echo "==> Done — https://$DEPLOY_HOST.sslip.io (or your configured hostname)"
