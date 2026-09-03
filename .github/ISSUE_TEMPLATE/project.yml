@@ -39,10 +39,15 @@ body:
     attributes:
       label: Design
       description: >-
-        How it will be done — text here, or a link to a design note. **Include
-        the context**: where the shape was chosen because of other work, say
-        which work, so that if it is dropped the shape becomes reviewable rather
-        than mysterious.
+        **Start with how it works now**, then how it will work. A reader cannot
+        judge a change to a script without knowing what the script currently
+        does, and the owner should not have to read the code to review the
+        design.
+
+        Then how it will be done — text here, or a link to a design note.
+        **Include the context**: where the shape was chosen because of other
+        work, say which work, so that if it is dropped the shape becomes
+        reviewable rather than mysterious.
     validations:
       required: true
 
