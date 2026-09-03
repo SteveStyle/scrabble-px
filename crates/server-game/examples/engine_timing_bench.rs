@@ -27,7 +27,69 @@ use api::{GameStatus, SeatKind};
 use rules_shared::{Rack, VariantRules};
 use server_game::game_state::{EngineRegistry, GameSession, ParticipantState};
 
-const RESULTS_CSV_HEADER: &str = "timestamp_unix_seconds,git_commit,host,edition,num_games,games_completed,samples,min_ms,q1_ms,median_ms,mean_ms,q3_ms,p95_ms,p99_ms,max_ms,first_move_median_ms,first_move_mean_ms,first_move_max_ms\n";
+const RESULTS_CSV_HEADER: &str = "timestamp_unix_seconds,git_commit,host,edition,num_games,games_completed,samples,min_ms,q1_ms,median_ms,mean_ms,q3_ms,p95_ms,p99_ms,max_ms,first_move_median_ms,first_move_mean_ms,first_move_max_ms,cpu_median_ms,cpu_mean_ms,cpu_p99_ms,run_wall_s,steal_ms,steal_pct,cpu_model,cores\n";
+
+/// CPU time consumed by this process so far, in milliseconds.
+///
+/// `CLOCK_PROCESS_CPUTIME_ID`, not `CLOCK_THREAD_CPUTIME_ID`, and the
+/// difference is the whole measurement: `maybe_run_engine_turn` hands the
+/// search to `tokio::task::spawn_blocking`, so it runs on a *different*
+/// thread. Reading the calling thread's clock would report a move as costing
+/// no CPU at all. Nothing else in the process is doing work while a move is
+/// being timed, so the process clock attributes it correctly.
+fn process_cpu_ms() -> f64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // Safe: `ts` is a valid, correctly-typed output parameter, and the call
+    // writes nothing else.
+    if unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) } != 0 {
+        return f64::NAN;
+    }
+    ts.tv_sec as f64 * 1000.0 + ts.tv_nsec as f64 / 1_000_000.0
+}
+
+/// Milliseconds this machine has spent as *steal* since boot: runnable, but
+/// waiting for a hypervisor that gave the physical CPU to somebody else.
+///
+/// Field 8 of `/proc/stat`'s `cpu ` line, in USER_HZ, summed over every core.
+/// System-wide rather than per-process — the kernel does not attribute steal
+/// to whoever lost the time — so it is read once either side of the whole run
+/// and reported per run, not per move. That is enough to answer whether a run
+/// was competing for a core, which is the question.
+fn steal_ms_since_boot() -> Option<f64> {
+    let stat = std::fs::read_to_string("/proc/stat").ok()?;
+    let cpu_line = stat.lines().find(|line| line.starts_with("cpu "))?;
+    let steal_jiffies: f64 = cpu_line.split_whitespace().nth(8)?.parse().ok()?;
+    // Safe: `sysconf` takes a name and returns a long; no pointers involved.
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as f64;
+    if hz <= 0.0 {
+        return None;
+    }
+    Some(steal_jiffies * 1000.0 / hz)
+}
+
+/// The CPU this ran on, as the kernel names it, with commas removed so it can
+/// sit in a CSV field. Recorded rather than folded into the host label: it
+/// makes a row self-describing without anyone choosing an abbreviation.
+fn num_cores() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0)
+}
+
+fn cpu_model() -> String {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|info| {
+            info.lines()
+                .find(|line| line.starts_with("model name"))
+                .and_then(|line| line.split_once(':'))
+                .map(|(_, value)| value.trim().replace(',', " "))
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
 
 /// The short commit hash `HEAD` is on, with a `-dirty` suffix if the working
 /// tree has uncommitted changes — unlike a real deploy (which refuses a
@@ -53,18 +115,22 @@ fn git_commit_label() -> String {
 
 /// The engine workload is memory-bound in its dictionary access, so the
 /// machine is part of the result — the same binary's p99 differs 6x between
-/// a modern laptop and the deployment VM. `BENCH_HOST` overrides for a run
-/// whose hostname isn't descriptive.
+/// a modern laptop and the deployment VM.
+///
+/// The hostname, and nothing else. There was a `BENCH_HOST` override, and it
+/// produced three labels for two machines: `stephen-len` and
+/// `laptop-ryzen7235hs` are the same laptop, which read as two until somebody
+/// checked. A label that can be typed will eventually be typed differently.
+/// What the override was really for — a hostname that does not say what the
+/// hardware is — is answered by the `cpu_model` and `cores` columns instead.
 fn host_label() -> String {
-    std::env::var("BENCH_HOST").unwrap_or_else(|_| {
-        Command::new("hostname")
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "unknown".to_string())
-    })
+    Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn append_result_row(row: &str) -> std::io::Result<std::path::PathBuf> {
@@ -129,7 +195,15 @@ async fn main() {
     // state. Pooling it with the other 40-odd moves of a game averages away
     // the exact thing a player actually notices.
     let mut first_move_ms: Vec<f64> = Vec::new();
+    // CPU time for the same calls, paired with samples_ms by index. Wall 60 ms
+    // with CPU 0.6 ms is a move that waited; wall 60 ms with CPU 60 ms is a
+    // position that was hard. Wall clock alone cannot tell them apart, which is
+    // the whole reason production's 57 ms p99 has never been explained.
+    let mut cpu_ms: Vec<f64> = Vec::new();
     let mut games_completed = 0usize;
+
+    let steal_before = steal_ms_since_boot();
+    let run_started = Instant::now();
 
     for game_index in 0..num_games {
         let rules = base_rules.clone();
@@ -148,16 +222,19 @@ async fn main() {
         game.start();
 
         for turn in 0..MAX_TURNS_PER_GAME {
+            let cpu_before = process_cpu_ms();
             let before = Instant::now();
             let advanced = game
                 .maybe_run_engine_turn(&engines, ENGINE_TURN_TIMEOUT)
                 .await
                 .expect("engine turn should not error in a clean engine-vs-engine game");
             let elapsed_ms = before.elapsed().as_secs_f64() * 1000.0;
+            let cpu_elapsed_ms = process_cpu_ms() - cpu_before;
             if turn == 0 {
                 first_move_ms.push(elapsed_ms);
             }
             samples_ms.push(elapsed_ms);
+            cpu_ms.push(cpu_elapsed_ms);
             if !advanced || game.status != GameStatus::Active {
                 break;
             }
@@ -167,11 +244,28 @@ async fn main() {
         }
     }
 
+    let run_wall_s = run_started.elapsed().as_secs_f64();
+    // Steal is a counter since boot, so only the difference across the run
+    // means anything, and only if both reads succeeded.
+    let steal_ms = match (steal_before, steal_ms_since_boot()) {
+        (Some(before), Some(after)) => Some(after - before),
+        _ => None,
+    };
+
+    // Sorted independently of samples_ms: this is the distribution of CPU cost,
+    // not the CPU cost of the slowest wall-clock moves.
+    let mut cpu_sorted = cpu_ms.clone();
+    cpu_sorted.sort_by(|a, b| a.partial_cmp(b).expect("no NaNs in CPU timing data"));
+    let cpu_median = percentile(&cpu_sorted, 0.50);
+    let cpu_p99 = percentile(&cpu_sorted, 0.99);
+    let cpu_mean = cpu_sorted.iter().sum::<f64>() / cpu_sorted.len().max(1) as f64;
+
     samples_ms.sort_by(|a, b| a.partial_cmp(b).expect("no NaNs in timing data"));
     let n = samples_ms.len();
     let mean = samples_ms.iter().sum::<f64>() / n as f64;
 
     println!("host: {}  edition: {edition}", host_label());
+    println!("cpu:  {} x{}", cpu_model(), num_cores());
     println!("games played: {num_games} ({games_completed} reached Finished)");
     println!("move-timing samples: {n}");
     println!();
@@ -208,17 +302,48 @@ async fn main() {
         first_median / median.max(f64::EPSILON)
     );
 
+    println!();
+    println!("CPU time per move (work, as opposed to elapsed):");
+    println!(
+        "  median:     {cpu_median:>8.2} ms   ({:.0}% of wall)",
+        100.0 * cpu_median / median.max(f64::EPSILON)
+    );
+    println!("  mean:       {cpu_mean:>8.2} ms");
+    println!(
+        "  p99:        {cpu_p99:>8.2} ms   ({:.0}% of wall)",
+        100.0 * cpu_p99 / p99.max(f64::EPSILON)
+    );
+    match steal_ms {
+        Some(steal) => println!(
+            "\nsteal during the run: {steal:.0} ms of {:.0} ms wall ({:.2}%), machine-wide",
+            run_wall_s * 1000.0,
+            100.0 * steal / (run_wall_s * 1000.0).max(f64::EPSILON)
+        ),
+        None => println!("\nsteal: unavailable (/proc/stat not readable)"),
+    }
+
     let timestamp_unix_seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time before epoch")
         .as_secs();
+    let steal_field = steal_ms.map(|s| format!("{s:.0}")).unwrap_or_default();
+    let steal_pct_field = steal_ms
+        .map(|s| format!("{:.2}", 100.0 * s / (run_wall_s * 1000.0).max(f64::EPSILON)))
+        .unwrap_or_default();
     let row = format!(
-        "{timestamp_unix_seconds},{},{},{edition},{num_games},{games_completed},{n},{min:.2},{q1:.2},{median:.2},{mean:.2},{q3:.2},{p95:.2},{p99:.2},{max:.2},{first_median:.2},{first_mean:.2},{first_max:.2}\n",
+        "{timestamp_unix_seconds},{},{},{edition},{num_games},{games_completed},{n},{min:.2},{q1:.2},{median:.2},{mean:.2},{q3:.2},{p95:.2},{p99:.2},{max:.2},{first_median:.2},{first_mean:.2},{first_max:.2},{cpu_median:.2},{cpu_mean:.2},{cpu_p99:.2},{run_wall_s:.1},{steal_field},{steal_pct_field},{},{}\n",
         git_commit_label(),
         host_label(),
+        cpu_model(),
+        num_cores(),
     );
+    // Printed as well as appended. A run on the deployment VM executes a binary
+    // built here and copied there, where CARGO_MANIFEST_DIR does not exist and
+    // `git` cannot say what was built — so the row is captured from stdout and
+    // appended on the machine that does know both.
+    print!("\nrow: {row}");
     match append_result_row(&row) {
-        Ok(path) => println!("\nrecorded to {}", path.display()),
-        Err(error) => eprintln!("\nfailed to record results to engine_timing_results.csv: {error}"),
+        Ok(path) => println!("recorded to {}", path.display()),
+        Err(error) => eprintln!("not recorded to a CSV here ({error}) — use the row above"),
     }
 }
