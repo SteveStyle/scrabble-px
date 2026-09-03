@@ -434,9 +434,15 @@ esac
 # that has been live for a week, or an outage caused by something outside the
 # image.
 #
-# It skips exactly two gates, and they are the two that cost time: standing
-# this commit up on preview, and on rehearsal. Each is a full image build plus
-# a transfer and a deploy.
+# It skips exactly two gates: standing this commit up on preview, and on
+# rehearsal.
+#
+# **They cost less than they did.** Until #214 each was a full image build plus a
+# transfer; now the artefact is built once for the commit and both reuse it, so
+# what is skipped is two transfers and two smoke tests. The build happens either
+# way, because an emergency is a new commit. Owner, 2026-09-03: with build-once
+# there may not be much time left to save — and what remains is mostly the CI
+# wait and the human steps, not the machine ones.
 #
 # It does **not** skip CI. One complete run, e2e included, is the check worth
 # waiting for — it is the only thing between here and production that has
