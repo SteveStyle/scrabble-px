@@ -42,6 +42,11 @@ node_modules/
 
 # Claude Code local settings/session state
 .claude/
+# …except skills, which encode this project's process rather than one machine's
+# settings. Losing them to a laptop rebuild would lose work, and docs/3.6's own
+# test is that what survives a rebuild elsewhere is what has been delivered.
+!.claude/skills/
+!.claude/skills/**
 
 # PID files written by scripts/services.sh
 .pid.server
