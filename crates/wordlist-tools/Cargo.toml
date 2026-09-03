@@ -8,7 +8,9 @@ edition.workspace = true
 # why they are a crate and not examples: `.githooks/pre-commit` excludes
 # `crates/*/examples/` from the rule that an image change takes a branch and a
 # pull request, and that exclusion is only honest if nothing in `examples/`
-# writes a file anybody keeps.
+# produces something the binary compiles in. Writing a results CSV that is
+# committed is fine, and three benchmarks do it; writing a file that is
+# `include_str!`d is not.
 #
 # A workspace member but not a default member, so `cargo build` at the root
 # does not build it and the Dockerfile's `-p server-game -p admin-cli` never
