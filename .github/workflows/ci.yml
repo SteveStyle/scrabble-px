@@ -91,24 +91,20 @@ jobs:
       # every rehearsal for a day.
       - name: Shell script tests
         run: |
-          ./scripts/tests/read-api-version.test.sh
-          ./scripts/tests/check-release-version.test.sh
-          ./scripts/tests/check-commit-stamp.test.sh
-          ./scripts/tests/backup-to-oci.test.sh
-          ./scripts/tests/restore-backup.test.sh
-          ./scripts/tests/ci-status.test.sh
-          ./scripts/tests/deploy.test.sh
-          ./scripts/tests/issue-mentions.test.sh
-          ./scripts/tests/deploy-milestone.test.sh
-          ./scripts/tests/deploy-placeholder.test.sh
-          ./scripts/tests/clean-test-accounts.test.sh
-          ./scripts/tests/rehearsal-access.test.sh
-          ./scripts/tests/actions-review-due.test.sh
-          ./scripts/tests/deploy-release.test.sh
-          ./scripts/tests/verify-test-approach.test.sh
-          ./scripts/tests/deploy-artifact.test.sh
-          ./scripts/tests/actions-phase.test.sh
-          ./scripts/tests/commit-msg-hook.test.sh
+          # Every suite in the directory, not a list. The list was hand-maintained
+          # and three had fallen off it — pre-commit-hook, turn-check and
+          # bench-rehearsal — including the one a project's own post-deployment
+          # check claimed was "run in CI". A glob cannot be forgotten.
+          failed=""
+          for t in scripts/tests/*.test.sh; do
+            echo "::group::$t"
+            if ./"$t"; then echo ok; else failed="$failed $t"; fi
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "these suites failed:$failed" >&2
+            exit 1
+          fi
 
       # -D warnings makes any clippy or rustc warning fail the build. Scoped to
       # this repo's crates (old-crates carry many pre-existing warnings we don't
