@@ -1,4 +1,4 @@
-timestamp_unix_seconds,git_commit,host,edition,num_games,games_completed,samples,min_ms,q1_ms,median_ms,mean_ms,q3_ms,p95_ms,p99_ms,max_ms,first_move_median_ms,first_move_mean_ms,first_move_max_ms,cpu_median_ms,cpu_mean_ms,cpu_p99_ms,run_wall_s,steal_ms,steal_pct,cpu_model,cores
+timestamp_unix_seconds,git_commit,host,edition,num_games,games_completed,samples,min_ms,q1_ms,median_ms,mean_ms,q3_ms,p95_ms,p99_ms,max_ms,first_move_median_ms,first_move_mean_ms,first_move_max_ms,cpu_median_ms,cpu_mean_ms,cpu_p99_ms,run_wall_s,steal_ms,steal_pct_of_capacity,cpu_model,cores
 1784742754,95b37e8-dirty,laptop-ryzen7235hs,official,50,50,2112,0.12,0.38,0.55,0.83,0.86,1.95,6.92,18.83,,,,,,,,,,,
 1784742777,95b37e8-dirty,laptop-ryzen7235hs,official,20,20,846,0.13,0.39,0.52,0.79,0.84,1.87,5.63,19.78,,,,,,,,,,,
 1785346713,10ec9bc-dirty,laptop-ryzen7235hs,official,30,30,1218,0.11,0.40,0.61,1.02,1.00,2.74,8.91,21.88,0.80,2.73,20.68,,,,,,,,

@@ -27,7 +27,7 @@ use api::{GameStatus, SeatKind};
 use rules_shared::{Rack, VariantRules};
 use server_game::game_state::{EngineRegistry, GameSession, ParticipantState};
 
-const RESULTS_CSV_HEADER: &str = "timestamp_unix_seconds,git_commit,host,edition,num_games,games_completed,samples,min_ms,q1_ms,median_ms,mean_ms,q3_ms,p95_ms,p99_ms,max_ms,first_move_median_ms,first_move_mean_ms,first_move_max_ms,cpu_median_ms,cpu_mean_ms,cpu_p99_ms,run_wall_s,steal_ms,steal_pct,cpu_model,cores\n";
+const RESULTS_CSV_HEADER: &str = "timestamp_unix_seconds,git_commit,host,edition,num_games,games_completed,samples,min_ms,q1_ms,median_ms,mean_ms,q3_ms,p95_ms,p99_ms,max_ms,first_move_median_ms,first_move_mean_ms,first_move_max_ms,cpu_median_ms,cpu_mean_ms,cpu_p99_ms,run_wall_s,steal_ms,steal_pct_of_capacity,cpu_model,cores\n";
 
 /// CPU time consumed by this process so far, in milliseconds.
 ///
@@ -313,11 +313,15 @@ async fn main() {
         "  p99:        {cpu_p99:>8.2} ms   ({:.0}% of wall)",
         100.0 * cpu_p99 / p99.max(f64::EPSILON)
     );
+    // Denominator is wall x cores, not wall: steal accrues on every core at
+    // once, so dividing by wall alone can exceed 100% and reads as "half the
+    // run was stolen" when it means half the *machine* was. This is the share
+    // of the machine's CPU capacity the hypervisor took during the run.
+    let capacity_ms = run_wall_s * 1000.0 * num_cores().max(1) as f64;
     match steal_ms {
         Some(steal) => println!(
-            "\nsteal during the run: {steal:.0} ms of {:.0} ms wall ({:.2}%), machine-wide",
-            run_wall_s * 1000.0,
-            100.0 * steal / (run_wall_s * 1000.0).max(f64::EPSILON)
+            "\nsteal during the run: {steal:.0} ms of {capacity_ms:.0} ms of CPU capacity ({:.1}% of the machine)",
+            100.0 * steal / capacity_ms.max(f64::EPSILON)
         ),
         None => println!("\nsteal: unavailable (/proc/stat not readable)"),
     }
@@ -328,7 +332,7 @@ async fn main() {
         .as_secs();
     let steal_field = steal_ms.map(|s| format!("{s:.0}")).unwrap_or_default();
     let steal_pct_field = steal_ms
-        .map(|s| format!("{:.2}", 100.0 * s / (run_wall_s * 1000.0).max(f64::EPSILON)))
+        .map(|s| format!("{:.2}", 100.0 * s / capacity_ms.max(f64::EPSILON)))
         .unwrap_or_default();
     let row = format!(
         "{timestamp_unix_seconds},{},{},{edition},{num_games},{games_completed},{n},{min:.2},{q1:.2},{median:.2},{mean:.2},{q3:.2},{p95:.2},{p99:.2},{max:.2},{first_median:.2},{first_mean:.2},{first_max:.2},{cpu_median:.2},{cpu_mean:.2},{cpu_p99:.2},{run_wall_s:.1},{steal_field},{steal_pct_field},{},{}\n",
