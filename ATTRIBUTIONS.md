@@ -16,7 +16,7 @@ file.
 
 They are also stored sorted and deduped in byte order, so dictionary
 construction can trust the file rather than re-establishing those properties
-on every startup. Re-normalise with the `import-wordlist` example, never a
+on every startup. Re-normalise with the `import-wordlist` tool, never a
 locale-aware sort: byte order matches the code-point order the prefix
 cursor's binary search assumes, whereas German collation would file `Ä`
 beside `A` and silently break lookups on the two non-ASCII lists. The
@@ -122,7 +122,7 @@ so nothing here affects what a person may play.
 - **Tool:** [`rustrict`](https://github.com/finnbear/rustrict) **0.7.38**,
   pinned exactly in `crates/rules-shared/Cargo.toml`
 - **Licence:** MIT OR Apache-2.0
-- **Used as:** a dev-dependency of the `generate-greylist` example only. It is
+- **Used as:** a dependency of `wordlist-tools`, for `generate-greylist` only. It is
   not linked into the server, the desktop client or the wasm client — the
   generated list is committed as plain text and that is what ships.
 - **Predicate:** `is(Type::ANY)` — anything it flags, at any severity — over

@@ -61,6 +61,9 @@ run_case "the greylist"                   1 crates/rules-shared/src/wordlists/gr
 run_case "the greylist stems it is built from" 1 crates/rules-shared/src/wordlists/greylist-stems.txt
 run_case "an email template"              1 crates/server-game/emails/welcome.txt
 run_case "a migration"                    1 crates/server-game/migrations/010_x.sql
+# The reason wordlist-tools is a crate and not an example (#306): it writes a
+# file that ships, so changing it is an image change even though it is a tool.
+run_case "a word-list generator"          1 crates/wordlist-tools/src/bin/generate-greylist.rs
 
 echo "registration rule:"
 run_case "a new .claude hook, unregistered"   1 .claude/new-hook.sh

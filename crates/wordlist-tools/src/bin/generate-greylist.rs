@@ -1,7 +1,7 @@
 //! Proposes `greylist.txt` — the words no engine will choose.
 //!
 //! ```text
-//! cargo run --release -p rules-shared --example generate-greylist > crates/rules-shared/src/wordlists/greylist.txt
+//! cargo run --release -p wordlist-tools --bin generate-greylist > crates/rules-shared/src/wordlists/greylist.txt
 //! ```
 //!
 //! Two sources, unioned:
@@ -28,7 +28,7 @@ use std::collections::BTreeSet;
 
 use rustrict::{CensorStr, Type};
 
-const STEMS: &str = include_str!("../src/wordlists/greylist-stems.txt");
+const STEMS: &str = include_str!("../../../rules-shared/src/wordlists/greylist-stems.txt");
 
 /// The version this list was generated with, recorded in the output header.
 /// Pinned in `Cargo.toml` — a regenerated list that silently differs is worse
@@ -127,7 +127,7 @@ fn main() {
     println!("# Words a person may still play, and an engine will not choose.");
     println!("#");
     println!("# GENERATED — do not edit by hand. Regenerate with:");
-    println!("#   cargo run --release -p rules-shared --example generate-greylist \\");
+    println!("#   cargo run --release -p wordlist-tools --bin generate-greylist \\");
     println!("#     > crates/rules-shared/src/wordlists/greylist.txt");
     println!("#");
     println!("# Sources: rustrict {RUSTRICT_VERSION} `is(Type::ANY)`, plus the curated stems");

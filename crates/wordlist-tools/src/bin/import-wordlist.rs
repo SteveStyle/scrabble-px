@@ -1,7 +1,7 @@
 //! Puts an upstream word list into the form the committed files hold.
 //!
 //! ```text
-//! cargo run --release -p rules-shared --example import-wordlist -- sowpods < words.txt > crates/rules-shared/src/sowpods.txt
+//! cargo run --release -p wordlist-tools --bin import-wordlist -- sowpods < words.txt > crates/rules-shared/src/sowpods.txt
 //! ```
 //!
 //! Reads plain text on stdin — one word per line, any case — and writes the

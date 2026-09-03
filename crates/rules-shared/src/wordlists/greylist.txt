@@ -1,7 +1,7 @@
 # Words a person may still play, and an engine will not choose.
 #
 # GENERATED — do not edit by hand. Regenerate with:
-#   cargo run --release -p rules-shared --example generate-greylist \
+#   cargo run --release -p wordlist-tools --bin generate-greylist \
 #     > crates/rules-shared/src/wordlists/greylist.txt
 #
 # Sources: rustrict 0.7.38 `is(Type::ANY)`, plus the curated stems

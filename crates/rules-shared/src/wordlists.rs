@@ -318,7 +318,7 @@ mod tests {
         ] {
             assert!(
                 greylist().contains(missed),
-                "{missed} is not greylisted — regenerate with the generate-greylist example"
+                "{missed} is not greylisted — regenerate with wordlist-tools generate-greylist"
             );
         }
     }
