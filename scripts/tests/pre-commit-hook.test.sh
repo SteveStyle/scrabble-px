@@ -54,6 +54,13 @@ run_case "a build asset nobody listed"    1 build-assets/nginx.conf
 run_case "an unknown file at the root"    1 something-new.yml
 run_case "old-crates, which the Dockerfile COPYs" 1 old-crates/first-try/src/main.rs
 run_case "one shipping file among safe ones" 1 docs/x.txt crates/api/src/a.rs
+# Data compiled in with include_str! ships as surely as the code does, and
+# reads like content rather than source. Every one of these is a .txt.
+run_case "a dictionary word list"         1 crates/rules-shared/src/sowpods.txt
+run_case "the greylist"                   1 crates/rules-shared/src/wordlists/greylist.txt
+run_case "the greylist stems it is built from" 1 crates/rules-shared/src/wordlists/greylist-stems.txt
+run_case "an email template"              1 crates/server-game/emails/welcome.txt
+run_case "a migration"                    1 crates/server-game/migrations/010_x.sql
 
 echo "allowed on main (does not ship):"
 run_case "a script"                       0 scripts/thing.sh.tmp
@@ -63,6 +70,7 @@ run_case "a crate example"                0 crates/server-game/examples/bench.rs
 run_case "a crate integration test"       0 crates/rules-shared/tests/words.rs
 
 run_case "the gitignore"                  0 .gitignore
+run_case "a README beside the word lists" 0 crates/rules-shared/src/wordlists/README.md
 
 echo
 echo "$PASS passed, $FAIL failed"
