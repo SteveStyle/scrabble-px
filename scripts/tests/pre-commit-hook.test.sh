@@ -62,6 +62,10 @@ run_case "the greylist stems it is built from" 1 crates/rules-shared/src/wordlis
 run_case "an email template"              1 crates/server-game/emails/welcome.txt
 run_case "a migration"                    1 crates/server-game/migrations/010_x.sql
 
+echo "registration rule:"
+run_case "a new .claude hook, unregistered"   1 .claude/new-hook.sh
+run_case "a new script, unregistered"         1 scripts/brand-new.sh
+
 echo "allowed on main (does not ship):"
 run_case "a script"                       0 scripts/thing.sh.tmp
 run_case "an e2e test"                    0 e2e/login.spec.ts

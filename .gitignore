@@ -48,6 +48,13 @@ node_modules/
 # they are versioned — docs/3.6's test is that what survives a rebuild
 # elsewhere is what has been delivered.
 !.claude/skills/
+# The two hooks are tooling by the same test, and tooling is an artefact
+# whether it runs in production or not (owner, 2026-09-03). They were invisible
+# to the repo until then, which is how turn-check.sh came to be filtering on a
+# convention that nothing had written for weeks. settings.json stays ignored:
+# it is one machine's permissions and absolute paths, not process.
+!.claude/turn-check.sh
+!.claude/inbox-hook.sh
 
 # PID files written by scripts/services.sh
 .pid.server
