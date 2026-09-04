@@ -31,6 +31,7 @@ seeing rather than hiding.
 Read-only and derived: nothing is stored, so nothing can drift.
 """
 import json
+import os
 import re
 import subprocess
 import datetime as dt
@@ -240,6 +241,36 @@ def actions_in(body: str) -> list[str]:
         else:
             open_item = False
     return out
+
+
+# Whether CI has *failed* for what is on `main`, as a line to print.
+#
+# Delegated to `ci-status.sh` rather than asking GitHub here, so the release
+# gate, `verify.sh` and this all read the same answer and cannot drift — which
+# is that script's own reason for existing.
+#
+# Only a concluded failure is reported. A run still in progress is the normal
+# state right after a push and would be noise on every reading; a run that does
+# not exist yet is not evidence of anything.
+#
+# Raised by the day of 2026-09-04: CI was red on `main` for fourteen commits
+# because the tool that checks it, `verify.sh`, was not run. This one is.
+def ci_failed_on_main() -> str | None:
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        r = subprocess.run([os.path.join(here, "ci-status.sh"), "--run", "push:main"],
+                           capture_output=True, text=True, timeout=30)
+    except Exception:
+        return None
+    if r.returncode == 0:
+        return None
+    text = (r.stdout or "") + (r.stderr or "")
+    if "concluded" not in text:
+        return None          # in progress, or no run yet
+    for line in text.splitlines():
+        if "concluded" in line:
+            return line.strip()
+    return None
 
 
 # Days until the token `gh` runs on expires, and None if it does not expire or
@@ -541,6 +572,11 @@ def main() -> int:
         print(f"\n{BOLD}pull requests with no issue in the branch name{OFF}")
         for pr in homeless:
             print(f"  PR #{pr['number']:<5} {pr['title']}  {DIM}[{turn(pr)}] {pr['headRefName']}{OFF}")
+
+    broken = ci_failed_on_main()
+    if broken:
+        print(f"\n  {BOLD}{broken}{OFF}")
+        print(f"  {BOLD}Nothing after the failing step ran — no clippy, no tests, no wasm.{OFF}")
 
     days = token_days_left()
     if days is not None:
