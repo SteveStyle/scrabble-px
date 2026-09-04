@@ -51,9 +51,10 @@ so an entry's case here does not matter.
 
 ## Filling these in
 
-Both files are empty. The mechanism is built and tested; the contents are
-deliberately not invented, because a list assembled from memory would be both
-wrong and unaccountable.
+**The denylist is empty; the greylist is not.** The greylist was generated on
+2026-07-30 and carries 2,666 entries. The denylist's mechanism is built and
+tested and its contents are deliberately not invented, because a list assembled
+from memory would be both wrong and unaccountable — #116 owns filling it.
 
 The process is settled and written up in
 [`docs/3.5-word-lists-and-dictionaries.md`](../../../../docs/3.5-word-lists-and-dictionaries.md),
