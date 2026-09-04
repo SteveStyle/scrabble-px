@@ -24,6 +24,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use api::{GameStatus, SeatKind};
+use rules_shared::MoveGenerator as _;
 use rules_shared::{Rack, VariantRules};
 use server_game::game_state::{EngineRegistry, GameSession, ParticipantState};
 
@@ -203,7 +204,7 @@ fn host_label() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-const MOVES_CSV_HEADER: &str = "run,game,turn,seat,blanks,rack_tiles,wall_ms,cpu_ms\n";
+const MOVES_CSV_HEADER: &str = "run,game,turn,seat,blanks,rack_tiles,n_moves,wall_ms,cpu_ms\n";
 
 /// Writes the per-move rows for one run, named by the run's timestamp and host
 /// so it joins to the summary CSV's `timestamp_unix_seconds` column.
@@ -329,6 +330,26 @@ async fn main() {
                 .get(seat)
                 .map(|p| (p.rack.blanks, p.rack.count()))
                 .unwrap_or((0, 0));
+            // N, the number of candidates the engine will iterate: the variable
+            // that explains what a move costs. Counted outside the timed region
+            // with the same `enumerate_legal_moves` the engine uses, so it is
+            // exactly what the search will walk, at the price of doing the
+            // enumeration twice — the run takes about twice as long and none of
+            // that lands in a timing.
+            //
+            // Worth it because it separates the two ways an engine change can
+            // help: generating fewer candidates, or costing less per candidate.
+            // Measured 2026-09-04, cost is fixed + linear in N and nothing more
+            // — laptop 0.179 ms + 3.35 us each, rehearsal 0.286 ms + 6.97 us.
+            let n_moves = {
+                let re = rules_shared::RulesEngine {
+                    rules: &game.rules,
+                    dictionary: rules_shared::dictionary_by_name(&game.rules.language)
+                        .expect("known dictionary"),
+                };
+                let r = game.participants[seat].rack;
+                re.enumerate_legal_moves(&game.state, &r).count()
+            };
             let cpu_before = process_cpu_ms();
             let before = Instant::now();
             let advanced = game
@@ -343,7 +364,7 @@ async fn main() {
             samples_ms.push(elapsed_ms);
             cpu_ms.push(cpu_elapsed_ms);
             detail.push(format!(
-                "{game_index},{turn},{seat},{blanks},{rack_tiles},{elapsed_ms:.4},{cpu_elapsed_ms:.4}"
+                "{game_index},{turn},{seat},{blanks},{rack_tiles},{n_moves},{elapsed_ms:.4},{cpu_elapsed_ms:.4}"
             ));
             if !advanced || game.status != GameStatus::Active {
                 break;
