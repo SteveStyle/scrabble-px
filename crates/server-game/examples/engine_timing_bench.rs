@@ -121,7 +121,10 @@ fn print_histogram(sorted_ms: &[f64]) {
         }
         if empty_run > 0 {
             let plural = if empty_run == 1 { "bucket" } else { "buckets" };
-            println!("      {:>26}", format!("... {empty_run} empty {plural} ..."));
+            println!(
+                "      {:>26}",
+                format!("... {empty_run} empty {plural} ...")
+            );
             empty_run = 0;
         }
         println!(
@@ -472,7 +475,9 @@ async fn main() {
 
     if slow_moves > 0 {
         println!();
-        println!("{slow_moves} moves took over 20 ms; {slow_cpu_starved} of them used almost no CPU while they waited.");
+        println!(
+            "{slow_moves} moves took over 20 ms; {slow_cpu_starved} of them used almost no CPU while they waited."
+        );
         println!("On a shared VM these are the hypervisor, not the search — so compare");
         println!("median and p95 between runs. The p99 is inside them and is not");
         println!("evidence about this code. The algorithmic tail is only readable on a");

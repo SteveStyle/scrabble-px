@@ -84,3 +84,6 @@ data/backups/
 # rehearsal and production load the same bytes (#214). A cache — losing one
 # costs a rebuild of a known commit.
 artifacts/
+
+# Python bytecode from importing scripts/actions.py as a module
+__pycache__/
