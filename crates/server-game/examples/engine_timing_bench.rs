@@ -73,6 +73,65 @@ fn steal_ms_since_boot() -> Option<f64> {
 /// The CPU this ran on, as the kernel names it, with commas removed so it can
 /// sit in a CSV field. Recorded rather than folded into the host label: it
 /// makes a row self-describing without anyone choosing an abbreviation.
+/// A frequency histogram of the move timings, in 100 buckets spanning zero to
+/// the slowest move — 1% of the range each.
+///
+/// The percentiles say where the distribution sits; this says what shape it is,
+/// and the shape is the argument. Genuine search cost falls away smoothly from
+/// zero. A second clump far out, separated from the first by empty buckets, is
+/// not a slower kind of move: it is the hypervisor descheduling the vCPU, and
+/// on a machine nobody else is sharing it does not appear at all.
+///
+/// Bars are logarithmic. A linear bar would put 1100 moves in the first bucket
+/// and render every bucket in the tail as nothing, which is exactly the part
+/// worth seeing — so the count is printed beside each bar rather than inferred
+/// from its length. Runs of empty buckets are collapsed to one line, because
+/// the gap is information but its individual buckets are not.
+fn print_histogram(sorted_ms: &[f64]) {
+    const BUCKETS: usize = 100;
+    let max = match sorted_ms.last() {
+        Some(m) if *m > 0.0 => *m,
+        _ => return,
+    };
+    let width = max / BUCKETS as f64;
+    let mut counts = [0usize; BUCKETS];
+    for ms in sorted_ms {
+        let idx = ((ms / width) as usize).min(BUCKETS - 1);
+        counts[idx] += 1;
+    }
+    let peak = counts.iter().copied().max().unwrap_or(1).max(1);
+    let scale = |n: usize| -> usize {
+        if n == 0 {
+            0
+        } else {
+            // log so a bucket holding three moves is still visible beside one
+            // holding a thousand.
+            (1.0 + 44.0 * (n as f64).ln() / (peak as f64).ln()).round() as usize
+        }
+    };
+
+    println!();
+    println!("distribution, 100 buckets of {width:.2} ms (bars are logarithmic):");
+    let mut empty_run = 0usize;
+    for (i, &n) in counts.iter().enumerate() {
+        if n == 0 {
+            empty_run += 1;
+            continue;
+        }
+        if empty_run > 0 {
+            let plural = if empty_run == 1 { "bucket" } else { "buckets" };
+            println!("      {:>26}", format!("... {empty_run} empty {plural} ..."));
+            empty_run = 0;
+        }
+        println!(
+            "  {:>6.1}-{:<6.1} ms {:<45} {n}",
+            i as f64 * width,
+            (i + 1) as f64 * width,
+            "#".repeat(scale(n))
+        );
+    }
+}
+
 fn num_cores() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
@@ -302,6 +361,8 @@ async fn main() {
         "  vs all-move median: {:.1}x",
         first_median / median.max(f64::EPSILON)
     );
+
+    print_histogram(&samples_ms);
 
     println!();
     println!("CPU time per move (work, as opposed to elapsed):");
