@@ -106,7 +106,8 @@ def write_wide(path, references, subjects, keys, factor=3.0):
 
     Reduced per side. A mean across a laptop run and a VM run would be an
     average of two machines and mean nothing, so the sides are kept apart and
-    the ratio between their means is the last column.
+    the ratio between their means is the last column: `ratio_mean_wall` is
+    subject divided by reference, so above 1 means the subject is slower.
 
     Columns are named by each run's own id, the `run` value its summary row
     carries, so the file says which runs it holds without a separate legend.
