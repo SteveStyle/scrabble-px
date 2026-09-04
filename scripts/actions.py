@@ -234,6 +234,32 @@ def actions_in(body: str) -> list[str]:
     return out
 
 
+# Days until the token `gh` runs on expires, and None if it does not expire or
+# the header is missing.
+#
+# A countdown rather than a warning under a threshold (owner, 2026-09-04):
+# there is no right number of days to start caring, and a figure that is always
+# there needs no decision about when to appear. It is a check and never a gate —
+# nothing here refuses anything.
+#
+# Raised by #309: the fine-grained token expires 2026-11-24 and nothing warns.
+# GitHub emails 45 days ahead about 2FA and says nothing at all about this, so
+# the first symptom would be a command failing in the middle of something else.
+# The whole cost is one header on a call already being made.
+def token_days_left() -> int | None:
+    out = gh("api", "-i", "user", "--silent")
+    for line in out.splitlines():
+        if line.lower().startswith("github-authentication-token-expiration:"):
+            when = line.split(":", 1)[1].strip()
+            for fmt in ("%Y-%m-%d %H:%M:%S %Z", "%Y-%m-%d %H:%M:%S UTC"):
+                try:
+                    expiry = dt.datetime.strptime(when, fmt)
+                except ValueError:
+                    continue
+                return (expiry.date() - dt.date.today()).days
+    return None
+
+
 def main() -> int:
     repo = gh("repo", "view", "--json", "owner,name",
               "--jq", '"\\(.owner.login) \\(.name)"').split()
@@ -499,6 +525,17 @@ def main() -> int:
         print(f"\n{BOLD}pull requests with no issue in the branch name{OFF}")
         for pr in homeless:
             print(f"  PR #{pr['number']:<5} {pr['title']}  {DIM}[{turn(pr)}] {pr['headRefName']}{OFF}")
+
+    days = token_days_left()
+    if days is not None:
+        # The wording carries the urgency; the line is always present either way.
+        if days <= 7:
+            note = f"{BOLD}token expires in {days} days — regenerate it now (#309){OFF}"
+        elif days <= 30:
+            note = f"token expires in {days} days (#309)"
+        else:
+            note = f"{DIM}token expires in {days} days{OFF}"
+        print(f"\n  {note}")
 
     print(f"\n{DIM}Read-only, derived at run time — the issue body is the record.{OFF}")
     return 0
