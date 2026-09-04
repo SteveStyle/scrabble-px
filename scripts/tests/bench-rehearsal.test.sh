@@ -35,7 +35,10 @@ check "column 3 is the host"       "host"          "$(col 3)"
 check "column 10 is the median"    "median_ms"     "$(col 10)"
 check "column 14 is the p99"       "p99_ms"        "$(col 14)"
 check "column 21 is the CPU p99"   "cpu_p99_ms"    "$(col 21)"
+check "column 13 is the p95"       "p95_ms"        "$(col 13)"
 check "column 24 is steal"         "steal_pct_of_capacity" "$(col 24)"
+check "column 27 counts slow moves" "slow_moves"   "$(col 27)"
+check "column 28 counts the starved" "slow_cpu_starved" "$(col 28)"
 
 check "it is registered as a tool" "yes" \
   "$(grep -q 'bench-rehearsal.sh' "$(dirname "$SCRIPT_UNDER_TEST")/../docs/3.0-tools.md" && echo yes || echo no)"

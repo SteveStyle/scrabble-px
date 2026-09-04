@@ -72,12 +72,18 @@ echo "==> recorded to ${CSV#"$REPO"/}"
 echo
 
 # The comparison this exists for: the same host, then and now.
-fmt() { printf '  %-15s median %6s ms   p99 %7s ms   CPU p99 %7s ms   steal %5s%%\n' \
+# median and p95 are the comparable numbers. The p99 on a shared VM is inside
+# the moves the hypervisor descheduled — 27 of 1229 on 2026-09-04 — so it moves
+# with the tenancy rather than with the code. `slow` counts moves over 20 ms,
+# which is zero on hardware nobody else is sharing.
+fmt() { printf '  %-15s median %6s   p95 %6s   p99 %7s   slow %3s (%s starved)\n' \
   "$(printf '%s' "$1" | cut -d, -f2)" "$(printf '%s' "$1" | cut -d, -f10)" \
-  "$(printf '%s' "$1" | cut -d, -f14)" "$(printf '%s' "$1" | cut -d, -f21)" \
-  "$(printf '%s' "$1" | cut -d, -f24)"; }
+  "$(printf '%s' "$1" | cut -d, -f13)" "$(printf '%s' "$1" | cut -d, -f14)" \
+  "$(printf '%s' "$1" | cut -d, -f27)" "$(printf '%s' "$1" | cut -d, -f28)"; }
 echo "$HOST:"
 [ -n "$PREVIOUS" ] && fmt "$PREVIOUS" || echo "  (no previous run on this host)"
 fmt "$ROW"
 echo
 echo "A check, not a gate: read the two rows and decide. Nothing here fails a release."
+echo "Compare median and p95. A non-zero slow count is the hypervisor, and the p99"
+echo "is inside it — see docs/2.3."

@@ -27,7 +27,7 @@ use api::{GameStatus, SeatKind};
 use rules_shared::{Rack, VariantRules};
 use server_game::game_state::{EngineRegistry, GameSession, ParticipantState};
 
-const RESULTS_CSV_HEADER: &str = "timestamp_unix_seconds,git_commit,host,edition,num_games,games_completed,samples,min_ms,q1_ms,median_ms,mean_ms,q3_ms,p95_ms,p99_ms,max_ms,first_move_median_ms,first_move_mean_ms,first_move_max_ms,cpu_median_ms,cpu_mean_ms,cpu_p99_ms,run_wall_s,steal_ms,steal_pct_of_capacity,cpu_model,cores\n";
+const RESULTS_CSV_HEADER: &str = "timestamp_unix_seconds,git_commit,host,edition,num_games,games_completed,samples,min_ms,q1_ms,median_ms,mean_ms,q3_ms,p95_ms,p99_ms,max_ms,first_move_median_ms,first_move_mean_ms,first_move_max_ms,cpu_median_ms,cpu_mean_ms,cpu_p99_ms,run_wall_s,steal_ms,steal_pct_of_capacity,cpu_model,cores,slow_moves,slow_cpu_starved\n";
 
 /// CPU time consumed by this process so far, in milliseconds.
 ///
@@ -244,6 +244,7 @@ async fn main() {
         }
     }
 
+    let samples_ms_unsorted = samples_ms.clone();
     let run_wall_s = run_started.elapsed().as_secs_f64();
     // Steal is a counter since boot, so only the difference across the run
     // means anything, and only if both reads succeeded.
@@ -318,6 +319,33 @@ async fn main() {
     // run was stolen" when it means half the *machine* was. This is the share
     // of the machine's CPU capacity the hypervisor took during the run.
     let capacity_ms = run_wall_s * 1000.0 * num_cores().max(1) as f64;
+    // Moves over 20 ms, and how many of those consumed almost no CPU while they
+    // waited. The threshold is not tuned: on a machine nobody else is sharing no
+    // move reaches it — the slowest laptop move in 1229 was 16 ms — while a
+    // hypervisor descheduling a vCPU produces gaps that cluster at 50-60 ms. So
+    // a non-zero count here is the tenancy, not the search.
+    //
+    // `slow_cpu_starved` is the subset that is *provable*: cpu under a fifth of
+    // wall. The rest cannot be told apart from work by this process alone,
+    // because a guest kernel credits a process with time the hypervisor took.
+    // Both numbers are recorded rather than one, because the gap between them
+    // is the part that looks like work and is not.
+    let slow_moves = samples_ms.iter().filter(|ms| **ms > 20.0).count();
+    let slow_cpu_starved = cpu_ms
+        .iter()
+        .zip(samples_ms_unsorted.iter())
+        .filter(|(cpu, wall)| **wall > 20.0 && **cpu < 0.2 * **wall)
+        .count();
+
+    if slow_moves > 0 {
+        println!();
+        println!("{slow_moves} moves took over 20 ms; {slow_cpu_starved} of them used almost no CPU while they waited.");
+        println!("On a shared VM these are the hypervisor, not the search — so compare");
+        println!("median and p95 between runs. The p99 is inside them and is not");
+        println!("evidence about this code. The algorithmic tail is only readable on a");
+        println!("machine nobody else is sharing, where this count is zero.");
+    }
+
     match steal_ms {
         Some(steal) => println!(
             "\nsteal during the run: {steal:.0} ms of {capacity_ms:.0} ms of CPU capacity ({:.1}% of the machine)",
@@ -335,7 +363,7 @@ async fn main() {
         .map(|s| format!("{:.2}", 100.0 * s / capacity_ms.max(f64::EPSILON)))
         .unwrap_or_default();
     let row = format!(
-        "{timestamp_unix_seconds},{},{},{edition},{num_games},{games_completed},{n},{min:.2},{q1:.2},{median:.2},{mean:.2},{q3:.2},{p95:.2},{p99:.2},{max:.2},{first_median:.2},{first_mean:.2},{first_max:.2},{cpu_median:.2},{cpu_mean:.2},{cpu_p99:.2},{run_wall_s:.1},{steal_field},{steal_pct_field},{},{}\n",
+        "{timestamp_unix_seconds},{},{},{edition},{num_games},{games_completed},{n},{min:.2},{q1:.2},{median:.2},{mean:.2},{q3:.2},{p95:.2},{p99:.2},{max:.2},{first_median:.2},{first_mean:.2},{first_max:.2},{cpu_median:.2},{cpu_mean:.2},{cpu_p99:.2},{run_wall_s:.1},{steal_field},{steal_pct_field},{},{},{slow_moves},{slow_cpu_starved}\n",
         git_commit_label(),
         host_label(),
         cpu_model(),
