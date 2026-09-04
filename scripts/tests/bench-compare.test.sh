@@ -35,7 +35,7 @@ check "pairs every move"                 "yes" "$(grep -q 'paired on (game, turn
 check "excludes exactly the stalled one" "yes" "$(grep -q 'excluded: 1 (1.0%)' <<<"$OUT" && echo yes || echo no)"
 # The 40 ms move is four times slower in absolute terms than the 50x one is in
 # ratio terms; an absolute-time cut would drop it and report a 2.0x machine.
-check "keeps the slow-on-both position"  "yes" "$(grep -qE 'ratio, cleaned:\s+2\.0x\s+2\.0x' <<<"$OUT" && echo yes || echo no)"
+check "keeps the slow-on-both position"  "yes" "$(grep -qE 'ratio, cleaned:\s+2\.000x\s+2\.000x' <<<"$OUT" && echo yes || echo no)"
 check "reports the uncleaned ratio too"  "yes" "$(grep -q 'ratio, all moves' <<<"$OUT" && echo yes || echo no)"
 
 # Runs of different benchmarks share no positions and must not be compared.
@@ -45,6 +45,36 @@ check "refuses runs with nothing in common" "1" "$got"
 
 got=0; "$TOOL" >/dev/null 2>&1 || got=$?
 check "refuses with no arguments"         "2" "$got"
+
+# The self-check the method must pass: runs of the SAME thing, split in two,
+# must compare as 1.0. The median-based baseline scored 0.390x on this and the
+# minimum scores 1.077x — a stall drags a two-run median up with it and escapes
+# rejection, which is invisible until you compare something against itself.
+# Ten stalls per run, at turns nothing else stalls on, so that with two runs a
+# side the polluted fraction is 10% and reaches the p95 and p99. Two stalls in
+# 200 positions would sit below the p99 index and the wrong baseline would pass
+# unnoticed, which is what the first version of this fixture did.
+mk() { # <file> <first-stalled-turn>
+  { echo "$H"
+    for i in $(seq 0 199); do
+      if [ "$(( (i - $2) % 100 ))" = 0 ] && [ "$i" -ge "$2" ] || [ "$i" = "$2" ]; then
+        echo "9,0,$i,0,0,7,60.0,0.5"
+      elif [ "$(( i % 20 ))" = "$(( $2 % 20 ))" ]; then
+        echo "9,0,$i,0,0,7,60.0,0.5"
+      else
+        echo "9,0,$i,0,0,7,1.0,1.0"
+      fi
+    done
+  } > "$1"
+}
+mk "$TMP/x1.csv" 3; mk "$TMP/x2.csv" 7
+mk "$TMP/y1.csv" 11; mk "$TMP/y2.csv" 13; mk "$TMP/y3.csv" 17
+SELF="$("$TOOL" "$TMP/x1.csv" "$TMP/x2.csv" -- "$TMP/y1.csv" "$TMP/y2.csv" "$TMP/y3.csv")"
+check "same input compares as 1.0 at every percentile" "yes" \
+  "$(grep -qE 'ratio, per-move means:\s+1\.000x\s+1\.000x\s+1\.000x' <<<"$SELF" && echo yes || echo no)"
+# Three subject runs, ten stalls each, and the count reports the subject side.
+check "the stalls were discarded, not averaged in" "yes" \
+  "$(grep -q '30 stalled timings discarded' <<<"$SELF" && echo yes || echo no)"
 
 check "is registered as a tool" "yes" \
   "$(grep -q 'bench-compare.py' "$(dirname "$TOOL")/../docs/3.0-tools.md" && echo yes || echo no)"
