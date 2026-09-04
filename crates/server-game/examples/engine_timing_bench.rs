@@ -164,8 +164,19 @@ fn git_commit_label() -> String {
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
+    // Excluding what this benchmark itself writes. Without that, the first run
+    // records a clean commit and every run after it says `-dirty`, because the
+    // results row and the per-move file it just wrote are the uncommitted
+    // change. Everything else still counts as dirty, which is the point.
     let dirty = Command::new("git")
-        .args(["status", "--porcelain"])
+        .args([
+            "status",
+            "--porcelain",
+            "--",
+            ".",
+            ":!crates/server-game/examples/engine_timing_results.csv",
+            ":!crates/server-game/examples/moves",
+        ])
         .output()
         .ok()
         .is_some_and(|output| output.status.success() && !output.stdout.is_empty());
