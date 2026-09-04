@@ -69,6 +69,41 @@ echo "registration rule:"
 run_case "a new .claude hook, unregistered"   1 .claude/new-hook.sh
 run_case "a new script, unregistered"         1 scripts/brand-new.sh
 
+echo "rustfmt rule:"
+# Three things have to be true for this to test anything, and the first version
+# of it had none of them. The staged file must be one the image rule does not
+# already refuse — so `examples/`, not `src/`. The fixture must have a
+# `Cargo.toml`, or the hook's guard skips the check. And `cargo` must be stubbed,
+# because what is under test is that the hook gates on the exit status, not
+# rustfmt's own behaviour.
+#
+# Without all three the cases exited 1 from the image rule and passed while
+# testing nothing — removing the refusal entirely left the suite green.
+run_fmt_case() { # <desc> <expect> <cargo-exit> <file>
+  local desc="$1" expect="$2" rc="$3" f="$4" tmp got=0
+  tmp="$(mktemp -d)"
+  (
+    cd "$tmp"
+    git init -q .; git config user.email t@t; git config user.name t
+    git config core.hooksPath /dev/null
+    mkdir -p docs bin
+    printf 'x\n' > docs/3.0-tools.md
+    printf '[workspace]\n' > Cargo.toml
+    printf '#!/usr/bin/env bash\nif [ "$1" = fmt ]; then echo "Diff in /x/y.rs:1:"; exit %s; fi\nexit 0\n' "$rc" > bin/cargo
+    chmod +x bin/cargo; export PATH="$tmp/bin:$PATH"
+    git add -A; git commit -qm "app 0.0.0 api 0.0: base"; git branch -M main
+    mkdir -p "$(dirname "$f")"; printf 'x\n' >> "$f"; git add "$f"
+    "$HOOK" > /dev/null 2>&1
+  ) || got=$?
+  if [ "$got" -eq "$expect" ]; then echo "  ok       $desc"; PASS=$((PASS+1))
+  else echo "  FAILED   $desc (expected $expect, got $got)"; FAIL=$((FAIL+1)); fi
+  rm -rf "$tmp"
+}
+#              description                            expect  cargo  file
+run_fmt_case "unformatted Rust is refused"                 1     1  crates/x/examples/a.rs
+run_fmt_case "formatted Rust is allowed through"           0     0  crates/x/examples/a.rs
+run_fmt_case "a markdown-only commit skips the check"      0     1  docs/notes.md
+
 echo "allowed on main (does not ship):"
 run_case "a script"                       0 scripts/thing.sh.tmp
 run_case "an e2e test"                    0 e2e/login.spec.ts
