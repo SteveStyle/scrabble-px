@@ -21,6 +21,14 @@ use crate::components::games_panel::GamesPanel;
 use crate::views::{Home, ResetPassword, StatsView};
 
 const MAIN_CSS: Asset = asset!("/assets/styling/main.css");
+// The tab icon. Committed since 2026-07-07 and never served: with no
+// `<link rel="icon">` the browser falls back to requesting `/favicon.ico`, and
+// Caddy's SPA fallback answers every unmatched path with `index.html` — so the
+// browser asked for an icon and got HTML, and showed nothing (#103).
+//
+// `asset!` emits a hashed filename inside the bundle, so `file_server` serves a
+// real file before the fallback is reached and the bare path is never used.
+const FAVICON: Asset = asset!("/assets/favicon.ico");
 pub(crate) const BOARD_WIDTH: usize = 15;
 const BOARD_HEIGHT: usize = 15;
 /// How often the background reconnect loop pings `/health` while the
@@ -820,6 +828,7 @@ pub fn RootApp() -> Element {
 
     rsx! {
         document::Link { rel: "stylesheet", href: MAIN_CSS }
+        document::Link { rel: "icon", href: FAVICON }
 
         if let Some(token) = reset_password_token_from_url() {
             ResetPassword { server_url: server_url.clone(), token }
