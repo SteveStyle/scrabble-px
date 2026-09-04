@@ -76,6 +76,25 @@ check "same input compares as 1.0 at every percentile" "yes" \
 check "the stalls were discarded, not averaged in" "yes" \
   "$(grep -q '30 stalled timings discarded' <<<"$SELF" && echo yes || echo no)"
 
+# --wide: the per-move analysis on the row, so statistics are a column.
+"$TOOL" "$TMP/x1.csv" "$TMP/x2.csv" -- "$TMP/y1.csv" "$TMP/y2.csv" "$TMP/y3.csv" \
+  --wide "$TMP/wide.csv" > /dev/null
+check "wide file has a row per position"  "201" "$(wc -l < "$TMP/wide.csv" | tr -d ' ')"
+check "it carries the reduced mean"       "yes" \
+  "$(head -1 "$TMP/wide.csv" | grep -q 'sub_mean_wall_ms' && echo yes || echo no)"
+check "it carries the stall count"        "yes" \
+  "$(head -1 "$TMP/wide.csv" | grep -q 'sub_stalls_dropped' && echo yes || echo no)"
+check "it carries a column per run"       "5" \
+  "$(head -1 "$TMP/wide.csv" | tr ',' '\n' | grep -c '_wall_9')"
+# Same input both sides, so every row's ratio is exactly 1.
+check "every row's ratio is 1.0"          "200" \
+  "$(tail -n +2 "$TMP/wide.csv" | grep -c ',1\.0000$')"
+
+# Runs of different things must be refused rather than silently merged.
+{ echo "$H"; for i in $(seq 0 199); do echo "9,0,$i,0,9,7,1.0,1.0"; done; } > "$TMP/odd.csv"
+got=0; "$TOOL" "$TMP/x1.csv" "$TMP/odd.csv" --wide "$TMP/bad.csv" >/dev/null 2>&1 || got=$?
+check "refuses runs whose racks disagree" "1" "$got"
+
 check "is registered as a tool" "yes" \
   "$(grep -q 'bench-compare.py' "$(dirname "$TOOL")/../docs/3.0-tools.md" && echo yes || echo no)"
 

@@ -29,10 +29,15 @@ means. No position is dropped, so nothing is selected out.
 Both sides take as many runs as you have. Comparing two engines means several
 runs of each on the same machine, which is the `--` form.
 
+`--wide FILE` also writes every run given into one CSV, a row per position and
+a `wall`/`cpu` column pair per run, so the runs can be analysed side by side
+without joining files first.
+
 Usage:
   bench-compare.py ref.csv sub.csv                    single run each, biased
   bench-compare.py ref.csv sub1.csv sub2.csv ...      unbiased subject
   bench-compare.py a1.csv a2.csv -- b1.csv b2.csv     unbiased both sides
+  bench-compare.py ... --wide moves-wide.csv          plus the merged CSV
 """
 
 import csv
@@ -92,6 +97,89 @@ def per_move_means(subjects, keys, factor=3.0):
     return means, dropped
 
 
+def write_wide(path, references, subjects, keys, factor=3.0):
+    """Every run in one CSV, with the per-move analysis on the same row.
+
+    A row per position: the raw `wall`/`cpu` pair for each run, then that
+    position reduced — its minimum, how many timings were discarded as stalls,
+    and the mean of what survived. Statistics are then a column, not a join.
+
+    Reduced per side. A mean across a laptop run and a VM run would be an
+    average of two machines and mean nothing, so the sides are kept apart and
+    the ratio between their means is the last column.
+
+    Columns are named by each run's own id, the `run` value its summary row
+    carries, so the file says which runs it holds without a separate legend.
+
+    The position's fixed properties are written once and checked rather than
+    assumed: the games are seeded, so `blanks` and `rack_tiles` must agree
+    across every run, and if they do not then these are not runs of one thing.
+    """
+
+    def reduce_at(runs, key):
+        walls = [float(r[key]["wall_ms"]) for r in runs]
+        cpus = [float(r[key]["cpu_ms"]) for r in runs]
+        baseline = min(walls)
+        keep = [i for i, w in enumerate(walls) if w <= factor * baseline]
+        if not keep:
+            keep = list(range(len(walls)))
+        return (
+            len(walls),
+            baseline,
+            len(walls) - len(keep),
+            statistics.mean(walls[i] for i in keep),
+            statistics.mean(cpus[i] for i in keep),
+        )
+
+    sides = [("ref", references), ("sub", subjects)]
+    header = ["game", "turn", "seat", "blanks", "rack_tiles"]
+    for name, runs in sides:
+        for run in runs:
+            run_id = next(iter(run.values()))["run"]
+            header += [f"{name}_wall_{run_id}", f"{name}_cpu_{run_id}"]
+    for name, _ in sides:
+        header += [
+            f"{name}_runs",
+            f"{name}_min_wall_ms",
+            f"{name}_stalls_dropped",
+            f"{name}_mean_wall_ms",
+            f"{name}_mean_cpu_ms",
+        ]
+    header.append("ratio_mean_wall")
+
+    with open(path, "w", newline="") as handle:
+        # csv.writer defaults to CRLF. Every other CSV here is written by the
+        # Rust benchmark with plain newlines, and a file that silently differs
+        # breaks the next grep or awk somebody points at it — which is how this
+        # was found.
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(header)
+        for key in keys:
+            first = (references + subjects)[0][key]
+            for other in references + subjects:
+                if (other[key]["blanks"], other[key]["rack_tiles"]) != (
+                    first["blanks"],
+                    first["rack_tiles"],
+                ):
+                    raise SystemExit(
+                        f"position {key} has a different rack between runs — "
+                        "these are not runs of the same benchmark"
+                    )
+            row = [key[0], key[1], first["seat"], first["blanks"], first["rack_tiles"]]
+            for _, runs in sides:
+                for run in runs:
+                    row += [run[key]["wall_ms"], run[key]["cpu_ms"]]
+            reduced = {}
+            for name, runs in sides:
+                reduced[name] = reduce_at(runs, key)
+                count, baseline, dropped, mean_wall, mean_cpu = reduced[name]
+                row += [count, f"{baseline:.4f}", dropped, f"{mean_wall:.4f}", f"{mean_cpu:.4f}"]
+            ref_mean, sub_mean = reduced["ref"][3], reduced["sub"][3]
+            row.append(f"{sub_mean / ref_mean:.4f}" if ref_mean > 0 else "")
+            writer.writerow(row)
+    return len(references) + len(subjects)
+
+
 def main(argv):
     if len(argv) < 3:
         print("usage: bench-compare.py <reference.csv> <subject.csv> [more-subject.csv ...]", file=sys.stderr)
@@ -102,6 +190,14 @@ def main(argv):
     args = argv[1:]
     if "--cut" in args:
         i = args.index("--cut")
+        del args[i : i + 2]
+    wide = None
+    if "--wide" in args:
+        i = args.index("--wide")
+        if i + 1 >= len(args):
+            print("--wide needs a file to write to", file=sys.stderr)
+            return 2
+        wide = args[i + 1]
         del args[i : i + 2]
 
     if "--" in args:
@@ -133,6 +229,11 @@ def main(argv):
         and float(subject[k]["wall_ms"]) / float(reference[k]["wall_ms"]) > cut
     ]
     kept = [k for k in keys if k not in set(outliers)]
+
+    if wide:
+        n_runs = write_wide(wide, references, subjects, keys)
+        print(f"wrote {wide}: {len(keys)} rows, {n_runs} runs, with each move reduced on its own row")
+        print()
 
     print(f"paired on (game, turn): {len(keys)} moves")
     print(f"excluded: {len(outliers)} ({100 * len(outliers) / len(keys):.1f}%) over {cut:g}x the reference")
