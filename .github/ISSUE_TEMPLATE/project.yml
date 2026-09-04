@@ -165,12 +165,18 @@ body:
     attributes:
       label: Deliveries
       description: >-
-        One runbook per delivery. The steps and their routes now; the commands
-        before the delivery starts; which version carried each step, and when,
-        afterwards.
+        One row per delivery, with its milestone. An earlier delivery that has its
+        own Project Delivery issue keeps its steps there and is linked from here;
+        the last delivery has no issue of its own, so its runbook is written below
+        the table. Never both — a runbook in two places is two places to update,
+        and one of them goes stale.
       value: |
-        ### Delivery 1 — 
-
+        | # | what it delivers | milestone | steps |
+        | --- | --- | --- | --- |
+        | 1 | | | #nnn, or below if this is the last |
+        
+        ### Delivery 1 — steps
+        
         | # | step | route |
         | --- | --- | --- |
         | 1 | | |
