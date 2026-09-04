@@ -26,6 +26,9 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CSV="$REPO/crates/server-game/examples/engine_timing_results.csv"
 BIN="$REPO/target/release/examples/engine_timing_bench"
 
+MOVES_DIR="$REPO/crates/server-game/examples/moves"
+mkdir -p "$MOVES_DIR"
+
 # shellcheck source=/dev/null
 . "$REPO/scripts/rehearsal-target.sh"
 
@@ -55,6 +58,16 @@ if [ -n "$(git -C "$REPO" status --porcelain -- . \
   echo "==> note: the tree is dirty, so the row records $COMMIT"
 fi
 
+# A reference run here, from the same binary, before the remote one. The
+# comparison is only meaningful if both sides are the same code: pairing a VM
+# run against a laptop run from a different commit would mix a machine
+# difference with a code change and attribute the sum to whichever you were
+# looking for. Building once and running both is what makes that impossible.
+echo "==> reference run on this machine"
+REF_BEFORE="$(ls "$MOVES_DIR" 2>/dev/null || true)"
+"$BIN" "$GAMES" "$EDITION" > /dev/null
+REF_FILE="$(ls -t "$MOVES_DIR"/*.csv 2>/dev/null | head -1)"
+
 echo "==> copying to $DEPLOY_ENV ($DEPLOY_HOST)"
 scp -q -o BatchMode=yes ${DEPLOY_SSH_KEY:+-i "$DEPLOY_SSH_KEY"} "$BIN" "$TARGET:/tmp/engine_timing_bench"
 
@@ -66,8 +79,6 @@ OUTPUT="$("${SSH[@]}" "$TARGET" "chmod +x /tmp/engine_timing_bench && cd /tmp &&
 # per-move rows prefixed with MOVES and they are saved here instead. This is
 # the raw data: one row per move, keyed by (game, turn), which is the same
 # position on every machine because the games are seeded.
-MOVES_DIR="$REPO/crates/server-game/examples/moves"
-mkdir -p "$MOVES_DIR"
 MOVES="$(printf '%s\n' "$OUTPUT" | sed -n 's/^MOVES //p')"
 
 ROW="$(printf '%s\n' "$OUTPUT" | grep '^row: ' | sed 's/^row: //')"
@@ -106,6 +117,13 @@ fmt() { printf '  %-15s median %6s   p95 %6s   p99 %7s   slow %3s (%s starved)\n
 echo "$HOST:"
 [ -n "$PREVIOUS" ] && fmt "$PREVIOUS" || echo "  (no previous run on this host)"
 fmt "$ROW"
+echo
+if [ -n "${REF_FILE:-}" ] && [ -n "${MOVES_FILE:-}" ]; then
+  echo
+  echo "=== against this machine, outliers excluded ==="
+  "$REPO/scripts/bench-compare.py" "$REF_FILE" "$MOVES_FILE" || true
+fi
+
 echo
 echo "A check, not a gate: read the two rows and decide. Nothing here fails a release."
 echo "Compare median and p95. A non-zero slow count is the hypervisor, and the p99"
