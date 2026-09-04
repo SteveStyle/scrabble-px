@@ -295,7 +295,11 @@ def token_days_left() -> int | None:
                     expiry = dt.datetime.strptime(when, fmt)
                 except ValueError:
                     continue
-                return (expiry.date() - dt.date.today()).days
+                # UTC on both sides. The header is UTC and `date.today()` is
+                # local, so between midnight BST and midnight UTC they are
+                # different days and the countdown is out by one — which is
+                # exactly when the test caught it, at 00:43 BST on 2026-09-05.
+                return (expiry.date() - dt.datetime.now(dt.timezone.utc).date()).days
     return None
 
 
