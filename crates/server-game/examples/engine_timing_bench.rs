@@ -192,6 +192,30 @@ fn host_label() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+const MOVES_CSV_HEADER: &str = "run,game,turn,seat,blanks,rack_tiles,wall_ms,cpu_ms\n";
+
+/// Writes the per-move rows for one run, named by the run's timestamp and host
+/// so it joins to the summary CSV's `timestamp_unix_seconds` column.
+///
+/// A file per run rather than one growing file: 1229 rows an entry makes a
+/// single CSV unopenable within a dozen runs, and a run is the unit anybody
+/// wants to load anyway.
+fn write_moves_file(run: u64, host: &str, rows: &[String]) -> std::io::Result<std::path::PathBuf> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/moves");
+    std::fs::create_dir_all(&dir)?;
+    let safe_host: String = host
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let path = dir.join(format!("{run}-{safe_host}.csv"));
+    let mut file = std::fs::File::create(&path)?;
+    file.write_all(MOVES_CSV_HEADER.as_bytes())?;
+    for row in rows {
+        writeln!(file, "{run},{row}")?;
+    }
+    Ok(path)
+}
+
 fn append_result_row(row: &str) -> std::io::Result<std::path::PathBuf> {
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/engine_timing_results.csv");
@@ -259,6 +283,13 @@ async fn main() {
     // position that was hard. Wall clock alone cannot tell them apart, which is
     // the whole reason production's 57 ms p99 has never been explained.
     let mut cpu_ms: Vec<f64> = Vec::new();
+    // One row per move, written beside the summary. The summary answers "is it
+    // getting slower"; this answers "which moves, and why", which no percentile
+    // can. `game` and `turn` are the case marker: the games are seeded, so the
+    // same pair is the same position on every machine and in every run, and two
+    // runs can be compared move for move rather than distribution to
+    // distribution. That is what showed the VM's tail to be the hypervisor.
+    let mut detail: Vec<String> = Vec::new();
     let mut games_completed = 0usize;
 
     let steal_before = steal_ms_since_boot();
@@ -281,6 +312,12 @@ async fn main() {
         game.start();
 
         for turn in 0..MAX_TURNS_PER_GAME {
+            let seat = game.current_seat as usize;
+            let (blanks, rack_tiles) = game
+                .participants
+                .get(seat)
+                .map(|p| (p.rack.blanks, p.rack.count()))
+                .unwrap_or((0, 0));
             let cpu_before = process_cpu_ms();
             let before = Instant::now();
             let advanced = game
@@ -294,6 +331,9 @@ async fn main() {
             }
             samples_ms.push(elapsed_ms);
             cpu_ms.push(cpu_elapsed_ms);
+            detail.push(format!(
+                "{game_index},{turn},{seat},{blanks},{rack_tiles},{elapsed_ms:.4},{cpu_elapsed_ms:.4}"
+            ));
             if !advanced || game.status != GameStatus::Active {
                 break;
             }
@@ -430,6 +470,19 @@ async fn main() {
         cpu_model(),
         num_cores(),
     );
+    match write_moves_file(timestamp_unix_seconds, &host_label(), &detail) {
+        Ok(path) => println!("per-move detail: {}", path.display()),
+        Err(error) => {
+            // No manifest directory here, which is the deployment VM. Emit the
+            // rows so whatever ran this can save them on a machine that has one.
+            eprintln!("per-move detail not written here ({error}) — emitting instead");
+            println!("MOVES {MOVES_CSV_HEADER}");
+            for r in &detail {
+                println!("MOVES {timestamp_unix_seconds},{r}");
+            }
+        }
+    }
+
     // Printed as well as appended. A run on the deployment VM executes a binary
     // built here and copied there, where CARGO_MANIFEST_DIR does not exist and
     // `git` cannot say what was built — so the row is captured from stdout and

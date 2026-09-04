@@ -59,6 +59,14 @@ echo "==> running $GAMES games, $EDITION"
 OUTPUT="$("${SSH[@]}" "$TARGET" "chmod +x /tmp/engine_timing_bench && cd /tmp && ./engine_timing_bench $GAMES $EDITION")"
 "${SSH[@]}" "$TARGET" 'rm -f /tmp/engine_timing_bench' || true
 
+# The VM has no CARGO_MANIFEST_DIR to write into, so the benchmark emits the
+# per-move rows prefixed with MOVES and they are saved here instead. This is
+# the raw data: one row per move, keyed by (game, turn), which is the same
+# position on every machine because the games are seeded.
+MOVES_DIR="$REPO/crates/server-game/examples/moves"
+mkdir -p "$MOVES_DIR"
+MOVES="$(printf '%s\n' "$OUTPUT" | sed -n 's/^MOVES //p')"
+
 ROW="$(printf '%s\n' "$OUTPUT" | grep '^row: ' | sed 's/^row: //')"
 if [ -z "$ROW" ]; then
   echo "no row in the output — the benchmark did not complete:" >&2
@@ -70,8 +78,17 @@ ROW="${ROW/,unknown,/,$COMMIT,}"
 HOST="$(printf '%s' "$ROW" | cut -d, -f3)"
 PREVIOUS="$(grep ",$HOST," "$CSV" | tail -1 || true)"
 
+
 printf '%s\n' "$ROW" >> "$CSV"
 echo "==> recorded to ${CSV#"$REPO"/}"
+
+if [ -n "$MOVES" ]; then
+  RUN_TS="$(printf '%s' "$ROW" | cut -d, -f1)"
+  SAFE_HOST="$(printf '%s' "$HOST" | tr -c 'A-Za-z0-9' '-')"
+  MOVES_FILE="$MOVES_DIR/$RUN_TS-$SAFE_HOST.csv"
+  printf '%s\n' "$MOVES" > "$MOVES_FILE"
+  echo "==> per-move detail: ${MOVES_FILE#"$REPO"/} ($(( $(wc -l < "$MOVES_FILE") - 1 )) moves)"
+fi
 echo
 
 # The comparison this exists for: the same host, then and now.
