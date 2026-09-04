@@ -60,6 +60,13 @@ POST_DEPLOYMENT = "Post-deployment"
 # failures to surface". So nothing is said before then; a reminder that fires on
 # day one is one you learn to ignore.
 REVIEW_DUE_DAYS = 7
+# The label the owner added 2026-09-04: "once deployed this change will be
+# checked in the next release as a post-deployment check". It marks a review
+# that *cannot* be written yet rather than one nobody has got to — #214's digest
+# comparison needs a later release to compare against. Nagging about a thing
+# nobody can do teaches people to ignore the nag, so it is shown as waiting
+# instead (#310).
+RELEASE_CHECK = "Release Check"
 ALL = MODE == "--all"
 
 QUERY = """
@@ -67,6 +74,7 @@ QUERY = """
     issues(states: OPEN, first: 100) {
       nodes { number title body state
               issueType { name }
+              labels(first: 20) { nodes { name } }
               issueFieldValues(first: 10) { nodes {
                 ... on IssueFieldSingleSelectValue {
                   field { ... on IssueFieldSingleSelect { name } } value } } }
@@ -409,8 +417,16 @@ def main() -> int:
         """The actions and pull requests this run is about — the filter, in one place."""
         items = [a for a in actions_in(issues.get(num, {}).get("body", ""))
                  if ALL or a.startswith(f"({WHO})")]
+        labels = {l["name"] for l in
+                  (issues.get(num, {}).get("labels") or {}).get("nodes", [])}
         days = awaiting_review.get(num, 0)
-        if days >= REVIEW_DUE_DAYS:
+        if days >= REVIEW_DUE_DAYS and RELEASE_CHECK in labels:
+            # Visible, and never anybody's action: the difference between "you
+            # have not done this" and "this cannot be done yet".
+            if ALL:
+                items.insert(0, f"(release) waits for the next release — "
+                                f"{days} days at Post-deployment")
+        elif days >= REVIEW_DUE_DAYS:
             due = (f"(Claude) post-deployment review is due — {days} days at "
                    f"Post-deployment. docs/templates/post-deployment-review.md")
             if ALL or due.startswith(f"({WHO})"):

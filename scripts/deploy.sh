@@ -371,6 +371,35 @@ settle_milestone() {
     fi
   fi
 }
+# The post-deployment checks that were waiting for exactly this.
+#
+# A project can reach `Post-deployment` owing a check that cannot be answered
+# until a *later* release: #214 compares this release's image digest against the
+# previous one, and before a second release there is nothing to compare. The
+# `Release Check` label marks those, `actions.py` shows them as waiting rather
+# than due, and this is the moment they stop waiting (#310).
+#
+# A check and never a gate. It runs after everything else has succeeded, prints,
+# and returns 0 whatever happens — a reminder that could fail a deploy would be
+# worse than no reminder. Failure to reach GitHub is silent for the same reason:
+# the release has already happened and this cannot unhappen it.
+#
+# A function so the tests can reach it. Everything it needs is a parameter,
+# because the globals it would otherwise read are set half a script away.
+announce_release_checks() {  # $1 = IS_RELEASE, $2 = DEPLOY_ENV
+  local is_release="$1" env="$2" listing
+  (( is_release )) || return 0
+  [[ "$env" == "production" ]] || return 0
+  listing="$(gh issue list --label "Release Check" --state open \
+      --json number,title --jq '.[] | "  #\(.number)  \(.title)"' 2> /dev/null || true)"
+  [[ -n "$listing" ]] || return 0
+  echo ""
+  echo "==> These were waiting for a release to check against — now they can be:"
+  printf '%s\n' "$listing"
+  echo "    Answer each in its issue, then take the label off."
+  return 0
+}
+
 
 # Sourced by scripts/tests/deploy-release.test.sh, which exercises the two
 # functions above directly. Everything below this line is the deploy itself and
@@ -1379,5 +1408,7 @@ fi
 # Only after a deploy has succeeded: a failed one may be about to be retried,
 # and the artefact it would reuse is the point.
 prune_artifacts
+
+announce_release_checks "$IS_RELEASE" "$DEPLOY_ENV"
 
 echo "==> Done — https://$DEPLOY_HOST.sslip.io (or your configured hostname)"
