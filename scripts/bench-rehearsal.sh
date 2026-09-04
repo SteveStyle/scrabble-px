@@ -44,7 +44,10 @@ echo "==> building the benchmark"
 cargo build --release --example engine_timing_bench -p server-game --quiet
 
 COMMIT="$(git -C "$REPO" rev-parse --short HEAD)"
-if [ -n "$(git -C "$REPO" status --porcelain)" ]; then
+# The results CSV is excluded from the dirty check: this tool writes it, so a
+# laptop run immediately before this one would otherwise label the rehearsal row
+# `-dirty` when nothing about the code had changed. Everything else still counts.
+if [ -n "$(git -C "$REPO" status --porcelain -- . ':!crates/server-game/examples/engine_timing_results.csv')" ]; then
   COMMIT="$COMMIT-dirty"
   echo "==> note: the tree is dirty, so the row records $COMMIT"
 fi
