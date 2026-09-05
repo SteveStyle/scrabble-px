@@ -68,6 +68,32 @@ REVIEW_DUE_DAYS = 7
 # nobody can do teaches people to ignore the nag, so it is shown as waiting
 # instead (#310).
 RELEASE_CHECK = "Release Check"
+
+# D45: a Decision's state says who is holding it, and every transition
+# alternates. Routing used to come from the `(Steve)` / `(Claude)` prefixes,
+# which meant a tick decided ownership — #321 was answered in a comment with its
+# `(Steve) choose` ticked, and left the owner's list for nobody's. A tick means
+# a task is done; it should not say whose turn it is.
+#
+# One table, because these strings are matched literally and a mismatch is
+# silent: `For agreement` against the real `For Agreement` cost an afternoon.
+DECISION_HOLDER = {
+    "Asked": "Steve",               # Claude raised it; the owner gives his view
+    "For Agreement": "Claude",      # he has commented; Claude responds and documents it
+    "Ready for Sign Off": "Steve",  # written down; he reads it and signs it off
+    "Decided": "Claude",            # signed off; this is when applying falls due
+    "Actioned": "Steve",            # applied; he reads the outcome and closes it
+}
+# The act the state itself calls for, where the body's own actions are not it.
+DECISION_TURN = {
+    "For Agreement": "(Claude) respond, and document the agreed decision in the body",
+    "Ready for Sign Off": "(Steve) read the agreed decision, tick the box and move it to Decided",
+    "Actioned": "(Steve) applied — read the agreed decision and close it",
+}
+# The two states where the body's own `Open actions` are what is due. Everywhere
+# else the state's act is the whole of it, and showing the body's actions is how
+# "apply it" came to appear on Claude's list while #321 was still `Asked`.
+DECISION_BODY_ACTIONS = {"Asked", "Decided"}
 ALL = MODE == "--all"
 
 QUERY = """
@@ -462,18 +488,19 @@ def main() -> int:
         # Nothing enforces the closing; this is what makes it visible.
         if (node.get("issueType") or {}).get("name") == "Decision":
             dstate = field(node, "Decision State")
-            # D45. The state says whose turn it is, which the `(Steve)`/`(Claude)`
-            # prefixes could not: #321 was answered in a comment and its `(Steve)
-            # choose` action ticked, so it left the owner's list and joined
-            # nobody's. A tick says a task is done; it should not decide routing.
-            turn_item = ""
-            if dstate == "For Agreement":
-                turn_item = ("(Claude) the owner has given his view — agree it "
-                             "and move it to Decided, or put it back to Asked")
-            elif dstate == "Actioned":
-                turn_item = "(Steve) applied — read the agreed decision and close it"
-            if turn_item and (ALL or turn_item.startswith(f"({WHO})")):
-                items.insert(0, turn_item)
+            holder = DECISION_HOLDER.get(dstate)
+            if holder is None:
+                # An unset or unrecognised state: fall back to the body, rather
+                # than silently showing nothing. `check-transitions.sh` reports
+                # the missing state separately.
+                pass
+            elif not ALL and holder != WHO:
+                items = []
+            elif dstate not in DECISION_BODY_ACTIONS:
+                # The state's own act is the whole of what is due here.
+                turn_item = DECISION_TURN.get(dstate, "")
+                items = [turn_item] if turn_item and (
+                    ALL or turn_item.startswith(f"({WHO})")) else []
         days = awaiting_review.get(num, 0)
         if days >= REVIEW_DUE_DAYS and RELEASE_CHECK in labels:
             # Visible, and never anybody's action: the difference between "you

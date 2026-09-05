@@ -155,7 +155,10 @@ run "no Decision State at all is reported"             1 "no Decision State"    
 # Agreed Decision written there is the state lagging the body — the mirror of
 # the Asked rule.
 run "For Agreement with nothing agreed is left alone"  0 ""                            "$(open_dec 908 "$UNDECIDED" "For Agreement")" ""
-run "For Agreement with a decision written is reported" 1 "move it to Decided"         "$(open_dec 909 "$IN_PROGRESS" "For Agreement")" ""
+run "For Agreement with a decision written is reported" 1 "Ready for Sign Off"         "$(open_dec 909 "$IN_PROGRESS" "For Agreement")" ""
+# Ready for Sign Off exists so the owner has something to sign off *against*.
+run "Ready for Sign Off with a decision is left alone" 0 ""                            "$(open_dec 916 "$IN_PROGRESS" "Ready for Sign Off")" ""
+run "Ready for Sign Off with nothing agreed is reported" 1 "nothing is documented"     "$(open_dec 917 "$UNDECIDED" "Ready for Sign Off")" ""
 
 echo "closed decisions:"
 run "closed and complete is left alone"                0 ""                            "" "$(closed_dec 910 "$SETTLED" Actioned)"
