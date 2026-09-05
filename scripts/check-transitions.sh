@@ -31,16 +31,71 @@ ROWS="$(printf '%s' "$ISSUES" | jq -r '
   | ([$i.issueFieldValues.nodes[]? | select(.field.name=="Priority")|.name][0] // "-") as $pri
   | ([$i.issueFieldValues.nodes[]? | select(.field.name=="Effort")|.name][0] // "-") as $eff
   | [$i.number, ($i.issueType.name // ""), $stage, $phase, $ws, $toc, $pri, $eff,
+     (($i.body // "") | @base64),
      (($i.body // "") | gsub("[\n\r]"; " "))] | @tsv')"
 
 FAILURES=0
 report() { printf "  #%-5s %-24s %s\n" "$1" "$2" "$3"; FAILURES=$((FAILURES+1)); }
 
+# --- reading a Decision's body ------------------------------------------------
+#
+# A Decision closes when there is an Agreed Decision and every action is done.
+# Owner, 2026-09-05: *"close should check there is an Agreed Decision and the
+# actions are checked. Actions should come out of the decision. As normal
+# discussion in the comments, conclusions in the body."*
+#
+# So the body is the record, and both halves are readable from it — which is the
+# whole reason this is an issue type rather than a row in a document. The
+# glossary said "answered" in a table and nothing could tell whether it had been
+# applied.
+#
+# Both read from a here-string rather than a pipe. `awk | grep -q` makes grep
+# exit on its first match, awk take SIGPIPE, and the pipeline report 141 under
+# `pipefail` — so the test inverts silently. That has cost this project a
+# production deploy; see scripts/issue-mentions.sh.
+
+# The text under an `Agreed Decision` heading, if any of it is not blank.
+# GitHub writes `_No response_` for a form field left empty, which is exactly
+# the case this is looking for, so it counts as blank.
+decision_agreed() {
+  local section
+  section="$(awk '
+    /^#+[[:space:]]*Agreed Decision[[:space:]]*$/ { inside = 1; next }
+    /^#+[[:space:]]/                              { inside = 0 }
+    inside                                        { print }' <<< "$1")"
+  grep -qvE '^[[:space:]]*(_No response_)?[[:space:]]*$' <<< "$section"
+}
+
+# Unchecked items under `Open actions` — the same heading `scripts/actions.py`
+# reads, so a decision's actions appear in the one place that reports what is
+# waiting. Anything else is invisible there, which is how #311's queue came to
+# sit in front of that tool unseen.
+decision_open_actions() {
+  awk '
+    /^#+[[:space:]]*Open actions/                    { inside = 1; next }
+    /^#+[[:space:]]/                                 { inside = 0 }
+    inside && /^[[:space:]]*-[[:space:]]*\[[[:space:]]*\]/ { n++ }
+    END                                              { print n + 0 }' <<< "$1"
+}
+
+# **Absence must not read as a pass**, which is the defect this check found in
+# itself on its first run. #317 carried two unchecked actions under an
+# `Action Items` heading — the first template's wording — so the counter above
+# saw none and the rule said *close it*. That is the shape that let 0.5.0 out
+# and that the milestone gate hit again on 2026-09-05: a check with nothing to
+# read reporting success.
+#
+# So a body with no readable heading is not judged; it is reported as
+# unreadable, which is a different sentence and a different fix.
+decision_has_actions_heading() {
+  grep -qE '^#+[[:space:]]*Open actions' <<< "$1"
+}
+
 # Every field is emitted as "-" when empty, because tab is an IFS whitespace
 # character: bash collapses a run of them, so a genuinely empty field would
 # merge with the next and shift the body out of reach. That failure is silent —
 # the check simply stops finding anything.
-while IFS=$'\t' read -r num kind stage phase ws toc pri eff body; do
+while IFS=$'\t' read -r num kind stage phase ws toc pri eff b64 body; do
   [ -n "$num" ] || continue
   for v in stage phase ws toc pri eff; do
     [ "${!v}" = "-" ] && printf -v "$v" '%s' ""
@@ -91,8 +146,47 @@ while IFS=$'\t' read -r num kind stage phase ws toc pri eff body; do
           ;;
       esac
       ;;
+    Decision)
+      # A Decision has no Stage and no Phase: open and closed is its whole state
+      # machine, which is what lets `closed` mean *applied* rather than
+      # *answered*. So what is checked here is the one transition it has.
+      DBODY="$(printf '%s' "$b64" | base64 -d 2>/dev/null || true)"
+      if ! decision_has_actions_heading "$DBODY"; then
+        report "$num" "open" "no 'Open actions' heading — its actions are invisible to actions.py"
+      elif decision_agreed "$DBODY" && [ "$(decision_open_actions "$DBODY")" = "0" ]; then
+        report "$num" "open" "settled and every action done — close it"
+      fi
+      ;;
   esac
 done <<< "$ROWS"
+
+# --- decisions closed before they were finished --------------------------------
+#
+# The rule is about closing, and nothing intercepts a close: it happens in a
+# browser. So this notices afterwards, which is the same shape as every other
+# rule here and as verify.sh. A second query because the one above asks only for
+# open issues, and a closed decision is precisely the one worth looking at.
+#
+# Scoped to Decisions and to the most recent hundred, because the archive of
+# D1–D38 lives in the glossary and predates the type entirely.
+CQ='{repository(owner:"delphside",name:"tile-lite-elite"){issues(first:100,states:CLOSED,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number issueType{name} body}}}}'
+CLOSED="$(gh api graphql -f query="$CQ" 2>/dev/null || true)"
+if [ -n "$CLOSED" ]; then
+  while IFS=$'\t' read -r num cb64; do
+    [ -n "$num" ] || continue
+    DBODY="$(printf '%s' "$cb64" | base64 -d 2>/dev/null || true)"
+    decision_agreed "$DBODY" || report "$num" "closed" "closed with no agreed decision"
+    if decision_has_actions_heading "$DBODY"; then
+      N="$(decision_open_actions "$DBODY")"
+      [ "$N" = "0" ] || report "$num" "closed" "closed with $N action(s) still open"
+    else
+      report "$num" "closed" "closed, and has no 'Open actions' heading to check"
+    fi
+  done <<< "$(printf '%s' "$CLOSED" | jq -r '
+    .data.repository.issues.nodes[]
+    | select(.issueType.name == "Decision")
+    | [.number, ((.body // "") | @base64)] | @tsv')"
+fi
 
 echo
 if [ "$FAILURES" -gt 0 ]; then
