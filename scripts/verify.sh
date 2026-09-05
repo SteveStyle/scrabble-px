@@ -413,6 +413,38 @@ check_gates() {
   fi
 }
 
+LABEL[transitions]="Issues have done the work their fields claim"
+# Owner, 2026-09-05: run check-transitions.sh from here.
+#
+# **A note, never a failure**, and the reason is in the other script's own
+# header: *"It reports; it does not refuse. A field is changed in a browser and
+# nothing here can stand in front of that."* Making verify.sh exit non-zero for
+# a project at Development with no test approach would put the deploy path's
+# trusted status at the mercy of bookkeeping — and a status that goes red for
+# something nobody can act on today is one people stop reading. Notes are
+# counted for the verdict line and never for the exit status, which is exactly
+# what this wants.
+#
+# Exit 2 is its own "no gh or jq" and is not a finding, so it is reported as
+# not having run rather than as nothing being wrong. Absence must not read as a
+# pass — the same rule the deploy's pull-request gate follows by saying "no
+# pull-request run" out loud.
+check_transitions() {
+  local out status=0
+  out="$(timeout 60 ./scripts/check-transitions.sh 2>&1)" || status=$?
+  if (( status == 124 )); then
+    note transitions "the transition check timed out after 60s"
+  elif (( status == 0 )); then
+    pass transitions "every open issue has done the work its field claims"
+  elif (( status == 2 )); then
+    note transitions "the transition check could not run" \
+      "$(printf '%s' "$out" | tail -2)"
+  else
+    note transitions "some issues are further along than their content supports" \
+      "$(printf '%s' "$out" | grep -E '^  #[0-9]' | head -8)"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Run fastest-first. Summarise in the order a release follows.
 # ---------------------------------------------------------------------------
@@ -421,8 +453,8 @@ check_gates() {
 # compares against origin/main and would otherwise read a stale one. In process
 # order it comes last: tidying up after a change has shipped is the final step,
 # and it is the only line here that is housekeeping rather than readiness.
-RUN_ORDER=(tree pushed branches envs rehearsal reviews milestone approach ci tests gates)
-PROCESS_ORDER=(tree pushed ci tests envs rehearsal reviews milestone approach gates branches)
+RUN_ORDER=(tree pushed branches envs rehearsal reviews milestone approach transitions ci tests gates)
+PROCESS_ORDER=(tree pushed ci tests envs rehearsal reviews milestone approach transitions gates branches)
 
 printf '\n\033[1mChecking\033[0m  (fastest first, so a failure shows early)\n'
 for key in "${RUN_ORDER[@]}"; do "check_$key"; done
