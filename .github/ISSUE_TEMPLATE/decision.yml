@@ -1,0 +1,28 @@
+name: Decision
+description: Propose and track a key decision
+type: Decision
+title: '[Decision]: '
+
+body:
+  - type: markdown
+    attributes:
+      value: "Please fill out the context before opening this decision item."
+  - type: textarea
+    id: context
+    attributes:
+      label: Context & Proposal
+      description: Describe the problem and proposed options.
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: Agreed Decision
+      description: Leave blank initially. Update once consensus is reached.
+  - type: textarea
+    id: action-items
+    attributes:
+      label: Action Items
+      value: |
+        - [ ] Action item 1
+        - [ ] Action item 2
