@@ -136,7 +136,7 @@ open_dec() {  # $1 = number, $2 = base64 body, $3 = Decision State or ""
 closed_dec() { open_dec "$1" "$2" "${3:-}"; }
 
 echo "open decisions:"
-run "settled and every action done is reported"        1 "close it"                    "$(open_dec 900 "$SETTLED" Decided)"     ""
+run "settled and every action done is reported"        1 "mark it Actioned"            "$(open_dec 900 "$SETTLED" Decided)"     ""
 run "an action still open is left alone"               0 ""                            "$(open_dec 901 "$IN_PROGRESS" Decided)" ""
 run "no agreed decision yet is left alone"             0 ""                            "$(open_dec 902 "$UNDECIDED" Asked)"     ""
 run "an unreadable actions heading is reported as that" 1 "invisible to actions.py"    "$(open_dec 903 "$OLD_HEADING" Decided)" ""
@@ -147,7 +147,9 @@ run "an unreadable actions heading is reported as that" 1 "invisible to actions.
 echo "the state field against the body:"
 run "agreed but still marked Asked is reported"        1 "still marked Asked"          "$(open_dec 904 "$IN_PROGRESS" Asked)"   ""
 run "marked Decided with nothing agreed is reported"   1 "no agreed decision in the body" "$(open_dec 905 "$UNDECIDED" Decided)" ""
-run "marked Actioned while open is reported"           1 "still open"                  "$(open_dec 906 "$IN_PROGRESS" Actioned)" ""
+# D44: applied and read are different moments, so this is the normal state of a
+# decision waiting to be read — not an error. It was reported until 2026-09-05.
+run "marked Actioned while open is left alone"         0 ""                            "$(open_dec 906 "$SETTLED" Actioned)"    ""
 run "no Decision State at all is reported"             1 "no Decision State"           "$(open_dec 907 "$IN_PROGRESS" "")"      ""
 
 echo "closed decisions:"

@@ -76,7 +76,7 @@ QUERY = """
       nodes { number title body state
               issueType { name }
               labels(first: 20) { nodes { name } }
-              issueFieldValues(first: 10) { nodes {
+              issueFieldValues(first: 20) { nodes {
                 ... on IssueFieldSingleSelectValue {
                   field { ... on IssueFieldSingleSelect { name } } value } } }
               parent { number }
@@ -454,6 +454,17 @@ def main() -> int:
                  if ALL or a.startswith(f"({WHO})")]
         labels = {l["name"] for l in
                   (issues.get(num, {}).get("labels") or {}).get("nodes", [])}
+        node = issues.get(num, {})
+        # A decision that is applied but not yet closed is waiting to be *read*.
+        # D44: `Actioned` means the work is done, closed means the outcome has
+        # been seen, and those are different moments — #323 was agreed, applied
+        # and closed inside one exchange, so its outcome never reached anybody.
+        # Nothing enforces the closing; this is what makes it visible.
+        if ((node.get("issueType") or {}).get("name") == "Decision"
+                and field(node, "Decision State") == "Actioned"):
+            read = "(Steve) applied — read the agreed decision and close it"
+            if ALL or read.startswith(f"({WHO})"):
+                items.insert(0, read)
         days = awaiting_review.get(num, 0)
         if days >= REVIEW_DUE_DAYS and RELEASE_CHECK in labels:
             # Visible, and never anybody's action: the difference between "you

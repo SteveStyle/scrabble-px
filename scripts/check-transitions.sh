@@ -161,8 +161,12 @@ while IFS=$'\t' read -r num kind stage phase ws toc pri eff dstate b64 body; do
       DBODY="$(printf '%s' "$b64" | base64 -d 2>/dev/null || true)"
       if ! decision_has_actions_heading "$DBODY"; then
         report "$num" "open" "no 'Open actions' heading — its actions are invisible to actions.py"
-      elif decision_agreed "$DBODY" && [ "$(decision_open_actions "$DBODY")" = "0" ]; then
-        report "$num" "open" "settled and every action done — close it"
+      elif decision_agreed "$DBODY" && [ "$(decision_open_actions "$DBODY")" = "0" ] \
+           && [ "$dstate" != "Actioned" ]; then
+        # Not "close it" any more. D44 split applied from read: when the work is
+        # done the step is to mark it Actioned, and the closing is the owner's
+        # once he has read the outcome.
+        report "$num" "open" "settled and every action done — mark it Actioned"
       fi
       case "$dstate" in
         "")
@@ -174,7 +178,14 @@ while IFS=$'\t' read -r num kind stage phase ws toc pri eff dstate b64 body; do
           decision_agreed "$DBODY" ||
             report "$num" "Decided" "marked Decided with no agreed decision in the body" ;;
         Actioned)
-          report "$num" "Actioned" "marked Actioned but still open — Actioned means applied" ;;
+          # Not reported. D44: `Actioned` means applied and closed means read,
+          # and they are different moments — so an open, Actioned decision is
+          # the normal state of one waiting to be read, not an error.
+          # `actions.py` shows it as waiting on the owner. Nothing enforces the
+          # closing, deliberately: the owner's own answer is that his wish to
+          # clear the column will do it, and a reading step is a poor thing to
+          # gate on.
+          : ;;
       esac
       ;;
   esac
