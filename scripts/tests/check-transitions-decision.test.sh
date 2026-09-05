@@ -119,26 +119,46 @@ EOF
   echo "  ok       $desc"
 }
 
-dec() { printf '{"number":%s,"title":"d","body":"","issueType":{"name":"Decision"},"issueFieldValues":{"nodes":[]}}' "$1"; }
 # The open query selects body via jq from the node, so the body has to be real
 # text there; the closed query base64s it in the script. Both take plain text.
-open_dec() {  # $1 = number, $2 = base64 body
-  printf '{"number":%s,"title":"d","body":%s,"issueType":{"name":"Decision"},"issueFieldValues":{"nodes":[]}}' \
-    "$1" "$(printf '%s' "$2" | base64 -d | jq -Rs .)"
+#
+# The third argument is `Decision State`. Empty means the field is unset, which
+# is itself a case — a decision with no state does not appear on the Decisions
+# board, so it is reported rather than passed over.
+open_dec() {  # $1 = number, $2 = base64 body, $3 = Decision State or ""
+  local fields=""
+  [ -n "${3:-}" ] && fields="$(printf '{"name":"%s","field":{"name":"Decision State"}}' "$3")"
+  printf '{"number":%s,"title":"d","body":%s,"issueType":{"name":"Decision"},"issueFieldValues":{"nodes":[%s]}}' \
+    "$1" "$(printf '%s' "$2" | base64 -d | jq -Rs .)" "$fields"
 }
-closed_dec() { open_dec "$1" "$2"; }
+closed_dec() { open_dec "$1" "$2" "${3:-}"; }
 
 echo "open decisions:"
-run "settled and every action done is reported"        1 "close it"                    "$(open_dec 900 "$SETTLED")"     ""
-run "an action still open is left alone"               0 ""                            "$(open_dec 901 "$IN_PROGRESS")" ""
-run "no agreed decision yet is left alone"             0 ""                            "$(open_dec 902 "$UNDECIDED")"   ""
-run "an unreadable actions heading is reported as that" 1 "invisible to actions.py"    "$(open_dec 903 "$OLD_HEADING")" ""
+run "settled and every action done is reported"        1 "close it"                    "$(open_dec 900 "$SETTLED" Decided)"     ""
+run "an action still open is left alone"               0 ""                            "$(open_dec 901 "$IN_PROGRESS" Decided)" ""
+run "no agreed decision yet is left alone"             0 ""                            "$(open_dec 902 "$UNDECIDED" Asked)"     ""
+run "an unreadable actions heading is reported as that" 1 "invisible to actions.py"    "$(open_dec 903 "$OLD_HEADING" Decided)" ""
+
+# `Decision State` and the body are two records of one fact. The board column is
+# dragged in a browser and the body is not, so they drift in both directions and
+# both are tested.
+echo "the state field against the body:"
+run "agreed but still marked Asked is reported"        1 "still marked Asked"          "$(open_dec 904 "$IN_PROGRESS" Asked)"   ""
+run "marked Decided with nothing agreed is reported"   1 "no agreed decision in the body" "$(open_dec 905 "$UNDECIDED" Decided)" ""
+run "marked Actioned while open is reported"           1 "still open"                  "$(open_dec 906 "$IN_PROGRESS" Actioned)" ""
+run "no Decision State at all is reported"             1 "no Decision State"           "$(open_dec 907 "$IN_PROGRESS" "")"      ""
 
 echo "closed decisions:"
-run "closed and complete is left alone"                0 ""                            "" "$(closed_dec 910 "$SETTLED")"
-run "closed with no agreed decision is reported"       1 "no agreed decision"          "" "$(closed_dec 911 "$UNDECIDED")"
-run "closed with an action still open is reported"     1 "1 action(s) still open"      "" "$(closed_dec 912 "$IN_PROGRESS")"
-run "closed with an unreadable heading is reported"    1 "no 'Open actions' heading"   "" "$(closed_dec 913 "$OLD_HEADING")"
+run "closed and complete is left alone"                0 ""                            "" "$(closed_dec 910 "$SETTLED" Actioned)"
+run "closed with no agreed decision is reported"       1 "no agreed decision"          "" "$(closed_dec 911 "$UNDECIDED" Actioned)"
+run "closed with an action still open is reported"     1 "1 action(s) still open"      "" "$(closed_dec 912 "$IN_PROGRESS" Actioned)"
+run "closed with an unreadable heading is reported"    1 "no 'Open actions' heading"   "" "$(closed_dec 913 "$OLD_HEADING" Actioned)"
+
+# Actioned and closed coincide — owner, 2026-09-05. Tested from the closed side
+# as well as the open one, because a biconditional asserted in one direction is
+# half a rule.
+run "closed but marked Decided is reported"            1 "a closed decision is Actioned" "" "$(closed_dec 914 "$SETTLED" Decided)"
+run "closed with no state is reported"                 1 "marked 'unset'"              "" "$(closed_dec 915 "$SETTLED" "")"
 
 echo "other types:"
 run "a requirement is not judged as a decision"        0 "" \

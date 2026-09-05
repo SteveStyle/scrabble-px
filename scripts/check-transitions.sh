@@ -30,7 +30,8 @@ ROWS="$(printf '%s' "$ISSUES" | jq -r '
   | ([$i.issueFieldValues.nodes[]? | select(.field.name=="Type of change")|.name][0] // "-") as $toc
   | ([$i.issueFieldValues.nodes[]? | select(.field.name=="Priority")|.name][0] // "-") as $pri
   | ([$i.issueFieldValues.nodes[]? | select(.field.name=="Effort")|.name][0] // "-") as $eff
-  | [$i.number, ($i.issueType.name // ""), $stage, $phase, $ws, $toc, $pri, $eff,
+  | ([$i.issueFieldValues.nodes[]? | select(.field.name=="Decision State")|.name][0] // "-") as $dstate
+  | [$i.number, ($i.issueType.name // ""), $stage, $phase, $ws, $toc, $pri, $eff, $dstate,
      (($i.body // "") | @base64),
      (($i.body // "") | gsub("[\n\r]"; " "))] | @tsv')"
 
@@ -95,9 +96,9 @@ decision_has_actions_heading() {
 # character: bash collapses a run of them, so a genuinely empty field would
 # merge with the next and shift the body out of reach. That failure is silent —
 # the check simply stops finding anything.
-while IFS=$'\t' read -r num kind stage phase ws toc pri eff b64 body; do
+while IFS=$'\t' read -r num kind stage phase ws toc pri eff dstate b64 body; do
   [ -n "$num" ] || continue
-  for v in stage phase ws toc pri eff; do
+  for v in stage phase ws toc pri eff dstate; do
     [ "${!v}" = "-" ] && printf -v "$v" '%s' ""
   done
   case "$kind" in
@@ -147,15 +148,34 @@ while IFS=$'\t' read -r num kind stage phase ws toc pri eff b64 body; do
       esac
       ;;
     Decision)
-      # A Decision has no Stage and no Phase: open and closed is its whole state
-      # machine, which is what lets `closed` mean *applied* rather than
-      # *answered*. So what is checked here is the one transition it has.
+      # A Decision has no Stage and no Phase. `Decision State` names where it has
+      # got to — Asked, Decided, Actioned — and the body says the same thing in
+      # prose: an *Agreed Decision* heading, and ticked boxes under *Open
+      # actions*. Two records of one fact, which is the arrangement that goes
+      # stale, so what is checked here is that they still agree.
+      #
+      # The body is the authority and the field is the index. A board column is
+      # dragged in a browser and the body is not; the reverse also happens. Only
+      # one of them can be read by a person deciding what to do next, and it is
+      # not the column.
       DBODY="$(printf '%s' "$b64" | base64 -d 2>/dev/null || true)"
       if ! decision_has_actions_heading "$DBODY"; then
         report "$num" "open" "no 'Open actions' heading — its actions are invisible to actions.py"
       elif decision_agreed "$DBODY" && [ "$(decision_open_actions "$DBODY")" = "0" ]; then
         report "$num" "open" "settled and every action done — close it"
       fi
+      case "$dstate" in
+        "")
+          report "$num" "open" "no Decision State — it will not appear on the Decisions board" ;;
+        Asked)
+          decision_agreed "$DBODY" &&
+            report "$num" "Asked" "an agreed decision is written, but it is still marked Asked" ;;
+        Decided)
+          decision_agreed "$DBODY" ||
+            report "$num" "Decided" "marked Decided with no agreed decision in the body" ;;
+        Actioned)
+          report "$num" "Actioned" "marked Actioned but still open — Actioned means applied" ;;
+      esac
       ;;
   esac
 done <<< "$ROWS"
@@ -169,12 +189,15 @@ done <<< "$ROWS"
 #
 # Scoped to Decisions and to the most recent hundred, because the archive of
 # D1–D38 lives in the glossary and predates the type entirely.
-CQ='{repository(owner:"delphside",name:"tile-lite-elite"){issues(first:100,states:CLOSED,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number issueType{name} body}}}}'
+CQ='{repository(owner:"delphside",name:"tile-lite-elite"){issues(first:100,states:CLOSED,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number issueType{name} body issueFieldValues(first:12){nodes{... on IssueFieldSingleSelectValue{name field{... on IssueFieldSingleSelect{name}}}}}}}}}'
 CLOSED="$(gh api graphql -f query="$CQ" 2>/dev/null || true)"
 if [ -n "$CLOSED" ]; then
-  while IFS=$'\t' read -r num cb64; do
+  while IFS=$'\t' read -r num cstate cb64; do
     [ -n "$num" ] || continue
     DBODY="$(printf '%s' "$cb64" | base64 -d 2>/dev/null || true)"
+    [ "$cstate" = "-" ] && cstate=""
+    [ "$cstate" = "Actioned" ] ||
+      report "$num" "closed" "closed but marked '${cstate:-unset}' — a closed decision is Actioned"
     decision_agreed "$DBODY" || report "$num" "closed" "closed with no agreed decision"
     if decision_has_actions_heading "$DBODY"; then
       N="$(decision_open_actions "$DBODY")"
@@ -185,7 +208,9 @@ if [ -n "$CLOSED" ]; then
   done <<< "$(printf '%s' "$CLOSED" | jq -r '
     .data.repository.issues.nodes[]
     | select(.issueType.name == "Decision")
-    | [.number, ((.body // "") | @base64)] | @tsv')"
+    | . as $i
+    | ([$i.issueFieldValues.nodes[]? | select(.field.name=="Decision State")|.name][0] // "-") as $ds
+    | [$i.number, $ds, (($i.body // "") | @base64)] | @tsv')"
 fi
 
 echo
