@@ -174,19 +174,19 @@ while IFS=$'\t' read -r num kind stage phase ws toc pri eff dstate b64 body; do
         Asked)
           decision_agreed "$DBODY" &&
             report "$num" "Asked" "an agreed decision is written, but it is still marked Asked" ;;
-        "For Agreement")
+        "Feedback Provided")
           # D45. With Claude: the owner has commented and Claude has still to
           # respond and *write the decision down*. Documenting it is what ends
           # this state, so an Agreed Decision present here means the work is done
           # and the state has not caught up.
           decision_agreed "$DBODY" &&
-            report "$num" "For Agreement" "the decision is documented — move it to Ready for Sign Off" ;;
-        "Ready for Sign Off")
+            report "$num" "Feedback Provided" "the decision is documented — move it to Documented Ready for Sign-Off" ;;
+        "Documented Ready for Sign-Off")
           # Back with the owner, and the whole point is that there is something
           # written for him to sign off against. Without it there is nothing to
           # read, and the state is claiming more than the body supports.
           decision_agreed "$DBODY" ||
-            report "$num" "Ready for Sign Off" "nothing is documented to sign off — it belongs in For Agreement" ;;
+            report "$num" "Documented Ready for Sign-Off" "nothing is documented to sign off — it belongs in Feedback Provided" ;;
         Decided)
           decision_agreed "$DBODY" ||
             report "$num" "Decided" "marked Decided with no agreed decision in the body" ;;

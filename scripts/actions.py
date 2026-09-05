@@ -76,18 +76,18 @@ RELEASE_CHECK = "Release Check"
 # a task is done; it should not say whose turn it is.
 #
 # One table, because these strings are matched literally and a mismatch is
-# silent: `For agreement` against the real `For Agreement` cost an afternoon.
+# silent: `For agreement` against the real `Feedback Provided` cost an afternoon.
 DECISION_HOLDER = {
     "Asked": "Steve",               # Claude raised it; the owner gives his view
-    "For Agreement": "Claude",      # he has commented; Claude responds and documents it
-    "Ready for Sign Off": "Steve",  # written down; he reads it and signs it off
+    "Feedback Provided": "Claude",      # he has commented; Claude responds and documents it
+    "Documented Ready for Sign-Off": "Steve",  # written down; he reads it and signs it off
     "Decided": "Claude",            # signed off; this is when applying falls due
     "Actioned": "Steve",            # applied; he reads the outcome and closes it
 }
 # The act the state itself calls for, where the body's own actions are not it.
 DECISION_TURN = {
-    "For Agreement": "(Claude) respond, and document the agreed decision in the body",
-    "Ready for Sign Off": "(Steve) read the agreed decision, tick the box and move it to Decided",
+    "Feedback Provided": "(Claude) respond, and document the agreed decision in the body",
+    "Documented Ready for Sign-Off": "(Steve) read the agreed decision, tick the box and move it to Decided",
     "Actioned": "(Steve) applied — read the agreed decision and close it",
 }
 # The two states where the body's own `Open actions` are what is due. Everywhere

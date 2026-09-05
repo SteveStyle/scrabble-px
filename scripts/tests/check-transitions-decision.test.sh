@@ -151,14 +151,14 @@ run "marked Decided with nothing agreed is reported"   1 "no agreed decision in 
 # decision waiting to be read — not an error. It was reported until 2026-09-05.
 run "marked Actioned while open is left alone"         0 ""                            "$(open_dec 906 "$SETTLED" Actioned)"    ""
 run "no Decision State at all is reported"             1 "no Decision State"           "$(open_dec 907 "$IN_PROGRESS" "")"      ""
-# D45. `For Agreement` means both have spoken and it is not settled yet, so an
+# D45. `Feedback Provided` means both have spoken and it is not settled yet, so an
 # Agreed Decision written there is the state lagging the body — the mirror of
 # the Asked rule.
-run "For Agreement with nothing agreed is left alone"  0 ""                            "$(open_dec 908 "$UNDECIDED" "For Agreement")" ""
-run "For Agreement with a decision written is reported" 1 "Ready for Sign Off"         "$(open_dec 909 "$IN_PROGRESS" "For Agreement")" ""
-# Ready for Sign Off exists so the owner has something to sign off *against*.
-run "Ready for Sign Off with a decision is left alone" 0 ""                            "$(open_dec 916 "$IN_PROGRESS" "Ready for Sign Off")" ""
-run "Ready for Sign Off with nothing agreed is reported" 1 "nothing is documented"     "$(open_dec 917 "$UNDECIDED" "Ready for Sign Off")" ""
+run "Feedback Provided with nothing agreed is left alone"  0 ""                            "$(open_dec 908 "$UNDECIDED" "Feedback Provided")" ""
+run "Feedback Provided with a decision written is reported" 1 "Documented Ready for Sign-Off"         "$(open_dec 909 "$IN_PROGRESS" "Feedback Provided")" ""
+# Documented Ready for Sign-Off exists so the owner has something to sign off *against*.
+run "Documented Ready for Sign-Off with a decision is left alone" 0 ""                            "$(open_dec 916 "$IN_PROGRESS" "Documented Ready for Sign-Off")" ""
+run "Documented Ready for Sign-Off with nothing agreed is reported" 1 "nothing is documented"     "$(open_dec 917 "$UNDECIDED" "Documented Ready for Sign-Off")" ""
 
 echo "closed decisions:"
 run "closed and complete is left alone"                0 ""                            "" "$(closed_dec 910 "$SETTLED" Actioned)"
