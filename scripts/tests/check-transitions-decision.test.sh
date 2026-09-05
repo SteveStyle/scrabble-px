@@ -151,6 +151,11 @@ run "marked Decided with nothing agreed is reported"   1 "no agreed decision in 
 # decision waiting to be read — not an error. It was reported until 2026-09-05.
 run "marked Actioned while open is left alone"         0 ""                            "$(open_dec 906 "$SETTLED" Actioned)"    ""
 run "no Decision State at all is reported"             1 "no Decision State"           "$(open_dec 907 "$IN_PROGRESS" "")"      ""
+# D45. `For agreement` means both have spoken and it is not settled yet, so an
+# Agreed Decision written there is the state lagging the body — the mirror of
+# the Asked rule.
+run "For agreement with nothing agreed is left alone"  0 ""                            "$(open_dec 908 "$UNDECIDED" "For agreement")" ""
+run "For agreement with a decision written is reported" 1 "move it to Decided"         "$(open_dec 909 "$IN_PROGRESS" "For agreement")" ""
 
 echo "closed decisions:"
 run "closed and complete is left alone"                0 ""                            "" "$(closed_dec 910 "$SETTLED" Actioned)"

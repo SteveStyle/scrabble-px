@@ -460,11 +460,20 @@ def main() -> int:
         # been seen, and those are different moments — #323 was agreed, applied
         # and closed inside one exchange, so its outcome never reached anybody.
         # Nothing enforces the closing; this is what makes it visible.
-        if ((node.get("issueType") or {}).get("name") == "Decision"
-                and field(node, "Decision State") == "Actioned"):
-            read = "(Steve) applied — read the agreed decision and close it"
-            if ALL or read.startswith(f"({WHO})"):
-                items.insert(0, read)
+        if (node.get("issueType") or {}).get("name") == "Decision":
+            dstate = field(node, "Decision State")
+            # D45. The state says whose turn it is, which the `(Steve)`/`(Claude)`
+            # prefixes could not: #321 was answered in a comment and its `(Steve)
+            # choose` action ticked, so it left the owner's list and joined
+            # nobody's. A tick says a task is done; it should not decide routing.
+            turn_item = ""
+            if dstate == "For agreement":
+                turn_item = ("(Claude) the owner has given his view — agree it "
+                             "and move it to Decided, or put it back to Asked")
+            elif dstate == "Actioned":
+                turn_item = "(Steve) applied — read the agreed decision and close it"
+            if turn_item and (ALL or turn_item.startswith(f"({WHO})")):
+                items.insert(0, turn_item)
         days = awaiting_review.get(num, 0)
         if days >= REVIEW_DUE_DAYS and RELEASE_CHECK in labels:
             # Visible, and never anybody's action: the difference between "you
