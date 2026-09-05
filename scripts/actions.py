@@ -467,7 +467,7 @@ def main() -> int:
             # choose` action ticked, so it left the owner's list and joined
             # nobody's. A tick says a task is done; it should not decide routing.
             turn_item = ""
-            if dstate == "For agreement":
+            if dstate == "For Agreement":
                 turn_item = ("(Claude) the owner has given his view — agree it "
                              "and move it to Decided, or put it back to Asked")
             elif dstate == "Actioned":

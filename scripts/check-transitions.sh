@@ -174,13 +174,13 @@ while IFS=$'\t' read -r num kind stage phase ws toc pri eff dstate b64 body; do
         Asked)
           decision_agreed "$DBODY" &&
             report "$num" "Asked" "an agreed decision is written, but it is still marked Asked" ;;
-        "For agreement")
+        "For Agreement")
           # D45. The owner has given his view and it has not been agreed yet, so
           # the discussion is still in the comments — an *Agreed Decision*
           # written here means it is settled and the state has not caught up.
           # The mirror of the Asked rule above.
           decision_agreed "$DBODY" &&
-            report "$num" "For agreement" "an agreed decision is written — move it to Decided" ;;
+            report "$num" "For Agreement" "an agreed decision is written — move it to Decided" ;;
         Decided)
           decision_agreed "$DBODY" ||
             report "$num" "Decided" "marked Decided with no agreed decision in the body" ;;
