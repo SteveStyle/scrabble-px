@@ -37,14 +37,24 @@ STUB
   # `git rev-list --count --grep` is what commits_mentioning runs. The stub
   # answers per issue number, so "mentioned" is set per test rather than by
   # constructing a repository.
+  #
+  # It matches the **trailer** pattern the real function now uses (D40, #320).
+  # It matched `--grep=#N` until 2026-09-06, and when the function changed the
+  # stub simply stopped recognising anything and answered 0 — every case passed
+  # its "silent" assertions and failed its "named" ones, which is the loud
+  # version of a stub going stale. An unrecognised `--grep` is now an error
+  # rather than a zero, so the next change cannot pass quietly.
   cat > "$BIN/git" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
   *rev-list*--grep=*)
     for n in ${MENTIONED:-}; do
-      case "$*" in *"--grep=#$n"*) echo 1; exit 0 ;; esac
+      case "$*" in *"--grep=(Refs|Closes) #$n\b"*) echo 1; exit 0 ;; esac
     done
-    echo 0 ;;
+    case "$*" in
+      *"--grep=(Refs|Closes) #"*) echo 0 ;;
+      *) echo "stub: unrecognised --grep shape: $*" >&2; exit 1 ;;
+    esac ;;
   *) exit 0 ;;
 esac
 STUB

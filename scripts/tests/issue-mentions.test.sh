@@ -25,10 +25,12 @@ check() {  # name, expected, actual
   fi
 }
 
-# The exact case that fired on a production release: #174 from d2adc63, which
-# fifty commits mention. The old `git log … | grep -q .` reports failure here
-# ten times out of ten, not intermittently.
-check "many commits: counted, not lost to SIGPIPE" "50" "$(commits_mentioning d2adc63 174)"
+# The exact case that fired on a production release: #174 from d2adc63. Fifty
+# commits *mention* it; **thirty-five carry its trailer**, and the other fifteen
+# are documentation commits citing it in prose while belonging to something else
+# (D40, #320). Volume is what matters here — the old `git log … | grep -q .`
+# reports failure ten times out of ten at this size, not intermittently.
+check "many commits: counted, not lost to SIGPIPE" "35" "$(commits_mentioning d2adc63 174)"
 
 # The case that passed against the broken code, and so proved nothing: with one
 # matching commit `git log` finishes before `grep -q` bails, so the old pipeline
@@ -55,9 +57,35 @@ check "word boundary: #17 is not #170-something" "1" "$(commits_mentioning d2adc
 # "fixed" from "got lucky".
 runs_ok=0
 for _ in $(seq 1 10); do
-  [[ "$(commits_mentioning d2adc63 174)" == "50" ]] && runs_ok=$((runs_ok + 1))
+  [[ "$(commits_mentioning d2adc63 174)" == "35" ]] && runs_ok=$((runs_ok + 1))
 done
 check "ten consecutive runs agree" "10" "$runs_ok"
+
+# --- D40: the trailer is the claim, a mention is not -------------------------
+#
+# The 0.7.2 release was refused by this. `b231721` changed one documentation
+# file, carries `Refs #299`, and names #224 and #241 in its prose as examples of
+# projects sitting in `no-release`. Counting any `#N` read that as both of them
+# shipping — and the gate's own advice, move them into the release milestone,
+# would have closed two projects that had shipped nothing.
+check "a prose mention does not count (#224 in b231721)" "0" "$(commits_mentioning 9293893 224)"
+check "nor does the second one (#241)"                   "0" "$(commits_mentioning 9293893 241)"
+
+# And the trailer still does, on the same commit, for the issue it belongs to.
+# Scoped to that one commit with a range: `rev-list <ref>` walks all history
+# reachable from it, which is the whole point everywhere else in this file.
+check "the trailer on that same commit counts"           "1" "$(commits_mentioning 'b231721^..b231721' 299)"
+check "and its prose mention of #224 still does not"     "0" "$(commits_mentioning 'b231721^..b231721' 224)"
+
+# The mixed case, which is the one a looser rule gets wrong in the other
+# direction: #103 has four commits mentioning it and three carrying its trailer.
+# The fourth is db1b7f6, whose trailer is `Refs #299`.
+check "mentions and trailers are told apart (#103)"      "3" "$(commits_mentioning 9293893 103)"
+
+# `Closes` counts too — `CLAUDE.md` reserves it for a change that never leaves
+# the repository, but it is still a claim of ownership.
+closes_form="$(git log --format=%B -400 | grep -cE '^Closes #[0-9]+' || true)"
+check "the history really does use Closes, so that arm is exercised"   "1" "$([[ "$closes_form" -gt 0 ]] && echo 1 || echo 0)"
 
 # The defect itself, asserted rather than described: the shape this function
 # exists to replace still fails, so this test would notice if somebody
