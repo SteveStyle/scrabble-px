@@ -41,6 +41,67 @@ run_case() {
   rm -rf "$tmp"
 }
 
+# The version-bump exemption is about *which lines changed*, so `run_case`
+# cannot express it: appending `x` to Cargo.toml produces a diff of `+x`, and a
+# case built that way would pass or fail for a reason unrelated to the rule.
+# These fixtures carry real content and edit it.
+#
+# Refusals also assert the *message*, not only the exit status. Every rule in
+# the hook exits 1, so an exit code alone cannot tell "refused because it ships"
+# from "refused because cargo is not installed in a temp directory" — which is
+# how a batch of cases here once tested nothing at all.
+run_bump_case() {
+  local desc="$1" expect="$2" edit="$3" want="${4:-}"
+  local tmp got=0 out; tmp="$(mktemp -d)"; out="$tmp/.out"
+  (
+    cd "$tmp"
+    git init -q .
+    git config user.email t@t; git config user.name t
+    git config core.hooksPath /dev/null
+    mkdir -p docs
+    printf 'x\n' > docs/3.0-tools.md
+    printf '[workspace.package]\nversion = "0.7.2"\nlicense = "MIT"\n' > Cargo.toml
+    printf '[[package]]\nname = "api"\nversion = "0.7.2"\n' > Cargo.lock
+    git add -A; git commit -qm "app 0.0.0 api 0.0: base"
+    git branch -M main
+    eval "$edit"
+    "$HOOK" > "$out" 2>&1
+  ) || got=$?
+  if [ "$got" -ne "$expect" ]; then
+    echo "  FAILED   $desc (expected exit $expect, got $got)"; FAIL=$((FAIL+1))
+  elif [ -n "$want" ] && ! grep -q "$want" "$out" 2>/dev/null; then
+    echo "  FAILED   $desc (exit $got, but the message was not about '$want')"; FAIL=$((FAIL+1))
+  else
+    echo "  ok       $desc"; PASS=$((PASS+1))
+  fi
+  rm -rf "$tmp"
+}
+
+echo "the post-deploy version bump on main (#316):"
+run_bump_case "the bump deploy.sh writes" 0 '
+  sed -i "s/^version = \"0.7.2\"/version = \"0.7.3\"/" Cargo.toml
+  sed -i "s/^version = \"0.7.2\"/version = \"0.7.3\"/" Cargo.lock
+  git add Cargo.toml Cargo.lock'
+run_bump_case "Cargo.toml alone, version only" 0 '
+  sed -i "s/^version = \"0.7.2\"/version = \"0.7.3\"/" Cargo.toml
+  git add Cargo.toml'
+run_bump_case "a dependency added beside the bump" 1 '
+  sed -i "s/^version = \"0.7.2\"/version = \"0.7.3\"/" Cargo.toml
+  printf "serde = \"1\"\n" >> Cargo.toml
+  git add Cargo.toml' "changes what ships"
+run_bump_case "a lockfile pulling a new crate" 1 '
+  sed -i "s/^version = \"0.7.2\"/version = \"0.7.3\"/" Cargo.toml
+  printf "[[package]]\nname = \"serde\"\nversion = \"1.0.0\"\n" >> Cargo.lock
+  git add Cargo.toml Cargo.lock' "changes what ships"
+run_bump_case "a crate file smuggled in with the bump" 1 '
+  sed -i "s/^version = \"0.7.2\"/version = \"0.7.3\"/" Cargo.toml
+  mkdir -p crates/api/src && printf "fn x() {}\n" > crates/api/src/lib.rs
+  git add Cargo.toml crates/api/src/lib.rs' "changes what ships"
+run_bump_case "a licence change dressed as a bump" 1 '
+  sed -i "s/^license = \"MIT\"/license = \"Apache-2.0\"/" Cargo.toml
+  git add Cargo.toml' "changes what ships"
+echo
+
 echo "refused on main (ships in the image):"
 run_case "a crate source file"            1 crates/server-game/src/lib.rs
 run_case "Cargo.toml"                     1 Cargo.toml
