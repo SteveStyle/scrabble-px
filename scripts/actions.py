@@ -84,10 +84,17 @@ DECISION_HOLDER = {
     "Decided": "Claude",            # signed off; this is when applying falls due
     "Actioned": "Steve",            # applied; he reads the outcome and closes it
 }
-# The act the state itself calls for, where the body's own actions are not it.
+# The act each state calls for. At `Asked` and `Decided` the body's own actions
+# usually say it with more detail, so these are the fallback there — used when
+# the body has none left to show. Without that fallback a decision whose boxes
+# are all ticked disappears from both lists while its state still says somebody
+# is holding it, which is the tick problem in its last hiding place: #321 was
+# ticked at `Asked` and would have gone back there invisible.
 DECISION_TURN = {
+    "Asked": "(Steve) choose between the options",
     "Feedback Provided": "(Claude) respond, and document the agreed decision in the body",
     "Documented Ready for Sign-Off": "(Steve) read the agreed decision, tick the box and move it to Decided",
+    "Decided": "(Claude) signed off — apply it",
     "Actioned": "(Steve) applied — read the agreed decision and close it",
 }
 # The two states where the body's own `Open actions` are what is due. Everywhere
@@ -496,11 +503,16 @@ def main() -> int:
                 pass
             elif not ALL and holder != WHO:
                 items = []
-            elif dstate not in DECISION_BODY_ACTIONS:
-                # The state's own act is the whole of what is due here.
+            else:
                 turn_item = DECISION_TURN.get(dstate, "")
-                items = [turn_item] if turn_item and (
-                    ALL or turn_item.startswith(f"({WHO})")) else []
+                mine_turn = turn_item and (ALL or turn_item.startswith(f"({WHO})"))
+                if dstate not in DECISION_BODY_ACTIONS:
+                    # The state's own act is the whole of what is due here.
+                    items = [turn_item] if mine_turn else []
+                elif not items and mine_turn:
+                    # The body has nothing left to show, but the state still
+                    # says this side is holding it. Say so rather than vanish.
+                    items = [turn_item]
         days = awaiting_review.get(num, 0)
         if days >= REVIEW_DUE_DAYS and RELEASE_CHECK in labels:
             # Visible, and never anybody's action: the difference between "you
