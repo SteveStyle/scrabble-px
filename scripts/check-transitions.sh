@@ -166,7 +166,7 @@ while IFS=$'\t' read -r num kind stage phase ws toc pri eff dstate b64 body; do
       fi
       case "$dstate" in
         "")
-          report "$num" "open" "no Decision State — it will not appear on the Decisions board" ;;
+          report "$num" "open" "no Decision State — every open decision has at least been asked" ;;
         Asked)
           decision_agreed "$DBODY" &&
             report "$num" "Asked" "an agreed decision is written, but it is still marked Asked" ;;

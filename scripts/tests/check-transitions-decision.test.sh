@@ -123,8 +123,10 @@ EOF
 # text there; the closed query base64s it in the script. Both take plain text.
 #
 # The third argument is `Decision State`. Empty means the field is unset, which
-# is itself a case — a decision with no state does not appear on the Decisions
-# board, so it is reported rather than passed over.
+# is itself a case. Not because it hides the issue — the board grows a "No
+# Decision State" column and shows it there — but because unset is not one of
+# the three states, and every open decision has at least been asked. It is an
+# unfiled issue in a column that means nothing, not a missing one.
 open_dec() {  # $1 = number, $2 = base64 body, $3 = Decision State or ""
   local fields=""
   [ -n "${3:-}" ] && fields="$(printf '{"name":"%s","field":{"name":"Decision State"}}' "$3")"
