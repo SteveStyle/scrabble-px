@@ -1,7 +1,7 @@
 import { Browser, Page, expect } from '@playwright/test';
-import { SUITE_PREFIX, runPrefixFor } from '../naming';
+import { SUITE_PREFIX, accountName, runPrefixFor } from '../naming';
 
-// Every player these tests create is named `T-e2e-<run>-<base>` (#252 R1), so
+// Every player these tests create is named `T-e2e-<run>-<base>-<rand>` (#252 R1), so
 // what created an account is readable from the account rather than guessed.
 //
 // | part | |
@@ -10,6 +10,7 @@ import { SUITE_PREFIX, runPrefixFor } from '../naming';
 // | `e2e` | the suite. `check-rate-limits.sh` has its own |
 // | `<run>` | one value for the whole run, from `global-setup.ts` |
 // | `<base>` | the account within the run, as the test named it |
+// | `<rand>` | distinguishes accounts sharing a base — see `naming.ts` |
 //
 // **Hyphens, not underscores, and the reason is the design's own constraint.**
 // The suite registers through the same public API a player uses, so any rule on
@@ -53,7 +54,7 @@ export function runPrefix(): string {
 }
 
 export function uniqueName(base: string): string {
-  return `${runPrefix()}${base}`;
+  return accountName(runId(), base);
 }
 
 // Kept because tests still refer to "the test prefix"; it is the suite's now

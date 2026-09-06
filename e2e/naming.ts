@@ -19,10 +19,37 @@
 export const TEST_MARKER = 'T-';
 export const SUITE = 'e2e';
 
-/** The prefix identifying one run's accounts — what cleanup deletes. */
+/**
+ * The prefix identifying one run's accounts — what cleanup deletes.
+ *
+ * The caller passes a base36 millisecond timestamp with a few random characters
+ * after it, so **sorting these prefixes sorts the runs by when they ran**. That
+ * holds while the timestamp is a constant width, which `Date.now().toString(36)`
+ * is — eight characters until 2059-05-25.
+ */
 export function runPrefixFor(runId: string): string {
   return `${TEST_MARKER}${SUITE}-${runId}-`;
 }
 
 /** Every account this suite has ever created, across runs. */
 export const SUITE_PREFIX = `${TEST_MARKER}${SUITE}-`;
+
+/**
+ * A name for one account: the run's prefix, the caller's label, and a
+ * discriminator.
+ *
+ * **The discriminator is not decoration.** The run id groups accounts; it does
+ * not distinguish them. Both Playwright projects run the same specs, so
+ * `accountName(runId, 'reg')` is called once under chromium and once under
+ * mobile *within one run* — and without the last segment those are the same
+ * string, which `players.display_name` is unique on. The second registration is
+ * refused, the account never appears, and the test fails waiting for a "Log
+ * out" button on a page that is still showing the auth panel.
+ *
+ * That is exactly what happened: 19 failures, almost all `[mobile]`, because
+ * mobile runs second. It passed locally because a single test was run.
+ */
+export function accountName(runId: string, base: string): string {
+  const rand = Math.random().toString(36).slice(2, 7);
+  return `${runPrefixFor(runId)}${base}-${rand}`;
+}
