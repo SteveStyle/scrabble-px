@@ -164,7 +164,9 @@ pub(crate) async fn admin_delete_user(
             "That account is signed in somewhere. Deleting it now would take an \
              account that is in use, and one that is about to create the very \
              games this command refuses to orphan. Sessions end on their own: \
-             48 hours after they were last used, and 10 days at the outside.",
+             48 hours after they were last used, and 10 days at the outside. \
+             To act now rather than wait, sign the account out first: \
+             `tile-lite-elite-admin users sign-out <name>`.",
         ));
     }
 
@@ -200,6 +202,44 @@ pub(crate) async fn admin_delete_user(
     }
 
     tracing::warn!(player_id, "admin: user deleted");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Ends every session an account has, so an operator has something to do about
+/// the refusal below rather than only something to wait for (#295 R1).
+///
+/// **The remedy the delete refusal lacked.** `admin_delete_user` refuses a
+/// signed-in account and explains that sessions end on their own — 48 hours
+/// idle, 10 days absolute, ACC-1. That is true and it is not an action. An
+/// operator clearing out old data has no reason to wait two days for a session
+/// belonging to an account they are about to remove.
+///
+/// **It does not delete anything else**, deliberately. Signing out is not a
+/// step towards deletion; it is its own operation, and an account that is
+/// signed out is in exactly the state it would reach on its own. That is what
+/// makes it safe to offer as a remedy: the worst it can do is what time would
+/// have done anyway.
+///
+/// Idempotent — an account with no sessions is signed out already, and saying
+/// so is more useful than an error. `204` either way.
+pub(crate) async fn admin_sign_out_user(
+    State(state): State<AppState>,
+    Path(player_id): Path<String>,
+) -> Result<StatusCode, ApiProblem> {
+    // Existence is checked first: without it, signing out a mistyped id
+    // succeeds silently, which is the shape that lets an operator believe they
+    // have acted on an account they have not touched.
+    if persistence::get_player_by_id(&state.db, &player_id)
+        .await
+        .map_err(ApiProblem::from_sqlx)?
+        .is_none()
+    {
+        return Err(ApiProblem::not_found("Player not found"));
+    }
+    persistence::invalidate_sessions_for_player(&state.db, &player_id)
+        .await
+        .map_err(ApiProblem::from_sqlx)?;
+    tracing::warn!(player_id, "admin: signed out");
     Ok(StatusCode::NO_CONTENT)
 }
 

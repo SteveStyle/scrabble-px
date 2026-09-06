@@ -119,6 +119,14 @@ async fn cannot_delete_an_account_that_is_signed_in() {
          operator to guess between this and the games guard: {}",
         problem.message
     );
+    // #295 R1: a refusal that offers only a wait is not a remedy. It has to
+    // name the command, because the operator reading it is in a terminal.
+    assert!(
+        problem.message.contains("sign-out"),
+        "the refusal should name what to do about it, not only what to wait \
+         for: {}",
+        problem.message
+    );
 
     // Signing out removes the only thing in the way.
     persistence::invalidate_sessions_for_player(&state.db, &alice.player_id)
@@ -1317,4 +1325,129 @@ async fn a_timeout_announces_a_finish_only_when_the_game_finishes() {
     }
     let finished = finished_dto.expect("the last seat standing should end the game");
     assert_eq!(finished.status, api::GameStatus::Finished);
+}
+
+// ------------------------------------------------------- signing an account out
+
+async fn sign_out(app: Router, player_id: &str) -> axum::http::Response<Body> {
+    send_admin::<()>(
+        app,
+        Method::POST,
+        &format!("/admin/users/{player_id}/sign-out"),
+        loopback_peer(),
+        None,
+    )
+    .await
+}
+
+/// The remedy, end to end: refused for a session, signed out, then deleted.
+///
+/// **Through the endpoint rather than through `persistence`.** Every other test
+/// in this file clears sessions by calling `invalidate_sessions_for_player`
+/// directly, because there the session is setup rather than subject. Here it is
+/// the subject, and calling the function would test the function while leaving
+/// the route, the handler and the operator's actual path unexercised — which is
+/// how #295 came to exist at all: the capability was present and unreachable.
+#[tokio::test]
+async fn signing_out_makes_a_refused_delete_succeed() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    let alice = register_player(app.clone(), "Alice").await;
+
+    let refused = delete_account(app.clone(), &alice.player_id).await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "registering signs the account in, so the delete should be refused"
+    );
+
+    let signed_out = sign_out(app.clone(), &alice.player_id).await;
+    assert_eq!(
+        signed_out.status(),
+        StatusCode::NO_CONTENT,
+        "signing out should succeed for an account that is signed in"
+    );
+
+    let deleted = delete_account(app.clone(), &alice.player_id).await;
+    assert_eq!(
+        deleted.status(),
+        StatusCode::NO_CONTENT,
+        "the delete that was refused should now go ahead — that is the whole \
+         point of the remedy"
+    );
+}
+
+/// Signing out an account that is not signed in is the state being asked for,
+/// not an error.
+///
+/// An operator running this as a precaution before a delete should not have to
+/// know whether it was needed. A command that fails when its work is already
+/// done teaches people to check first, which is the work it was meant to save.
+#[tokio::test]
+async fn signing_out_an_account_with_no_sessions_is_not_an_error() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    let alice = register_player(app.clone(), "Alice").await;
+    persistence::invalidate_sessions_for_player(&state.db, &alice.player_id)
+        .await
+        .expect("sessions should be removable");
+
+    let response = sign_out(app.clone(), &alice.player_id).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NO_CONTENT,
+        "already signed out is the state being asked for"
+    );
+}
+
+/// An id nobody has is a 404, not a quiet success.
+///
+/// Without this, signing out a mistyped name returns 204 and the operator
+/// believes they have acted on an account they have not touched — then deletes
+/// something else, or reports that they cleared an account that is still live.
+#[tokio::test]
+async fn signing_out_an_unknown_account_is_not_found() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    let response = sign_out(app.clone(), "no-such-player-id").await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "a mistyped id must not read as a successful sign-out"
+    );
+}
+
+/// It removes sessions and nothing else.
+///
+/// Signing out is not a step towards deletion; it is its own operation, and
+/// what makes it safe to offer as a remedy is that the worst it can do is what
+/// time would have done anyway (ACC-1: 48 hours idle, 10 days absolute).
+#[tokio::test]
+async fn signing_out_leaves_the_account_itself_alone() {
+    let database_url = test_database_url();
+    let state = create_test_state(&database_url).await;
+    let app = build_router(state.clone());
+
+    let alice = register_player(app.clone(), "Alice").await;
+    sign_out(app.clone(), &alice.player_id).await;
+
+    let still_there = persistence::get_player_by_id(&state.db, &alice.player_id)
+        .await
+        .expect("looking up a player should work");
+    assert!(
+        still_there.is_some(),
+        "signing out must not remove the account — only its sessions"
+    );
+    assert!(
+        !persistence::has_live_session(&state.db, &alice.player_id)
+            .await
+            .expect("checking sessions should work"),
+        "and it must remove those"
+    );
 }
