@@ -177,6 +177,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/database-size", get(admin_list_database_size))
         .route("/admin/users/{player_id}", delete(admin_delete_user))
         .route(
+            "/admin/users/{player_id}/sign-out",
+            post(admin_sign_out_user),
+        )
+        .route(
             "/admin/users/{player_id}/reset-password",
             post(admin_reset_password),
         )

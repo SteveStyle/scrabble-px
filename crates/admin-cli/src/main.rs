@@ -77,6 +77,20 @@ enum UsersAction {
         /// identifies exactly one account.
         user: String,
     },
+    /// End every session an account has, so a delete that was refused for a
+    /// live session can go ahead.
+    ///
+    /// The refusal says sessions end on their own — 48 hours idle, 10 days at
+    /// the outside. That is true and it is not an action. This is the action.
+    ///
+    /// It removes nothing but sessions: the account is left exactly as it
+    /// would have been when its sessions expired anyway. Signing out an
+    /// account with none succeeds quietly, because "already signed out" is the
+    /// state being asked for.
+    SignOut {
+        /// Display name or account id, as for `delete`.
+        user: String,
+    },
     /// Reset a user's password. Prints the new password if you don't
     /// supply one — there's no email flow to deliver it any other way.
     ResetPassword {
@@ -264,6 +278,19 @@ fn run_users(
             output.confirm(
                 &format!("Deleted user {player_id}."),
                 serde_json::json!({ "deleted": true, "player_id": player_id }),
+            );
+        }
+        UsersAction::SignOut { user } => {
+            let player_id = resolve_user(client, server, &user)?;
+            check_response(
+                client
+                    .post(format!("{server}/admin/users/{player_id}/sign-out"))
+                    .send()
+                    .map_err(fmt_err)?,
+            )?;
+            output.confirm(
+                &format!("Signed out {player_id}. Any delete refused for a live session can go ahead now."),
+                serde_json::json!({ "signed_out": true, "player_id": player_id }),
             );
         }
         UsersAction::ResetPassword { user, password } => {
