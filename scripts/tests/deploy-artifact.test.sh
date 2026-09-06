@@ -137,6 +137,133 @@ check "prune takes the digest file with it" "no" \
       "$([[ -f "$WORK/artifacts/sha1.tar.gz.sha256" ]] && echo yes || echo no)"
 teardown
 
+# --- the build manifest (#288) ----------------------------------------------
+#
+# A real git fixture, because every line of the manifest is derived from the
+# repository — commits, paths, trailers, tags. A stubbed `git` would be written
+# against the same assumptions as the code, and two of the three defects found
+# while writing this were assumptions: `git show` inheriting the loop's stdin
+# and truncating the issue list to three of ten, and the previous tag being
+# taken as "the newest that exists" rather than "the newest that is an
+# ancestor", which reported `commits (0)` for any commit already carrying one.
+
+setup_repo() {
+  setup
+  REPO_DIR="$WORK/repo"; mkdir -p "$REPO_DIR"
+  git -C "$REPO_DIR" init -q .
+  git -C "$REPO_DIR" config user.email t@t; git -C "$REPO_DIR" config user.name t
+  mkdir -p "$REPO_DIR/docs" "$REPO_DIR/crates/ui/src"
+
+  echo one > "$REPO_DIR/docs/a.md"
+  git -C "$REPO_DIR" add -A; git -C "$REPO_DIR" commit -q -m "base"
+  git -C "$REPO_DIR" tag -a prod-0.1.0 -m released
+
+  echo two > "$REPO_DIR/docs/b.md"; git -C "$REPO_DIR" add -A
+  git -C "$REPO_DIR" commit -q -m "docs only" -m "Refs #900"
+
+  echo three > "$REPO_DIR/crates/ui/src/x.rs"; git -C "$REPO_DIR" add -A
+  git -C "$REPO_DIR" commit -q -m "the image changes" -m "Refs #901"
+
+  echo four > "$REPO_DIR/docs/c.md"; git -C "$REPO_DIR" add -A
+  git -C "$REPO_DIR" commit -q -m "cites #902 in prose and claims nothing" -m "Refs #900"
+
+  HEAD_SHA="$(git -C "$REPO_DIR" rev-parse HEAD)"
+}
+
+echo "the build manifest"
+setup_repo
+MAN="$(write_manifest "$HEAD_SHA" "feedface")"
+
+check "a manifest is written beside the artefact" "yes" \
+      "$([[ -f "$WORK/artifacts/$HEAD_SHA.manifest" ]] && echo yes || echo no)"
+check "it names the digest it describes" "1" "$(grep -c '^digest    sha256:feedface$' "$MAN")"
+check "it names the previous production tag"  "1" "$(grep -c '^since     prod-0.1.0' "$MAN")"
+check "a commit touching crates/ is marked as reaching the image" "1" \
+      "$(grep -c '^  \* .*the image changes' "$MAN")"
+check "a commit touching only docs/ is not" "1" \
+      "$(grep -cE '^    [0-9a-f]+  docs only' "$MAN")"
+check "an issue claimed by a trailer appears" "1" "$(grep -c '^  #901' "$MAN")"
+# `^  #902` rather than `#902`: the string also appears in the commit subject
+# listed above, which is correct — the manifest shows what each commit said.
+# The looser assertion failed for the right reason and the wrong grep.
+check "an issue only cited in prose does not" "0" "$(grep -c '^  #902' "$MAN")"
+check "an issue claimed twice counts both commits" "1" "$(grep -c '^  #900    2 commit' "$MAN")"
+check "the image marker follows the issue" "1" \
+      "$(grep -c '^  #901    1 commit(s), reaches the image' "$MAN")"
+check "an issue whose commits miss the image is unmarked" "1" \
+      "$(grep -cE '^  #900    2 commit\(s\)$' "$MAN")"
+
+# The truncation that looked like a working filter: three of ten, printed
+# correctly. Every claimed issue must be reached.
+for n in 903 904 905 906 907 908 909 910; do
+  echo "x$n" > "$REPO_DIR/docs/$n.md"; git -C "$REPO_DIR" add -A
+  git -C "$REPO_DIR" commit -q -m "more" -m "Refs #$n"
+done
+MAN2="$(write_manifest "$(git -C "$REPO_DIR" rev-parse HEAD)" "feedface")"
+check "every claimed issue is listed, not the first few" "10" "$(grep -c '^  #9' "$MAN2")"
+
+# A commit already carrying a tag: the range is measured from the tag before it.
+git -C "$REPO_DIR" tag -a prod-0.2.0 -m released
+MAN3="$(write_manifest "$(git -C "$REPO_DIR" rev-parse HEAD)" "feedface")"
+check "a commit that is itself tagged still lists its range" "1" \
+      "$(grep -c '^since     prod-0.1.0' "$MAN3")"
+check "and the range is not empty" "0" "$(grep -c '^commits (0)' "$MAN3")"
+
+touch "$WORK/artifacts/$HEAD_SHA.tar.gz"
+prune_artifacts 0
+check "prune removes the manifest too" "no" \
+      "$([[ -f "$WORK/artifacts/$HEAD_SHA.manifest" ]] && echo yes || echo no)"
+teardown
+
+
+# --- the plan/build disagreement report (#288 R3) ----------------------------
+#
+# `gh` is stubbed per issue. The quiet case is here because it is the one a
+# broken check passes by accident — and three of the four defects found while
+# writing this made noise rather than silence, so a check that only ever spoke
+# would have looked right.
+
+stub_gh() {   # $1 = "<num>:<type>:<milestone> ..." — milestone may be empty
+  cat > "$WORK/bin/gh" <<STUB
+#!/usr/bin/env bash
+num=""
+for a in "\$@"; do case "\$a" in [0-9]*) num="\$a"; break ;; esac; done
+for spec in $1; do
+  n="\${spec%%:*}"; rest="\${spec#*:}"
+  if [[ "\$n" == "\$num" ]]; then
+    printf '%s\t%s\n' "\${rest%%:*}" "\${rest##*:}"; exit 0
+  fi
+done
+printf '%s\t%s\n' "Project" ""
+STUB
+  chmod +x "$WORK/bin/gh"
+}
+
+echo "the plan/build disagreement report"
+
+setup_repo
+stub_gh "900:Project:0.1.0 901:Project:"
+out="$(report_plan_disagreement "$HEAD_SHA" 0.1.0 2>&1 || true)"
+check "an image-touching issue with no milestone is named" "1" "$(grep -c '#*901' <<< "$out")"
+check "an issue that has one is not" "0" "$(grep -c ' 900' <<< "$out")"
+
+stub_gh "900:Project:0.1.0 901:Project:0.1.0"
+out="$(report_plan_disagreement "$HEAD_SHA" 0.1.0 2>&1 || true)"
+check "the quiet case says nothing at all" "" "$out"
+
+# A milestone that is not this release still counts: an issue may ride a
+# release under an earlier letter, which is what 0.7.1a and 0.7.1b are for.
+stub_gh "901:Project:0.0.9a"
+out="$(report_plan_disagreement "$HEAD_SHA" 0.1.0 2>&1 || true)"
+check "an earlier milestone counts as filed" "" "$out"
+
+# A Requirement cannot carry a milestone at all — docs/3.6 1.1.
+stub_gh "901:Requirement:"
+out="$(report_plan_disagreement "$HEAD_SHA" 0.1.0 2>&1 || true)"
+check "a requirement is never asked for a milestone" "" "$out"
+teardown
+
+
 if (( failures )); then
   echo "  $failures check(s) failed"
   exit 1

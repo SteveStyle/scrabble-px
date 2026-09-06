@@ -213,6 +213,9 @@ placeholder_shipping() {
 # **Sameness is proved by digest, not by version.** A rebuild of one commit
 # stamps the same version, so `/health` cannot tell two builds apart, which is
 # exactly what made the old check blind to the thing this fixes.
+# shellcheck source=scripts/shipping-paths.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/shipping-paths.sh"
+
 ARTIFACT_DIR="${ARTIFACT_DIR:-$REPO_DIR/artifacts}"
 ARTIFACT_KEEP="${ARTIFACT_KEEP:-5}"
 
@@ -274,6 +277,144 @@ build_artifact() {
   artifact_digest "$tar" > "$tar.sha256"
 }
 
+manifest_path() { printf '%s/%s.manifest' "$ARTIFACT_DIR" "$1"; }
+
+# What is in this build, written beside the artefact it describes — #288 R1.
+#
+# **"Is this change in the build?" is answered from the artefact, not from a
+# plan describing it.** The milestone says what a release is *meant* to carry;
+# this says what it *does*. Both have been wrong, in opposite directions, within
+# a week: the milestone gate read prose as shipping (#320), and #310's
+# announcement was lost with no record that it had not run.
+#
+# **Pure git, deliberately.** No `gh`, no network. A manifest that cannot be
+# written when GitHub is unreachable would be missing exactly when a deploy is
+# most interesting, and every line here is derivable from the repository.
+#
+# R2 is the digest line: the manifest names the bytes it describes, so the two
+# cannot be separated by being copied apart.
+write_manifest() {
+  local sha="$1" digest="$2" out prev range n
+  out="$(manifest_path "$sha")"
+
+  # The previous production tag: the newest one that is an **ancestor of this
+  # commit**, not simply the newest that exists. Taking the latest tag gives an
+  # empty range whenever the commit being built already carries one — which is
+  # every rebuild of a released commit, and every rollback. Found by asking for
+  # a manifest of 9293893, which is what prod-0.7.2 points at: it reported
+  # "commits (0)" and looked like a working answer.
+  #
+  # `$sha^` so the commit's own tag is skipped. Absent for the first ever build,
+  # and for a repository whose tags have not been fetched — reported rather than
+  # guessed.
+  prev="$(git -C "$REPO_DIR" describe --tags --match 'prod-[0-9]*' --abbrev=0 "$sha^" </dev/null 2>/dev/null || true)"
+  if [[ -n "$prev" ]]; then range="$prev..$sha"; else range="$sha"; fi
+
+  {
+    printf 'artefact  %s.tar.gz
+' "$sha"
+    printf 'digest    sha256:%s
+' "$digest"
+    printf 'commit    %s
+' "$sha"
+    if [[ -n "$prev" ]]; then
+      printf 'since     %s (%s)
+' "$prev" "$(git -C "$REPO_DIR" rev-parse --short "$prev")"
+    else
+      printf 'since     (no prod-* tag — every commit reachable is listed)
+'
+    fi
+    printf 'built     %s
+
+' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+    n="$(git -C "$REPO_DIR" rev-list --count "$range" 2>/dev/null || echo 0)"
+    printf 'commits (%s), * reaches the image
+' "$n"
+    while IFS= read -r c; do
+      [[ -n "$c" ]] || continue
+      if touches_image "$c"; then printf '  * '; else printf '    '; fi
+      printf '%s  %s
+' "$(git -C "$REPO_DIR" rev-parse --short "$c")"                         "$(git -C "$REPO_DIR" log -1 --format=%s "$c")"
+    done < <(git -C "$REPO_DIR" rev-list "$range" 2>/dev/null || true)
+
+    printf '
+issues claimed in this range
+'
+    # Claimed, not mentioned: the `Refs`/`Closes` trailer, which is what
+    # `commits_mentioning` reads (#320). A commit citing an issue in prose is
+    # not shipping it, and reading it as such refused the 0.7.2 release.
+    while IFS= read -r num; do
+      [[ -n "$num" ]] || continue
+      printf '  #%-6s %s commit(s)%s
+' "$num"         "$(git -C "$REPO_DIR" rev-list --count "$range" -E --grep="(Refs|Closes) #${num}\b" 2>/dev/null || echo 0)"         "$(issue_touches_image "$num" "$range" && printf ', reaches the image' || true)"
+    done < <(git -C "$REPO_DIR" log --format=%B "$range" 2>/dev/null                | grep -oE '(Refs|Closes) #[0-9]+' | grep -oE '[0-9]+' | sort -un || true)
+  } > "$out"
+  printf '%s' "$out"
+}
+
+# Does any commit claiming this issue, in this range, reach the image?
+issue_touches_image() {
+  local num="$1" range="$2" c
+  while IFS= read -r c; do
+    [[ -n "$c" ]] || continue
+    touches_image "$c" && return 0
+  done < <(git -C "$REPO_DIR" rev-list "$range" -E --grep="(Refs|Closes) #${num}\b" 2>/dev/null || true)
+  return 1
+}
+
+# Does the plan agree with the build? — #288 R3.
+#
+# **One direction only, and the design asked for two.** It proposed reporting
+# both *an image-touching issue with no milestone* and *a milestone issue with
+# no commit in the range*. The second is already the milestone gate's
+# `UNBUILT` check, which prints "Nothing in this release mentions:" and asks
+# before deploying — so writing it again here would be a second statement of one
+# rule, which is what `docs/3.6` calls a defect whichever copy is right.
+#
+# The first is new: **nothing today notices a change that reaches players and is
+# in no milestone.** The gate looks outward from the plan and finds issues that
+# were planned and not built; this looks outward from the build and finds the
+# opposite. That asymmetry is the reason the gate could pass while 0.7.2 shipped
+# a commit nobody had filed.
+#
+# **A check, never a gate**, and it runs after the deploy has succeeded: a
+# missing milestone is a record to correct, not a reason to withhold a release
+# that is already live.
+report_plan_disagreement() {
+  local sha="$1" version="$2" range prev unfiled="" num meta
+  prev="$(git -C "$REPO_DIR" describe --tags --match 'prod-[0-9]*' --abbrev=0 "$sha^" </dev/null 2>/dev/null || true)"
+  [[ -n "$prev" ]] && range="$prev..$sha" || range="$sha"
+
+  # **Has it a milestone at all**, not *is it in this one*. The first version
+  # asked the narrower question and reported #304 and #306 as unfiled — they
+  # carry `0.7.1a` and `0.7.1b`, which is exactly right for a delivery that
+  # shipped no image. An issue may legitimately ride a release under an earlier
+  # milestone; what it may not do is reach players under none.
+  while IFS= read -r num; do
+    [[ -n "$num" ]] || continue
+    issue_touches_image "$num" "$range" || continue
+    # One call for both facts. A **Requirement** is skipped: `docs/3.6` 1.1 —
+    # *"Milestones go with project deliveries, and not with requirements"* — so
+    # asking one to carry a milestone asks for something the process forbids.
+    # #277 was reported until this was added, because a commit claiming it
+    # touched `Cargo.lock` while adding a dev-dependency.
+    meta="$(gh issue view "$num" --json milestone,issueType \
+              --jq '[(.issueType.name // ""), (.milestone.title // "")] | @tsv' \
+              </dev/null 2>/dev/null || true)"
+    [[ "$(cut -f1 <<< "$meta")" == "Requirement" ]] && continue
+    [[ -n "$(cut -f2 <<< "$meta")" ]] && continue
+    unfiled="$unfiled $num"
+  done < <(git -C "$REPO_DIR" log --format=%B "$range" </dev/null 2>/dev/null \
+             | grep -oE '(Refs|Closes) #[0-9]+' | grep -oE '[0-9]+' | sort -un || true)
+
+  if [[ -n "$unfiled" ]]; then
+    echo "==> These reach the image and are in no milestone:$unfiled" >&2
+    echo "    They shipped in $version. Give them a milestone so the record says so." >&2
+    echo "    An earlier milestone is fine — a letter for a delivery that shipped no image." >&2
+  fi
+}
+
 # Keeps the last few and removes the rest. It is a cache: losing one costs a
 # rebuild of a known commit, not a release, which is why this can be blunt.
 prune_artifacts() {
@@ -281,7 +422,7 @@ prune_artifacts() {
   [[ -d "$ARTIFACT_DIR" ]] || return 0
   while IFS= read -r old; do
     [[ -n "$old" ]] || continue
-    rm -f "$old" "$old.sha256"
+    rm -f "$old" "$old.sha256" "${old%.tar.gz}.manifest"
   done < <(ls -1t "$ARTIFACT_DIR"/*.tar.gz 2>/dev/null | tail -n "+$((keep + 1))")
 }
 
@@ -1141,6 +1282,13 @@ ARTIFACT_TAR="$(artifact_path "$TARGET_FULL_SHA")"
 ARTIFACT_DIGEST="$(verify_artifact "$ARTIFACT_TAR")"
 echo "    $(du -h "$ARTIFACT_TAR" | cut -f1) compressed, sha256:${ARTIFACT_DIGEST:0:12}"
 
+# What is in this build, beside the bytes it describes (#288 R1, R2). Written
+# after the digest is known and before anything is shipped, so the record exists
+# whether or not the rest of the deploy succeeds — which is the case #310 was
+# lost to.
+MANIFEST="$(write_manifest "$TARGET_FULL_SHA" "$ARTIFACT_DIGEST")"
+echo "    manifest: $(basename "$MANIFEST") — $(grep -c '^  ' "$MANIFEST" || echo 0) lines of contents"
+
 echo "==> Transferring to $DEPLOY_HOST"
 ssh "${SSH_OPTS[@]}" "$REMOTE" "mkdir -p $DEPLOY_REMOTE_DIR"
 scp "${SCP_OPTS[@]}" "$ARTIFACT_TAR" "$WORKTREE_DIR/docker-compose.yml" "$REMOTE:$DEPLOY_REMOTE_DIR/"
@@ -1464,6 +1612,8 @@ fi
 # and the artefact it would reuse is the point.
 prune_artifacts
 
+post_deploy "the plan/build disagreement report" "read artifacts/$TARGET_FULL_SHA.manifest and compare with milestone $DEPLOYED_VERSION" \
+  report_plan_disagreement "$TARGET_FULL_SHA" "$DEPLOYED_VERSION" || true
 post_deploy "the release-check announcement" "gh issue list --label 'Release Check' --state open — those checks are now answerable" announce_release_checks "$IS_RELEASE" "$DEPLOY_ENV" || true
 
 echo "==> Done — https://$DEPLOY_HOST.sslip.io (or your configured hostname)"
