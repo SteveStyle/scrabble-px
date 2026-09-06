@@ -1,16 +1,54 @@
 import { Browser, Page, expect } from '@playwright/test';
 
-// Every player these tests create starts with this prefix, so
-// scripts/e2e-clean.sh (and the global teardown) can find and remove them.
-// A per-run suffix keeps repeated runs from colliding on the unique
-// `players.display_name` constraint.
-export const TEST_PREFIX = 'e2e-';
+// Every player these tests create is named `T_e2e_<run>_<base>` (#252 R1), so
+// what created an account is readable from the account rather than guessed.
+//
+// | part | |
+// | --- | --- |
+// | `T_` | a test account. Underscore-led so that, if display names exclude the
+// |      | underscore (#332), a player cannot take a name of this shape at all |
+// | `e2e` | the suite. `check-rate-limits.sh` has its own |
+// | `<run>` | one value for the whole run, from `global-setup.ts` |
+// | `<base>` | the account within the run, as the test named it |
+//
+// **Three prefixes fall out of it**, and `clean-test-accounts.sh --prefix`
+// already takes any of them: `T_` is every test account anywhere, `T_e2e_` is
+// this suite's, and `T_e2e_<run>_` is one run's. That is what lets two runs
+// share an environment without deleting each other's accounts — the defect this
+// replaces, where both matched `e2e-` and whichever finished first won.
+//
+// The run comes from the environment because it must be **one value across
+// several worker processes**; see `global-setup.ts` for why a constant here
+// would not be.
+export const TEST_MARKER = 'T_';
+export const SUITE = 'e2e';
 export const TEST_PASSWORD = 'e2e-playwright-password';
 
-export function uniqueName(base: string): string {
-  const rand = Math.random().toString(36).slice(2, 7);
-  return `${TEST_PREFIX}${base}-${Date.now().toString(36)}-${rand}`;
+/** This run's id. Absent only if the suite is driven without its globalSetup. */
+export function runId(): string {
+  const id = process.env.E2E_RUN_ID;
+  if (!id) {
+    throw new Error(
+      'E2E_RUN_ID is not set — global-setup.ts did not run. Every account this ' +
+        'suite creates is named for its run, and inventing one per worker would ' +
+        'silently split a single run into several.',
+    );
+  }
+  return id;
 }
+
+/** The prefix identifying this run's accounts, which is what cleanup deletes. */
+export function runPrefix(): string {
+  return `${TEST_MARKER}${SUITE}_${runId()}_`;
+}
+
+export function uniqueName(base: string): string {
+  return `${runPrefix()}${base}`;
+}
+
+// Kept because tests and scripts still refer to "the test prefix"; it is now
+// the suite's rather than one shared string.
+export const TEST_PREFIX = `${TEST_MARKER}${SUITE}_`;
 
 // The signed-out app shows a blocking auth modal with "Log in" / "Register"
 // tabs. These helpers drive it via visible text / placeholders rather than

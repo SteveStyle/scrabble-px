@@ -26,16 +26,39 @@ Point it elsewhere (e.g. preview) with `PLAYWRIGHT_BASE_URL=http://localhost:808
 
 ## Test data & cleanup
 
-Every player a test creates is named with the `e2e-` prefix and a per-run
-suffix, so runs never collide and the data is always identifiable as
-disposable. The prefix is the whole contract behind cleanup:
-[`scripts/e2e-clean.sh`](../scripts/e2e-clean.sh) removes all `e2e-*` players
-and the games they played, plus dependent rows. It runs automatically as the
-Playwright global teardown, and can be run by hand (`npm run clean`) any time.
+Every player a test creates is named **`T_e2e_<run>_<base>`** (#252), so what
+made an account is readable from the account rather than guessed.
+
+| part | |
+| --- | --- |
+| `T_` | a test account. Underscore-led, so that if display names come to exclude the underscore a player cannot take a name of this shape at all |
+| `e2e` | the suite. `check-rate-limits.sh` has its own |
+| `<run>` | one value for the whole run, from `global-setup.ts`. A base36 timestamp and four random characters — **timestamp first, so sorting names sorts the runs** |
+| `<base>` | the account within the run, as the test named it |
+
+**Three prefixes fall out of it**, and `clean-test-accounts.sh --prefix` takes
+any of them: `T_` is every test account anywhere, `T_e2e_` is this suite's, and
+`T_e2e_<run>_` is one run's.
+
+**The teardown deletes only its own run.** Two runs against one environment used
+to share `e2e-`, so whichever finished first deleted the other's accounts
+mid-run — failures that read as flaky tests. Run by hand,
+[`scripts/e2e-clean.sh`](../scripts/e2e-clean.sh) defaults to the suite's
+prefix, because wanting all of them is the normal case there.
+
+**The run id comes from `globalSetup`, not from a constant.** `fullyParallel`
+means several worker *processes*, and a module-level value would be computed
+once in each — every worker believing it was a separate run, with the failure
+looking exactly like the convention working.
+
+**A cleanup can still be refused**, and that is #295 rather than this: the admin
+CLI will not delete an account that is signed in, which a test that ends
+logged-in always is.
 
 ## Layout
 
 - `playwright.config.ts` — Chromium, `baseURL` from `PLAYWRIGHT_BASE_URL`, no `webServer` (the app is external).
-- `global-teardown.ts` — best-effort call to `scripts/e2e-clean.sh`.
-- `tests/helpers.ts` — auth flows (register/login/logout) and the `e2e-` naming.
+- `global-setup.ts` — computes this run's id before any worker starts.
+- `global-teardown.ts` — best-effort call to `scripts/e2e-clean.sh`, for this run's accounts only.
+- `tests/helpers.ts` — auth flows (register/login/logout) and the `T_e2e_<run>_` naming.
 - `tests/smoke.spec.ts` — the first suite: register, login/logout, stay-logged-in, and Play-Greedy-Bot-renders-a-board (the flow whose skew bug prompted this suite).

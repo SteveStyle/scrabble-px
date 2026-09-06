@@ -14,7 +14,11 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
   reporter: [['list'], ['html', { open: 'never' }]],
-  // Best-effort removal of the e2e-* test users/games this run created.
+  // Computes this run's identifier before any worker starts (#252 R1). It must
+  // be one value shared by every worker, and `fullyParallel` means there are
+  // several — so it cannot be a module-level constant in the helpers.
+  globalSetup: './global-setup.ts',
+  // Best-effort removal of the test users/games this run created.
   globalTeardown: './global-teardown.ts',
   use: {
     baseURL,

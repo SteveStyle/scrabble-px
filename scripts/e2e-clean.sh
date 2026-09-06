@@ -15,7 +15,10 @@ set -euo pipefail
 # server restart and won't be re-saved unless touched.
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PREFIX="${E2E_PREFIX:-e2e-}"
+# The suite's own prefix by default — every run's accounts. The global teardown
+# overrides it with `T_e2e_<run>_`, so a run cleans only what it made (#252 R1);
+# by hand, wanting all of them is the normal case.
+PREFIX="${E2E_PREFIX:-T_e2e_}"
 DB="${E2E_DB_FILE:-$REPO_DIR/data/tile-lite-elite.sqlite3}"
 
 # **Clean where the tests ran, or refuse.** This defaulted to dev's file and
