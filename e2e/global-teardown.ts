@@ -1,12 +1,13 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { runPrefixFor } from './naming';
 
 // Purge the players/games **this run** created (see scripts/e2e-clean.sh).
 //
 // The run's own prefix is passed, not the suite's (#252 R1). Two runs against
 // one environment used to share `e2e-`, so whichever finished first deleted the
 // other's accounts mid-run — failures that read as flaky tests. Deleting
-// `T_e2e_<run>_*` cannot reach another run's.
+// `T-e2e-<run>-*` cannot reach another run's.
 // Best-effort: a cleanup failure (e.g. the script isn't reachable in CI)
 // must never fail an otherwise-green suite.
 //
@@ -26,7 +27,7 @@ export default async function globalTeardown() {
         // Absent only if globalSetup did not run, in which case cleaning the
         // whole suite's accounts is wrong — it would take other runs with it.
         ...(process.env.E2E_RUN_ID
-          ? { E2E_PREFIX: `T_e2e_${process.env.E2E_RUN_ID}_` }
+          ? { E2E_PREFIX: runPrefixFor(process.env.E2E_RUN_ID) }
           : {}),
       },
     });

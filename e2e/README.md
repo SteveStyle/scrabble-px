@@ -26,19 +26,19 @@ Point it elsewhere (e.g. preview) with `PLAYWRIGHT_BASE_URL=http://localhost:808
 
 ## Test data & cleanup
 
-Every player a test creates is named **`T_e2e_<run>_<base>`** (#252), so what
+Every player a test creates is named **`T-e2e-<run>-<base>`** (#252), so what
 made an account is readable from the account rather than guessed.
 
 | part | |
 | --- | --- |
-| `T_` | a test account. Underscore-led, so that if display names come to exclude the underscore a player cannot take a name of this shape at all |
+| `T-` | a test account. Underscore-led, so that if display names come to exclude the underscore a player cannot take a name of this shape at all |
 | `e2e` | the suite. `check-rate-limits.sh` has its own |
 | `<run>` | one value for the whole run, from `global-setup.ts`. A base36 timestamp and four random characters — **timestamp first, so sorting names sorts the runs** |
 | `<base>` | the account within the run, as the test named it |
 
 **Three prefixes fall out of it**, and `clean-test-accounts.sh --prefix` takes
-any of them: `T_` is every test account anywhere, `T_e2e_` is this suite's, and
-`T_e2e_<run>_` is one run's.
+any of them: `T-` is every test account anywhere, `T-e2e-` is this suite's, and
+`T-e2e-<run>-` is one run's.
 
 **The teardown deletes only its own run.** Two runs against one environment used
 to share `e2e-`, so whichever finished first deleted the other's accounts
@@ -60,5 +60,5 @@ logged-in always is.
 - `playwright.config.ts` — Chromium, `baseURL` from `PLAYWRIGHT_BASE_URL`, no `webServer` (the app is external).
 - `global-setup.ts` — computes this run's id before any worker starts.
 - `global-teardown.ts` — best-effort call to `scripts/e2e-clean.sh`, for this run's accounts only.
-- `tests/helpers.ts` — auth flows (register/login/logout) and the `T_e2e_<run>_` naming.
+- `tests/helpers.ts` — auth flows (register/login/logout) and the `T-e2e-<run>-` naming.
 - `tests/smoke.spec.ts` — the first suite: register, login/logout, stay-logged-in, and Play-Greedy-Bot-renders-a-board (the flow whose skew bug prompted this suite).

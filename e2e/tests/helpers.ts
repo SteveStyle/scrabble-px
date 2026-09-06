@@ -1,27 +1,37 @@
 import { Browser, Page, expect } from '@playwright/test';
+import { SUITE_PREFIX, runPrefixFor } from '../naming';
 
-// Every player these tests create is named `T_e2e_<run>_<base>` (#252 R1), so
+// Every player these tests create is named `T-e2e-<run>-<base>` (#252 R1), so
 // what created an account is readable from the account rather than guessed.
 //
 // | part | |
 // | --- | --- |
-// | `T_` | a test account. Underscore-led so that, if display names exclude the
-// |      | underscore (#332), a player cannot take a name of this shape at all |
+// | `T-` | a test account, by convention only |
 // | `e2e` | the suite. `check-rate-limits.sh` has its own |
 // | `<run>` | one value for the whole run, from `global-setup.ts` |
 // | `<base>` | the account within the run, as the test named it |
 //
+// **Hyphens, not underscores, and the reason is the design's own constraint.**
+// The suite registers through the same public API a player uses, so any rule on
+// display names applies to it too — *"the API cannot special-case the suite"*.
+// An earlier version used `T_e2e_…` on the grounds that excluding the
+// underscore from display names (#332) would make the shape unavailable to a
+// player. It would also have made it unavailable to **this suite**, and the
+// server would have refused every account it tried to create.
+//
+// So the marker is a convention rather than a guarantee. A player could take a
+// name of this shape; nothing here depends on them not doing so, because
+// cleanup deletes what a *run* created rather than what merely looks like it.
+//
 // **Three prefixes fall out of it**, and `clean-test-accounts.sh --prefix`
-// already takes any of them: `T_` is every test account anywhere, `T_e2e_` is
-// this suite's, and `T_e2e_<run>_` is one run's. That is what lets two runs
+// already takes any of them: `T-` is every test account anywhere, `T-e2e-` is
+// this suite's, and `T-e2e-<run>-` is one run's. That is what lets two runs
 // share an environment without deleting each other's accounts — the defect this
 // replaces, where both matched `e2e-` and whichever finished first won.
 //
 // The run comes from the environment because it must be **one value across
 // several worker processes**; see `global-setup.ts` for why a constant here
 // would not be.
-export const TEST_MARKER = 'T_';
-export const SUITE = 'e2e';
 export const TEST_PASSWORD = 'e2e-playwright-password';
 
 /** This run's id. Absent only if the suite is driven without its globalSetup. */
@@ -39,16 +49,16 @@ export function runId(): string {
 
 /** The prefix identifying this run's accounts, which is what cleanup deletes. */
 export function runPrefix(): string {
-  return `${TEST_MARKER}${SUITE}_${runId()}_`;
+  return runPrefixFor(runId());
 }
 
 export function uniqueName(base: string): string {
   return `${runPrefix()}${base}`;
 }
 
-// Kept because tests and scripts still refer to "the test prefix"; it is now
-// the suite's rather than one shared string.
-export const TEST_PREFIX = `${TEST_MARKER}${SUITE}_`;
+// Kept because tests still refer to "the test prefix"; it is the suite's now
+// rather than one string shared by every run.
+export const TEST_PREFIX = SUITE_PREFIX;
 
 // The signed-out app shows a blocking auth modal with "Log in" / "Register"
 // tabs. These helpers drive it via visible text / placeholders rather than

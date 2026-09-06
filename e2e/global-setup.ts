@@ -14,6 +14,8 @@
 // runs — the owner's question is *"which run was mine, just now"*, not *"which
 // run was fifth"*.
 
+import { runPrefixFor } from './naming';
+
 export const RUN_ID_VAR = 'E2E_RUN_ID';
 
 export default async function globalSetup() {
@@ -26,5 +28,7 @@ export default async function globalSetup() {
   const stamp = Date.now().toString(36);
   const rand = Math.random().toString(36).slice(2, 6);
   process.env[RUN_ID_VAR] = `${stamp}${rand}`;
-  console.log(`[e2e] run ${process.env[RUN_ID_VAR]} — accounts are T_e2e_${process.env[RUN_ID_VAR]}_*`);
+  console.log(
+    `[e2e] run ${process.env[RUN_ID_VAR]} — accounts are ${runPrefixFor(process.env[RUN_ID_VAR]!)}*`,
+  );
 }
