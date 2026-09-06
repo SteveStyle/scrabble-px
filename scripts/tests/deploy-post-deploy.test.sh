@@ -36,15 +36,15 @@ echo "deploy-post-deploy"
 
 # 1 — a step that succeeds is not recorded, and its status is passed through
 POST_DEPLOY_FAILED=()
-rc=0; post_deploy "a working step" true || rc=$?
+rc=0; post_deploy "a working step" "nothing to do" true || rc=$?
 check "a successful step returns 0"       "0" "$rc"
 check "and records nothing"               "0" "${#POST_DEPLOY_FAILED[@]}"
 
 # 2 — a step that fails is recorded by name and returns non-zero
 POST_DEPLOY_FAILED=()
-rc=0; post_deploy "the version bump commit" false 2>/dev/null || rc=$?
+rc=0; post_deploy "the version bump commit" "commit it by hand" false 2>/dev/null || rc=$?
 check "a failing step returns non-zero"   "1" "$rc"
-check "and is recorded by name"           "the version bump commit" "${POST_DEPLOY_FAILED[0]:-}"
+check "and is recorded by name"           "1" "$(grep -c "the version bump commit" <<< "${POST_DEPLOY_FAILED[0]:-}")"
 
 # 3 — the property that matters: a later step runs after an earlier one failed.
 #     This is 0.7.2 exactly — the bump fails, and the milestone must still settle.
@@ -52,32 +52,51 @@ POST_DEPLOY_FAILED=()
 RAN=""
 settled()  { RAN="$RAN settled"; }
 announced() { RAN="$RAN announced"; }
-post_deploy "the version bump commit" false 2>/dev/null || true
-post_deploy "settling the milestone" settled || true
-post_deploy "the release-check announcement" announced || true
+post_deploy "the version bump commit" "commit it by hand" false 2>/dev/null || true
+post_deploy "settling the milestone" "close it on GitHub" settled || true
+post_deploy "the release-check announcement" "list the labelled issues" announced || true
 check "the milestone still settles after the bump fails" "1" "$(grep -c settled <<< "$RAN")"
 check "and the announcement still runs"                  "1" "$(grep -c announced <<< "$RAN")"
 check "only the failure is recorded"                     "1" "${#POST_DEPLOY_FAILED[@]}"
 
 # 4 — several failures are all kept, in order
 POST_DEPLOY_FAILED=()
-post_deploy "first"  false 2>/dev/null || true
-post_deploy "second" false 2>/dev/null || true
+post_deploy "first"  "do the first thing"  false 2>/dev/null || true
+post_deploy "second" "do the second thing" false 2>/dev/null || true
 check "both failures are kept"    "2"      "${#POST_DEPLOY_FAILED[@]}"
-check "in the order they happened" "first second" "${POST_DEPLOY_FAILED[*]}"
+check "in the order they happened" "first,second" "$(printf '%s\n' "${POST_DEPLOY_FAILED[@]}" | sed 's/ (exit.*//' | paste -sd,)"
 
 # 5 — the warning names the step and says production is live, so the line is
 #     readable without the surrounding output
 POST_DEPLOY_FAILED=()
-out="$(post_deploy "settling the milestone" false 2>&1 || true)"
+out="$(post_deploy "settling the milestone" "close it on GitHub" false 2>&1 || true)"
 check "the warning names the step"        "1" "$(grep -c 'settling the milestone' <<< "$out")"
 check "and says production is live"       "1" "$(grep -c 'production is live' <<< "$out")"
 
-# 6 — arguments reach the command intact, since every real call passes some
+# 6 — the exit code is reported, because `git commit` returning 1 and returning
+#     128 are different problems and only one of them is the pre-commit hook
+# Captured through a file rather than `$( )`: a command substitution runs in a
+# subshell, so POST_DEPLOY_FAILED would be modified in the child and lost —
+# the message assertion would pass and the recording one fail, for a reason
+# that has nothing to do with the code. The real script calls it directly.
+ERR="$(mktemp)"; trap 'rm -f "$ERR"' EXIT
+POST_DEPLOY_FAILED=()
+post_deploy "a step" "fix it" bash -c 'exit 42' 2>"$ERR" || true
+check "the exit code is in the message"   "1" "$(grep -c 'exit 42' "$ERR")"
+check "and in the recorded entry"         "1" "$(grep -c 'exit 42' <<< "${POST_DEPLOY_FAILED[0]:-}")"
+
+# 7 — the remedy is shown and recorded, since "needs doing by hand" is not
+#     something anybody can act on at the end of a deploy
+POST_DEPLOY_FAILED=()
+post_deploy "settling the milestone" "close it on GitHub" false 2>"$ERR" || true
+check "the remedy is printed"             "1" "$(grep -c 'close it on GitHub' "$ERR")"
+check "and kept for the closing summary"  "1" "$(grep -c 'close it on GitHub' <<< "${POST_DEPLOY_FAILED[0]:-}")"
+
+# 8 — arguments reach the command intact, since every real call passes some
 POST_DEPLOY_FAILED=()
 SEEN=""
 record() { SEEN="$*"; }
-post_deploy "with arguments" record 1 "two words" 3 || true
+post_deploy "with arguments" "none" record 1 "two words" 3 || true
 check "arguments are passed through" "1 two words 3" "$SEEN"
 
 echo
