@@ -91,7 +91,18 @@ check_tree() {
 
 LABEL[pushed]="Branch pushed"
 check_pushed() {
-  git fetch -q origin 2>/dev/null || true
+  # `--prune` is load-bearing for `check_branches`, which runs straight after
+  # this and is the only thing that fetches. It reports a merged branch whose
+  # remote is gone, and reads "gone" from `upstream:track` — which git only
+  # sets once the stale remote-tracking ref has been pruned. Without it the ref
+  # survives, `track` stays empty, and the check passes for a reason that has
+  # nothing to do with branches.
+  #
+  # It did exactly that: `103-tab-icon` was merged on 2026-09-05, GitHub deleted
+  # the remote on merge, and `verify.sh` reported "no merged branches left
+  # behind" for a day. The check's own comment names `git fetch --prune` as the
+  # mechanism it depends on, and nothing performed it.
+  git fetch -q --prune origin 2>/dev/null || true
   local branch; branch="$(git rev-parse --abbrev-ref HEAD)"
   if [[ "$(git rev-parse HEAD)" == "$(git rev-parse "origin/$branch" 2>/dev/null)" ]]; then
     pass pushed "$branch matches origin"
